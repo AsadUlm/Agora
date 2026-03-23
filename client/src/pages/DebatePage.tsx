@@ -1,24 +1,11 @@
 import { useState } from "react";
-import {
-    Stack,
-    Button,
-    Divider,
-    Alert,
-    CircularProgress,
-    Box,
-    Typography,
-} from "@mui/material";
-import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import { Box, Typography } from "@mui/material";
 
 import AppShell from "../components/layout/AppShell";
-import TopControlSection from "../components/layout/TopControlSection";
 import MainContentLayout from "../components/layout/MainContentLayout";
 import ModeratorPanelPlaceholder from "../components/layout/ModeratorPanelPlaceholder";
 
-import QuestionComposer from "../components/debate/QuestionComposer";
-import AgentSetup from "../components/debate/AgentSetup";
-import SelectedAgents from "../components/debate/SelectedAgents";
-import DebateSettings from "../components/debate/DebateSettings";
+import DebateComposer from "../components/debate/DebateComposer";
 import DebateTimeline from "../components/debate/DebateTimeline";
 
 import { useStartDebate } from "../hooks/useStartDebate";
@@ -45,73 +32,24 @@ export default function DebatePage() {
         setAgents((prev) => prev.filter((_, i) => i !== index));
     };
 
+    const handleAddAgent = (agent: AgentInput) => {
+        setAgents((prev) => [...prev, agent]);
+    };
+
     return (
         <AppShell>
-            {/* ── Top Control Area ───────────────────────────── */}
-            <TopControlSection>
-                <Stack spacing={3}>
-                    <QuestionComposer
-                        value={question}
-                        onChange={setQuestion}
-                        disabled={loading}
-                    />
-
-                    <Divider />
-
-                    <Box
-                        sx={{
-                            display: "grid",
-                            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
-                            gap: 3,
-                        }}
-                    >
-                        <AgentSetup
-                            agents={agents}
-                            onChange={setAgents}
-                            disabled={loading}
-                        />
-                        <SelectedAgents
-                            agents={agents}
-                            onRemove={handleRemoveAgent}
-                            disabled={loading}
-                        />
-                    </Box>
-
-                    <Divider />
-
-                    <Stack
-                        direction={{ xs: "column", sm: "row" }}
-                        justifyContent="space-between"
-                        alignItems={{ sm: "center" }}
-                        spacing={2}
-                    >
-                        <DebateSettings />
-
-                        <Button
-                            variant="contained"
-                            size="large"
-                            startIcon={
-                                loading ? (
-                                    <CircularProgress size={20} color="inherit" />
-                                ) : (
-                                    <PlayArrowIcon />
-                                )
-                            }
-                            disabled={!canStart}
-                            onClick={handleStart}
-                            sx={{ minWidth: 180 }}
-                        >
-                            {loading ? "Running…" : "Start Debate"}
-                        </Button>
-                    </Stack>
-
-                    {error && (
-                        <Alert severity="error" sx={{ mt: 1 }}>
-                            {error}
-                        </Alert>
-                    )}
-                </Stack>
-            </TopControlSection>
+            {/* ── Debate Composer ────────────────────────── */}
+            <DebateComposer
+                question={question}
+                onQuestionChange={setQuestion}
+                agents={agents}
+                onAddAgent={handleAddAgent}
+                onRemoveAgent={handleRemoveAgent}
+                canStart={canStart}
+                loading={loading}
+                error={error}
+                onStart={handleStart}
+            />
 
             {/* ── Main Content: Timeline + Moderator ─────────── */}
             {result ? (
