@@ -17,6 +17,11 @@ groq>=0.9.0          # Groq async SDK  (LLM_PROVIDER=groq)
 openai>=1.30.0       # OpenAI async SDK (LLM_PROVIDER=openai)
 httpx>=0.27.0        # Shared async HTTP client used by both SDKs
 
+# Auth
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0,<4.1.0
+python-jose[cryptography]>=3.3.0
+
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

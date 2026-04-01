@@ -8,7 +8,8 @@ Hierarchy:
     LLMError
     ├── LLMGenerationError     — provider call failed (network, auth, rate-limit)
     ├── LLMParsingError        — response received but JSON parsing failed
-    └── ProviderConfigError    — provider misconfigured (missing key, unknown name)
+    ├── ProviderConfigError    — provider misconfigured (missing key, unknown name)
+    └── ProviderUnavailableError — placeholder provider requested
 """
 
 
@@ -41,3 +42,14 @@ class ProviderConfigError(LLMError):
     def __init__(self, detail: str) -> None:
         self.detail = detail
         super().__init__(f"Provider configuration error: {detail}")
+
+
+class ProviderUnavailableError(LLMError):
+    """A placeholder provider was requested but is not yet implemented."""
+
+    def __init__(self, provider: str) -> None:
+        self.provider = provider
+        super().__init__(
+            f"Provider '{provider}' is registered as a placeholder and "
+            f"is not yet available for use. Please choose an active provider."
+        )

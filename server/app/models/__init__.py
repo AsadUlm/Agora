@@ -2,6 +2,6 @@
 from app.models.agent import Agent
 from app.models.debate import Debate
 from app.models.round import Round
-from app.models.user import User
+from app.models.user import User, UserSettings
 
-__all__ = ["User", "Debate", "Agent", "Round"]
+__all__ = ["User", "UserSettings", "Debate", "Agent", "Round"]

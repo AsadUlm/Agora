@@ -50,10 +50,14 @@ async def start_debate(
     # ------------------------------------------------------------------
     db_agents: list[Agent] = []
     for agent_req in request.agents:
+        # Merge the typed config back into the raw dict for storage.
+        stored_config = agent_req.config.copy()
+        if agent_req.parsed_config:
+            stored_config["_parsed"] = agent_req.parsed_config.model_dump()
         agent = Agent(
             debate_id=debate.id,
             role=agent_req.role,
-            config=agent_req.config,
+            config=stored_config,
         )
         db.add(agent)
         db_agents.append(agent)

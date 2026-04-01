@@ -13,6 +13,7 @@ import asyncio
 import logging
 from typing import Any
 
+from app.schemas.agent_config import AgentConfig
 from app.services.debate_engine.prompts.round3_prompts import build_final_synthesis_prompt
 from app.services.llm.exceptions import LLMError
 from app.services.llm.service import get_llm_service
@@ -67,11 +68,17 @@ async def generate_round3(
         original = round1_by_agent_id.get(agent_id_str, {})
         original_stance = original.get("stance", "No opening stance was recorded.")
 
+        raw_cfg = getattr(agent, "config", None) or {}
+        parsed = raw_cfg.get("_parsed")
+        cfg = AgentConfig.model_validate(parsed) if parsed else AgentConfig.from_raw(raw_cfg)
+
         prompt = build_final_synthesis_prompt(
             role=agent.role,
             question=question,
             original_stance=original_stance,
             debate_summary=debate_summary,
+            reasoning_style=cfg.reasoning.style,
+            reasoning_depth=cfg.reasoning.depth,
         )
         try:
             parsed = await llm.generate_structured(prompt)

@@ -28,7 +28,11 @@ class Settings(BaseSettings):
 
     # ── App ───────────────────────────────────────────────────────────────
     APP_ENV: str = "development"
-
+    # ── Auth / JWT ────────────────────────────────────────────────────
+    JWT_SECRET: str = "change-me-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_EXPIRE_MINUTES: int = 30
+    JWT_REFRESH_EXPIRE_DAYS: int = 7
 
 @lru_cache()
 def get_settings() -> Settings:

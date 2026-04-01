@@ -6,6 +6,8 @@ def build_final_synthesis_prompt(
     question: str,
     original_stance: str,
     debate_summary: str,
+    reasoning_style: str = "",
+    reasoning_depth: str = "",
 ) -> str:
     """
     Construct the prompt that asks an agent to produce its final synthesis.
@@ -15,17 +17,25 @@ def build_final_synthesis_prompt(
         question:        The central debate question.
         original_stance: The stance the agent took in Round 1.
         debate_summary:  A plain-text summary of the Round 2 exchanges.
+        reasoning_style: Optional style hint.
+        reasoning_depth: Optional depth hint.
 
     Returns:
         A fully rendered prompt string ready to be sent to the LLM.
     """
+    style_hint = ""
+    if reasoning_style:
+        style_hint += f"\n- Reasoning style: {reasoning_style}."
+    if reasoning_depth:
+        style_hint += f"\n- Reasoning depth: {reasoning_depth}."
+
     return f"""RESPONSE FORMAT
 - Respond with a SINGLE valid JSON object.
 - No markdown. No code fences. No text before or after the JSON.
 - Do not include comments inside the JSON.
 
 ROLE
-You are a {role} completing a structured AI debate.
+You are a {role} completing a structured AI debate.{style_hint}
 
 DEBATE QUESTION
 "{question}"

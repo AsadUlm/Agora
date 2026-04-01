@@ -1,24 +1,37 @@
 """Prompt builders for Round 1 — Opening Statements."""
 
 
-def build_opening_statement_prompt(role: str, question: str) -> str:
+def build_opening_statement_prompt(
+    role: str,
+    question: str,
+    reasoning_style: str = "",
+    reasoning_depth: str = "",
+) -> str:
     """
     Construct the prompt that asks an agent to generate its opening statement.
 
     Args:
-        role:     The agent's role (e.g. "analyst", "critic", "optimist").
-        question: The central debate question.
+        role:             The agent's role (e.g. "analyst", "critic", "optimist").
+        question:         The central debate question.
+        reasoning_style:  Optional style hint (analytical, creative, …).
+        reasoning_depth:  Optional depth hint (shallow, normal, deep).
 
     Returns:
         A fully rendered prompt string ready to be sent to the LLM.
     """
+    style_hint = ""
+    if reasoning_style:
+        style_hint += f"\n- Reasoning style: {reasoning_style}."
+    if reasoning_depth:
+        style_hint += f"\n- Reasoning depth: {reasoning_depth}."
+
     return f"""RESPONSE FORMAT
 - Respond with a SINGLE valid JSON object.
 - No markdown. No code fences. No text before or after the JSON.
 - Do not include comments inside the JSON.
 
 ROLE
-You are a {role} participating in a structured, multi-round AI debate.
+You are a {role} participating in a structured, multi-round AI debate.{style_hint}
 
 DEBATE QUESTION
 "{question}"

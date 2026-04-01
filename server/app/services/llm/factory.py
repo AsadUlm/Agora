@@ -10,13 +10,17 @@ Supported values:
   "groq"   — Groq (AsyncGroq SDK)
   "openai" — OpenAI (AsyncOpenAI SDK)
   "mock"   — Deterministic mock (no API calls)
+
+Any other value is checked against the provider registry.  If it maps
+to a *placeholder* provider, a ``ProviderUnavailableError`` is raised
+with a clear user-facing message.
 """
 
 import logging
 
 from app.core.config import settings
 from app.services.llm.base import LLMProvider
-from app.services.llm.exceptions import ProviderConfigError
+from app.services.llm.exceptions import ProviderConfigError, ProviderUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +30,8 @@ def create_provider() -> LLMProvider:
     Instantiate and return the configured LLM provider.
 
     Reads LLM_PROVIDER from settings and returns the matching implementation.
-    Raises ValueError for unknown provider names so misconfiguration is caught
-    at startup rather than silently at runtime.
+    For placeholder providers raises ProviderUnavailableError.
+    For completely unknown names raises ProviderConfigError.
     """
     provider_name = settings.LLM_PROVIDER.lower()
 
@@ -39,6 +43,14 @@ def create_provider() -> LLMProvider:
 
     if provider_name == "mock":
         return _build_mock()
+
+    # Check registry for placeholders before giving a generic error
+    from app.services.llm.registry import get_registry
+
+    registry = get_registry()
+    info = registry.get_provider(provider_name)
+    if info and info.status == "placeholder":
+        raise ProviderUnavailableError(provider_name)
 
     raise ProviderConfigError(
         f"Unknown LLM_PROVIDER={settings.LLM_PROVIDER!r}. "

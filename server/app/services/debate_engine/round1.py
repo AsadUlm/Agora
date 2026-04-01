@@ -11,11 +11,21 @@ import asyncio
 import logging
 from typing import Any
 
+from app.schemas.agent_config import AgentConfig
 from app.services.debate_engine.prompts.round1_prompts import build_opening_statement_prompt
 from app.services.llm.exceptions import LLMError
 from app.services.llm.service import get_llm_service
 
 logger = logging.getLogger(__name__)
+
+
+def _get_agent_config(agent: Any) -> AgentConfig:
+    """Extract typed AgentConfig from the agent's raw JSONB config."""
+    raw = getattr(agent, "config", None) or {}
+    parsed = raw.get("_parsed")
+    if parsed:
+        return AgentConfig.model_validate(parsed)
+    return AgentConfig.from_raw(raw)
 
 
 async def generate_round1(question: str, agents: list[Any]) -> list[dict]:
@@ -32,7 +42,13 @@ async def generate_round1(question: str, agents: list[Any]) -> list[dict]:
     llm = get_llm_service()
 
     async def _generate_for_agent(agent: Any) -> dict:
-        prompt = build_opening_statement_prompt(role=agent.role, question=question)
+        cfg = _get_agent_config(agent)
+        prompt = build_opening_statement_prompt(
+            role=agent.role,
+            question=question,
+            reasoning_style=cfg.reasoning.style,
+            reasoning_depth=cfg.reasoning.depth,
+        )
         try:
             parsed = await llm.generate_structured(prompt)
         except LLMError as exc:

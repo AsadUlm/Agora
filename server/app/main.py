@@ -4,6 +4,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes import debate as debate_routes
+from app.api.routes.auth import router as auth_router
+from app.api.routes.llm import agents_config_router, llm_router
+from app.api.routes.users import router as users_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +31,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.include_router(auth_router)
+    app.include_router(users_router)
     app.include_router(debate_routes.router, prefix="/debates", tags=["Debates"])
+    app.include_router(llm_router)
+    app.include_router(agents_config_router)
 
     return app
 
