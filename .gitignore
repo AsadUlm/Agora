@@ -1,1 +1,8 @@
-reports
+reportsnode_modules/
+client/node_modules/
+server/node_modules/
+
+dist/
+build/
+.next/
+.env
