@@ -6,3 +6,5 @@ dist/
 build/
 .next/
 .env
+.venv
+.vscode

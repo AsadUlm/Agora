@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     )
 
     # ── Database ──────────────────────────────────────────────────────────
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/agora"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:beknur2022@localhost:5432/agora"
 
     # ── LLM — provider selection ─────────────────────────────────────────
     # Options: "groq" | "openai" | "mock"

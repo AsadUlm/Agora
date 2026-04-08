@@ -6,6 +6,7 @@ uvicorn[standard]>=0.29.0
 sqlalchemy[asyncio]>=2.0.0
 asyncpg>=0.29.0
 alembic>=1.13.0
+pgvector>=0.2.1
 
 # Settings / env
 pydantic>=2.7.0
