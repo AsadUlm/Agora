@@ -1,9 +1,8 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, Text, Uuid, ForeignKey
+from sqlalchemy import DateTime, Integer, Text, Uuid, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from pgvector.sqlalchemy import Vector
 
 from app.db.base import Base
 
@@ -20,7 +19,7 @@ class DocumentChunk(Base):
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding = mapped_column(Vector(1536), nullable=True)  # Using pgvector Vector type
+    embedding = mapped_column(JSON, nullable=True)  # Stores embedding as JSON array (pgvector not required)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

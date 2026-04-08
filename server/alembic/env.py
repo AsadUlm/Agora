@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.core.config import settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 import app.models  # noqa: E402, F401  — registers all ORM models with Base.metadata
-import pgvector.sqlalchemy  # noqa: F401 - required for alembic to map vectors
 
 # ---------------------------------------------------------------------------
 # Alembic Config object (gives access to values in alembic.ini)
