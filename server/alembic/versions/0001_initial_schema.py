@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from pgvector.sqlalchemy import Vector
 
 revision: str = "0001"
 down_revision: Union[str, None] = None
@@ -17,6 +18,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # ── pgvector extension ────────────────────────────────────────────────────
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
     # ── users ──────────────────────────────────────────────────────────────
     op.create_table(
         "users",
@@ -205,7 +209,7 @@ def upgrade() -> None:
         sa.Column("document_id", sa.Uuid(), nullable=False),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("embedding", sa.JSON(), nullable=True),
+        sa.Column("embedding", Vector(1536), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
@@ -235,6 +239,9 @@ def downgrade() -> None:
     op.drop_table("chat_sessions")
     op.drop_index(op.f("ix_users_email"), table_name="users")
     op.drop_table("users")
+
+    # Drop pgvector extension
+    op.execute("DROP EXTENSION IF EXISTS vector")
 
     # Drop enums
     sa.Enum(name="document_status").drop(op.get_bind(), checkfirst=True)
