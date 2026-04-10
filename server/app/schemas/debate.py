@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.schemas.agent import AgentCreate, AgentResponse
+from app.schemas.agent import AgentCreate
 
 
 class DebateStartRequest(BaseModel):
@@ -17,9 +17,17 @@ class DebateStartRequest(BaseModel):
 class RoundResponse(BaseModel):
     """Output schema for a single round record."""
 
-    id: uuid.UUID
+    id: str
     round_number: int
     data: list | dict
+
+    model_config = {"from_attributes": True}
+
+
+class AgentResponse(BaseModel):
+    id: str
+    role: str
+    config: dict = {}
 
     model_config = {"from_attributes": True}
 
@@ -44,3 +52,4 @@ class DebateStartResponse(BaseModel):
     question: str
     status: str
     result: dict
+

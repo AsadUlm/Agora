@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 
-from pydantic import BaseModel, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class SignupRequest(BaseModel):
@@ -50,9 +50,13 @@ class RefreshRequest(BaseModel):
 class UserBrief(BaseModel):
     id: uuid.UUID
     email: str
-    display_name: str | None = None
+    # ORM has `name`; frontend expects `display_name` in JSON
+    display_name: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("name", "display_name"),
+    )
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
 
 class TokenResponse(BaseModel):

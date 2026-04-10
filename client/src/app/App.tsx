@@ -4,8 +4,19 @@ import ProtectedRoute from "../components/auth/ProtectedRoute";
 import { AuthProvider } from "../context/AuthContext";
 import LoginPage from "../pages/LoginPage";
 import SignupPage from "../pages/SignupPage";
-import DebatePage from "../pages/DebatePage";
 import theme from "../theme";
+import AppShell from "../components/layout/AppShell";
+import { Box, Typography } from "@mui/material";
+
+function HomePage() {
+    return (
+        <AppShell>
+            <Box sx={{ p: 4 }}>
+                <Typography variant="h4">Welcome to Agora</Typography>
+            </Box>
+        </AppShell>
+    );
+}
 
 export default function App() {
     return (
@@ -14,21 +25,16 @@ export default function App() {
             <BrowserRouter>
                 <AuthProvider>
                     <Routes>
-                        {/* Public routes */}
                         <Route path="/login" element={<LoginPage />} />
                         <Route path="/signup" element={<SignupPage />} />
-
-                        {/* Protected routes */}
                         <Route
                             path="/"
                             element={
                                 <ProtectedRoute>
-                                    <DebatePage />
+                                    <HomePage />
                                 </ProtectedRoute>
                             }
                         />
-
-                        {/* Fallback */}
                         <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
                 </AuthProvider>

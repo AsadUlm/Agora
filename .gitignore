@@ -1,10 +1,35 @@
-reportsnode_modules/
+# Dependencies
+node_modules/
 client/node_modules/
 server/node_modules/
 
+# Build outputs
 dist/
 build/
 .next/
+.vite/
+
+# Environment files
 .env
-.venv
-.vscode
+.env.local
+.env.*.local
+client/.env
+server/.env
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

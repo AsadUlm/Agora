@@ -2,11 +2,13 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import debate as debate_routes
 from app.api.routes.auth import router as auth_router
-from app.api.routes.llm import agents_config_router, llm_router
 from app.api.routes.users import router as users_router
+from app.core.config import settings
+from app.db.seed import seed_default_user
+from app.db.session import AsyncSessionLocal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,26 +18,28 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup / shutdown hooks can be added here (e.g., warm up DB pool)
+    async with AsyncSessionLocal() as db:
+        await seed_default_user(db)
     yield
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Agora — AI Debate Platform",
-        description=(
-            "Backend API for the Agora AI Debate Platform. "
-            "Start debates, run AI agents, and retrieve structured results."
-        ),
+        title="Agora",
         version="1.0.0",
         lifespan=lifespan,
     )
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins_list(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.include_router(auth_router)
     app.include_router(users_router)
-    app.include_router(debate_routes.router, prefix="/debates", tags=["Debates"])
-    app.include_router(llm_router)
-    app.include_router(agents_config_router)
 
     return app
 
