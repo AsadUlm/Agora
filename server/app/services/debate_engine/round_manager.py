@@ -98,7 +98,8 @@ class RoundManager:
           • confidence (0.0–1.0)
         """
         round_record = await self._create_round(ctx, round_number=1, round_type=RoundType.initial)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
+        chunks = await self._retrieve(ctx)  # real retrieval from pgvector
+        chunk_dicts = [c.model_dump() for c in chunks]
         results: list[AgentRoundResult] = []
 
         for agent_ctx in ctx.agents:
@@ -107,6 +108,7 @@ class RoundManager:
                 question=ctx.question,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                retrieved_chunks=chunk_dicts,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -133,7 +135,8 @@ class RoundManager:
         Agents that had zero opponents are passed through with an empty critique list.
         """
         round_record = await self._create_round(ctx, round_number=2, round_type=RoundType.critique)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
+        chunks = await self._retrieve(ctx)
+        chunk_dicts = [c.model_dump() for c in chunks]
         results: list[AgentRoundResult] = []
 
         # Build a lookup: agent_id → round1 result for prompt construction
@@ -202,6 +205,7 @@ class RoundManager:
                 other_agents=other_agents,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                retrieved_chunks=chunk_dicts,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -228,7 +232,8 @@ class RoundManager:
         Each agent reflects on the full debate and produces a final verdict.
         """
         round_record = await self._create_round(ctx, round_number=3, round_type=RoundType.final)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
+        chunks = await self._retrieve(ctx)
+        chunk_dicts = [c.model_dump() for c in chunks]
         results: list[AgentRoundResult] = []
 
         r1_by_id: dict[str, AgentRoundResult] = {
@@ -249,6 +254,7 @@ class RoundManager:
                 debate_summary=debate_summary,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                retrieved_chunks=chunk_dicts,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -391,10 +397,11 @@ class RoundManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _retrieve(self, ctx: TurnContext) -> list[RetrievedChunk]:
-        """Call RetrievalService. Step 5 will return real chunks."""
+        """Call RetrievalService with the real DB session."""
         return await self._retrieval.retrieve(
             query=ctx.question,
             session_id=ctx.session_id,
+            db=self.db,
         )
 
     async def _call_llm(

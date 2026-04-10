@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
 
+    # ── Embeddings ────────────────────────────────────────────────────────
+    # Provider: "openai" (uses text-embedding-3-small, dim=1536)
+    #           "mock"   (all-zeros vector, for tests / offline dev)
+    EMBEDDING_PROVIDER: str = "mock"
+    EMBEDDING_MODEL: str = "text-embedding-3-small"   # used when EMBEDDING_PROVIDER=openai
+    EMBEDDING_DIM: int = 1536                          # must match DocumentChunk.embedding Vector dim
+
+    # ── File upload storage ───────────────────────────────────────────────
+    # Local filesystem path for uploaded documents.
+    # Swap this for an S3/GCS path prefix in production environments.
+    UPLOAD_DIR: str = "uploads"
+
     def cors_origins_list(self) -> list[str]:
         """Split comma-separated CORS_ORIGINS into a list."""
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

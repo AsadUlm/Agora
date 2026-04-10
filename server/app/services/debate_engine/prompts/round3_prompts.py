@@ -3,6 +3,15 @@
 from __future__ import annotations
 
 
+def _format_context_block(chunks: list[dict]) -> str:
+    if not chunks:
+        return ""
+    lines = ["\nRelevant document context (incorporate in your synthesis):\n"]
+    for i, c in enumerate(chunks, start=1):
+        lines.append(f"[Source {i}]\n{c['content']}\n")
+    return "\n".join(lines)
+
+
 def build_final_synthesis_prompt(
     role: str,
     question: str,
@@ -10,6 +19,7 @@ def build_final_synthesis_prompt(
     debate_summary: str,
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
+    retrieved_chunks: list[dict] | None = None,
 ) -> str:
     """Build the prompt for an agent's Round 3 final synthesis."""
     depth_instruction = {
@@ -25,6 +35,8 @@ def build_final_synthesis_prompt(
         "balanced": "Reflect in a balanced, nuanced way.",
     }.get(reasoning_style, "Reflect in a balanced, nuanced way.")
 
+    context_block = _format_context_block(retrieved_chunks or [])
+
     return f"""You are a debate participant with the role: {role}.
 
 The debate question is: {question}
@@ -34,7 +46,7 @@ Your original opening stance was:
 
 The full debate exchange (Round 2 cross-examination) was:
 {debate_summary}
-
+{context_block}
 Your task: Generate your final synthesis for Round 3.
 
 Reasoning style: {style_instruction}

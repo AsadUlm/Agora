@@ -74,12 +74,17 @@ def _test_session_factory(_test_engine):
 @pytest.fixture(autouse=True)
 async def _create_tables(_test_engine):
     """Create all tables before each test and drop them after."""
-    # Register JSONB -> JSON compilation rule for SQLite dialect.
+    # Register PostgreSQL-specific type overrides for the SQLite dialect.
     from sqlalchemy.ext.compiler import compiles
+    from pgvector.sqlalchemy import Vector
 
     @compiles(JSONB, "sqlite")
     def _compile_jsonb_sqlite(type_, compiler, **kw):
         return "JSON"
+
+    @compiles(Vector, "sqlite")
+    def _compile_vector_sqlite(type_, compiler, **kw):
+        return "TEXT"
 
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
