@@ -39,7 +39,7 @@ export interface Round3Structured {
 
 // ── API response: POST /debates/start ────────────────────────────────
 
-/** One agent's output in a single round. */
+/** One agent's output in a single round (used in GET /debates/{id} round data). */
 export interface AgentRoundResult {
     agent_id: string;
     role: string;
@@ -49,19 +49,14 @@ export interface AgentRoundResult {
     error: string | null;
 }
 
-/** The three-round result object inside DebateStartResponse. */
-export interface DebateResult {
-    round1: AgentRoundResult[];
-    round2: AgentRoundResult[];
-    round3: AgentRoundResult[];
-}
-
-/** Full response from POST /debates/start. */
+/** Full response from POST /debates/start — async model, returns immediately. */
 export interface DebateStartResponse {
     debate_id: string;
+    turn_id: string;
     question: string;
-    status: DebateStatus;
-    result: DebateResult;
+    status: DebateStatus; // always "queued"
+    ws_session_url: string;
+    ws_turn_url: string;
 }
 
 // ── API response: GET /debates/{id} ──────────────────────────────────

@@ -1,12 +1,12 @@
 import { Box, CircularProgress, Typography } from "@mui/material";
 import AppShell from "../components/layout/AppShell";
 import DebateForm from "../features/debate/components/DebateForm";
-import DebateResult from "../features/debate/components/DebateResult";
+import DebateLive from "../features/debate/components/DebateLive";
 import { useDebate } from "../features/debate/hooks/useDebate";
 
-// ── Loading state while backend is running all 3 rounds ───────────────
+// ── Brief spinner shown during POST + GET hydration (~200 ms) ─────────
 
-function DebatingLoader() {
+function StartingLoader() {
     return (
         <Box
             sx={{
@@ -21,10 +21,10 @@ function DebatingLoader() {
             <CircularProgress size={52} thickness={3.5} />
             <Box sx={{ textAlign: "center" }}>
                 <Typography variant="h6" sx={{ mb: 0.75 }}>
-                    AI agents are debating…
+                    Starting debate…
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                    All three rounds are being generated. This may take up to a minute.
+                    Preparing agents and opening the live stream.
                 </Typography>
             </Box>
         </Box>
@@ -36,15 +36,25 @@ function DebatingLoader() {
 export default function DebatePage() {
     const debate = useDebate();
 
+    // Evaluated before branching so TypeScript narrowing doesn't eliminate "starting"
+    const isStarting = debate.phase === "starting";
+
     let content: React.ReactNode;
 
-    if (debate.isSubmitting) {
-        content = <DebatingLoader />;
-    } else if (debate.result) {
+    if (debate.runtime) {
+        // Live (starting → live → completed | failed)
         content = (
-            <DebateResult response={debate.result} onNewDebate={debate.reset} />
+            <DebateLive
+                runtime={debate.runtime}
+                phase={debate.phase}
+                onNewDebate={debate.reset}
+            />
         );
+    } else if (debate.phase !== "idle" && debate.phase !== "failed") {
+        // Runtime not yet set but debate was submitted ("starting" phase, brief ~200ms)
+        content = <StartingLoader />;
     } else {
+        // idle (or failed before runtime was ever set)
         content = (
             <DebateForm
                 question={debate.question}
@@ -54,7 +64,7 @@ export default function DebatePage() {
                 onUpdateAgent={debate.updateAgent}
                 onRemoveAgent={debate.removeAgent}
                 onSubmit={debate.submit}
-                isSubmitting={debate.isSubmitting}
+                isSubmitting={isStarting}
                 submitError={debate.submitError}
                 onClearError={debate.clearError}
             />

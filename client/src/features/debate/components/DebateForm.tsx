@@ -59,7 +59,7 @@ interface DebateFormProps {
     onQuestionChange: (v: string) => void;
     agents: AgentDraft[];
     onAddAgent: () => void;
-    onUpdateAgent: (localId: string, role: string) => void;
+    onUpdateAgent: (localId: string, patch: Partial<Omit<AgentDraft, "localId">>) => void;
     onRemoveAgent: (localId: string) => void;
     onSubmit: () => void;
     isSubmitting: boolean;
@@ -100,14 +100,14 @@ export default function DebateForm({
         onQuestionChange(v);
     }
 
-    function handleAgentChange(localId: string, role: string) {
-        if (fieldErrors.agents[localId]) {
+    function handleAgentChange(localId: string, patch: Partial<Omit<AgentDraft, "localId">>) {
+        if (patch.role !== undefined && fieldErrors.agents[localId]) {
             setFieldErrors((prev) => ({
                 ...prev,
                 agents: { ...prev.agents, [localId]: "" },
             }));
         }
-        onUpdateAgent(localId, role);
+        onUpdateAgent(localId, patch);
     }
 
     return (

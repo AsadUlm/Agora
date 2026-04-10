@@ -11,11 +11,42 @@ import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import ForumIcon from "@mui/icons-material/Forum";
 import MainContentLayout from "../../../components/layout/MainContentLayout";
 import ModeratorPanelPlaceholder from "../../../components/layout/ModeratorPanelPlaceholder";
-import type { DebateStartResponse } from "../../../types/debate";
+import type {
+    AgentRoundResult,
+    DebateAgent,
+    DebateDetail,
+    GenerationStatus,
+    RoundType,
+} from "../../../types/debate";
 import RoundSection from "./RoundSection";
 
+// ── Adapt DebateDetail round data → AgentRoundResult[] ───────────────
+
+function adaptRound(
+    roundData: DebateDetail["rounds"][number]["data"],
+    agents: DebateAgent[],
+): AgentRoundResult[] {
+    const agentMap: Record<string, string> = {};
+    for (const a of agents) agentMap[a.id] = a.role;
+
+    return roundData.map((entry) => ({
+        agent_id: entry.agent_id,
+        role: agentMap[entry.agent_id] ?? "Agent",
+        content: JSON.stringify(entry.data),
+        structured: entry.data,
+        generation_status: "success" as GenerationStatus,
+        error: null,
+    }));
+}
+
+function roundTypeFor(n: number): RoundType {
+    if (n === 1) return "initial";
+    if (n === 2) return "critique";
+    return "final";
+}
+
 interface DebateResultProps {
-    response: DebateStartResponse;
+    response: DebateDetail;
     onNewDebate: () => void;
 }
 
@@ -23,7 +54,10 @@ export default function DebateResult({
     response,
     onNewDebate,
 }: DebateResultProps) {
-    const { question, result } = response;
+    const { question, rounds, agents } = response;
+
+    // Sort rounds by number and adapt to AgentRoundResult[]
+    const sortedRounds = [...rounds].sort((a, b) => a.round_number - b.round_number);
 
     return (
         <Box>
@@ -86,16 +120,15 @@ export default function DebateResult({
                             </Typography>
                         </Paper>
 
-                        {/* Round 1 */}
-                        <RoundSection roundType="initial" results={result.round1} />
-                        <Divider />
-
-                        {/* Round 2 */}
-                        <RoundSection roundType="critique" results={result.round2} />
-                        <Divider />
-
-                        {/* Round 3 */}
-                        <RoundSection roundType="final" results={result.round3} />
+                        {sortedRounds.map((round, idx) => (
+                            <Box key={round.id}>
+                                {idx > 0 && <Divider />}
+                                <RoundSection
+                                    roundType={roundTypeFor(round.round_number)}
+                                    results={adaptRound(round.data, agents)}
+                                />
+                            </Box>
+                        ))}
                     </Stack>
                 }
                 sidebar={<ModeratorPanelPlaceholder />}

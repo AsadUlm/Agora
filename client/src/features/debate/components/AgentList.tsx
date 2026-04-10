@@ -8,7 +8,7 @@ const MAX_AGENTS = 4;
 interface AgentListProps {
     agents: AgentDraft[];
     onAdd: () => void;
-    onChange: (localId: string, role: string) => void;
+    onChange: (localId: string, patch: Partial<Omit<AgentDraft, "localId">>) => void;
     onRemove: (localId: string) => void;
     disabled?: boolean;
     errors?: Record<string, string>;
