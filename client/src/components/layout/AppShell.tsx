@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Box, Button, Container, Stack, Typography } from "@mui/material";
+import { Link } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 
 interface AppShellProps {
@@ -35,6 +36,32 @@ export default function AppShell({ children }: AppShellProps) {
                         </Typography>
 
                         <Box sx={{ flexGrow: 1 }} />
+
+                        {/* Navigation */}
+                        <Stack direction="row" spacing={0.5}>
+                            <Button
+                                component={Link}
+                                to="/"
+                                size="small"
+                                sx={{
+                                    color: "rgba(255,255,255,0.85)",
+                                    "&:hover": { color: "common.white", bgcolor: "rgba(255,255,255,0.08)" },
+                                }}
+                            >
+                                New Debate
+                            </Button>
+                            <Button
+                                component={Link}
+                                to="/history"
+                                size="small"
+                                sx={{
+                                    color: "rgba(255,255,255,0.85)",
+                                    "&:hover": { color: "common.white", bgcolor: "rgba(255,255,255,0.08)" },
+                                }}
+                            >
+                                History
+                            </Button>
+                        </Stack>
 
                         {user && (
                             <Stack direction="row" alignItems="center" spacing={2}>

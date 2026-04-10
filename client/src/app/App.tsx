@@ -4,19 +4,9 @@ import ProtectedRoute from "../components/auth/ProtectedRoute";
 import { AuthProvider } from "../context/AuthContext";
 import LoginPage from "../pages/LoginPage";
 import SignupPage from "../pages/SignupPage";
+import DebatePage from "../pages/DebatePage";
+import DebateHistoryPage from "../pages/DebateHistoryPage";
 import theme from "../theme";
-import AppShell from "../components/layout/AppShell";
-import { Box, Typography } from "@mui/material";
-
-function HomePage() {
-    return (
-        <AppShell>
-            <Box sx={{ p: 4 }}>
-                <Typography variant="h4">Welcome to Agora</Typography>
-            </Box>
-        </AppShell>
-    );
-}
 
 export default function App() {
     return (
@@ -31,7 +21,15 @@ export default function App() {
                             path="/"
                             element={
                                 <ProtectedRoute>
-                                    <HomePage />
+                                    <DebatePage />
+                                </ProtectedRoute>
+                            }
+                        />
+                        <Route
+                            path="/history"
+                            element={
+                                <ProtectedRoute>
+                                    <DebateHistoryPage />
                                 </ProtectedRoute>
                             }
                         />

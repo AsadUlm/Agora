@@ -2,6 +2,7 @@ import type { ReactElement } from "react";
 import { Chip, type ChipProps } from "@mui/material";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import SkipNextIcon from "@mui/icons-material/SkipNext";
 import type { GenerationStatus } from "../../types/debate";
 
 const config: Record<
@@ -17,6 +18,11 @@ const config: Record<
         label: "Failed",
         color: "error",
         icon: <ErrorOutlineIcon fontSize="small" />,
+    },
+    skipped: {
+        label: "Skipped",
+        color: "default",
+        icon: <SkipNextIcon fontSize="small" />,
     },
 };
 
