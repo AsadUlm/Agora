@@ -18,7 +18,7 @@ class DebateStartRequest(BaseModel):
 
 # ── Response schemas (Step 6 — structured, frontend-ready) ────────────────────
 
-class AgentOut(BaseModel):
+class AgentDTO(BaseModel):
     """Full agent info embedded in session and message responses."""
 
     id: uuid.UUID
@@ -30,7 +30,7 @@ class AgentOut(BaseModel):
     position_order: int | None
 
 
-class MessageOut(BaseModel):
+class MessageDTO(BaseModel):
     """
     Single debate message with agent info denormalized.
 
@@ -49,7 +49,7 @@ class MessageOut(BaseModel):
     created_at: datetime
 
 
-class RoundOut(BaseModel):
+class RoundDTO(BaseModel):
     """
     One debate round with all agent messages pre-grouped.
 
@@ -62,17 +62,17 @@ class RoundOut(BaseModel):
     status: str                 # queued | running | completed | failed
     started_at: datetime | None
     ended_at: datetime | None
-    messages: list[MessageOut]  # sorted by sequence_no, agents only
+    messages: list[MessageDTO]  # sorted by sequence_no, agents only
 
 
-class UserMessageOut(BaseModel):
+class UserMessageDTO(BaseModel):
     """The user's question that triggered this turn."""
 
     content: str
     created_at: datetime
 
 
-class TurnOut(BaseModel):
+class TurnDTO(BaseModel):
     """
     Complete debate turn: user question + all three rounds + optional summary.
 
@@ -84,12 +84,12 @@ class TurnOut(BaseModel):
     status: str                         # queued | running | completed | failed
     started_at: datetime | None
     ended_at: datetime | None
-    user_message: UserMessageOut | None
-    rounds: list[RoundOut]              # sorted by round_number
+    user_message: UserMessageDTO | None
+    rounds: list[RoundDTO]              # sorted by round_number
     final_summary: dict[str, Any] | None  # from last round's final_summary messages
 
 
-class SessionDetailOut(BaseModel):
+class SessionDetailDTO(BaseModel):
     """
     Full session detail: metadata + agents + latest turn (full debate).
 
@@ -103,8 +103,8 @@ class SessionDetailOut(BaseModel):
     status: str                 # equals latest_turn.status
     created_at: datetime
     updated_at: datetime
-    agents: list[AgentOut]      # sorted by position_order
-    latest_turn: TurnOut | None
+    agents: list[AgentDTO]      # sorted by position_order
+    latest_turn: TurnDTO | None
 
 
 # ── Start / list (unchanged) ──────────────────────────────────────────────────

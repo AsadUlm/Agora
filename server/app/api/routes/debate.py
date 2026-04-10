@@ -21,8 +21,8 @@ The frontend should:
   - Call GET /debates/{debate_id} once turn_completed is received for the final snapshot
 
 Step 6 — DTO shaping:
-  GET /debates/{id} now returns SessionDetailOut (nested, frontend-ready).
-  GET /debates/{id}/turns/{turn_id} returns TurnOut.
+  GET /debates/{id} now returns SessionDetailDTO (nested, frontend-ready).
+  GET /debates/{id}/turns/{turn_id} returns TurnDTO.
   serialize_session() / serialize_turn() handle the ORM → DTO translation.
 """
 
@@ -49,10 +49,10 @@ from app.schemas.debate import (
     DebateListItem,
     DebateStartRequest,
     DebateStartResponse,
-    SessionDetailOut,
-    TurnOut,
+    SessionDetailDTO,
+    TurnDTO,
 )
-from app.schemas.serializers import serialize_session, serialize_turn, _agents_index
+from app.schemas.dto import serialize_session, serialize_turn, _agents_index
 from app.services.execution_runner import run_turn_background
 from app.services.ws_manager import ws_manager
 
@@ -173,12 +173,12 @@ async def start_debate(
 
 # ── GET /debates/{id} ─────────────────────────────────────────────────────────
 
-@router.get("/{debate_id}", response_model=SessionDetailOut)
+@router.get("/{debate_id}", response_model=SessionDetailDTO)
 async def get_debate(
     debate_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> SessionDetailOut:
+) -> SessionDetailDTO:
     """
     Return full session detail including agents and latest turn.
 
@@ -224,13 +224,13 @@ async def get_debate(
 
 # ── GET /debates/{id}/turns/{turn_id} ─────────────────────────────────────────
 
-@router.get("/{debate_id}/turns/{turn_id}", response_model=TurnOut)
+@router.get("/{debate_id}/turns/{turn_id}", response_model=TurnDTO)
 async def get_turn(
     debate_id: uuid.UUID,
     turn_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> TurnOut:
+) -> TurnDTO:
     """
     Return detailed turn data: user question + all rounds + messages.
 
