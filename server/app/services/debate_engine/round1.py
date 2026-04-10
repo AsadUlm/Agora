@@ -20,7 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 def _get_agent_config(agent: Any) -> AgentConfig:
-    """Extract typed AgentConfig from the agent's raw JSONB config."""
+    """Build AgentConfig from ChatAgent ORM columns (or fallback JSONB config)."""
+    # New ChatAgent model has individual columns
+    reasoning_style = getattr(agent, "reasoning_style", None)
+    if reasoning_style is not None:
+        cfg = AgentConfig()
+        cfg.reasoning.style = reasoning_style or "balanced"
+        return cfg
+    # Legacy fallback: old Agent model with JSONB config
     raw = getattr(agent, "config", None) or {}
     parsed = raw.get("_parsed")
     if parsed:

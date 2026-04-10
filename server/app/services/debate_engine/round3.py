@@ -69,8 +69,15 @@ async def generate_round3(
         original_stance = original.get("stance", "No opening stance was recorded.")
 
         raw_cfg = getattr(agent, "config", None) or {}
-        parsed = raw_cfg.get("_parsed")
-        cfg = AgentConfig.model_validate(parsed) if parsed else AgentConfig.from_raw(raw_cfg)
+        parsed_raw = raw_cfg.get("_parsed")
+        reasoning_style = getattr(agent, "reasoning_style", None)
+        if reasoning_style is not None:
+            cfg = AgentConfig()
+            cfg.reasoning.style = reasoning_style or "balanced"
+        elif parsed_raw:
+            cfg = AgentConfig.model_validate(parsed_raw)
+        else:
+            cfg = AgentConfig.from_raw(raw_cfg)
 
         prompt = build_final_synthesis_prompt(
             role=agent.role,
