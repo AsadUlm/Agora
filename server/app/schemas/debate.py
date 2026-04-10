@@ -53,3 +53,14 @@ class DebateStartResponse(BaseModel):
     status: str
     result: dict
 
+
+class DebateListItem(BaseModel):
+    """Summary row for GET /debates list."""
+
+    id: uuid.UUID
+    title: str
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+

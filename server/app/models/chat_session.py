@@ -44,3 +44,4 @@ class ChatSession(Base):
     user: Mapped["User"] = relationship("User", back_populates="chat_sessions")
     chat_agents: Mapped[list["ChatAgent"]] = relationship("ChatAgent", back_populates="chat_session", cascade="all, delete-orphan")
     chat_turns: Mapped[list["ChatTurn"]] = relationship("ChatTurn", back_populates="chat_session", cascade="all, delete-orphan")
+    messages: Mapped[list["Message"]] = relationship("Message", back_populates="chat_session", cascade="all, delete-orphan")

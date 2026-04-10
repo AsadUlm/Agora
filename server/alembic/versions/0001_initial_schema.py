@@ -106,7 +106,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "status",
-            sa.Enum("started", "completed", "failed", name="round_status"),
+            sa.Enum("queued", "started", "completed", "failed", name="round_status"),
             nullable=False,
         ),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),

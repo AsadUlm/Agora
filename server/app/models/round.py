@@ -15,6 +15,7 @@ class RoundType(str, enum.Enum):
 
 
 class RoundStatus(str, enum.Enum):
+    queued = "queued"
     started = "started"
     completed = "completed"
     failed = "failed"
