@@ -12,19 +12,15 @@ class LLMService(ABC):
     Abstract interface for LLM providers.
 
     All concrete providers (Groq, OpenAI, Mock) implement this.
+    One method: generate(LLMRequest) → LLMResponse.
+
+    JSON parsing is the caller's responsibility (RoundManager._call_llm
+    uses llm.parser.parse_json_from_llm on the raw content).
     """
 
     @abstractmethod
     async def generate(self, request: LLMRequest) -> LLMResponse:
         """Generate a completion from the LLM."""
-
-    @abstractmethod
-    async def generate_structured(self, prompt: str) -> dict:
-        """
-        Generate a structured JSON response from the LLM.
-
-        Returns the parsed dict. Raises LLMError on failure.
-        """
 
 
 def get_llm_service() -> LLMService:

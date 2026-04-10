@@ -46,12 +46,14 @@ class DebateResponse(BaseModel):
 
 
 class DebateStartResponse(BaseModel):
-    """Response body for POST /debates/start."""
+    """Response body for POST /debates/start (async execution model)."""
 
     debate_id: uuid.UUID
+    turn_id: uuid.UUID
     question: str
-    status: str
-    result: dict
+    status: str  # always 'queued' — execution runs in the background
+    ws_session_url: str  # e.g. /ws/chat-sessions/{debate_id}
+    ws_turn_url: str     # e.g. /ws/chat-turns/{turn_id}
 
 
 class DebateListItem(BaseModel):

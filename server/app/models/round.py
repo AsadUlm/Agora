@@ -16,7 +16,7 @@ class RoundType(str, enum.Enum):
 
 class RoundStatus(str, enum.Enum):
     queued = "queued"
-    started = "started"
+    running = "running"      # was "started" — renamed for async lifecycle consistency
     completed = "completed"
     failed = "failed"
 
@@ -36,7 +36,7 @@ class Round(Base):
         SQLEnum(RoundType, name="round_type"), nullable=False
     )
     status: Mapped[RoundStatus] = mapped_column(
-        SQLEnum(RoundStatus, name="round_status"), nullable=False, default=RoundStatus.started
+        SQLEnum(RoundStatus, name="round_status"), nullable=False, default=RoundStatus.queued
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

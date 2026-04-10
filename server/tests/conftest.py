@@ -8,6 +8,8 @@ overridden for deterministic, isolated tests.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import JSON, event
@@ -15,11 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.main import app
-from app.services.llm import service as llm_service_module
+from app.services.llm import _factory as llm_factory
 from app.services.llm.providers.mock_provider import MockProvider
-from app.services.llm.service import LLMService
+from app.core.auth import get_current_user, get_ws_current_user
+from app.models.user import User
 
 # ---------------------------------------------------------------------------
 # SQLite-compatible JSONB handling
@@ -111,16 +114,28 @@ async def client(_test_session_factory):
                 await session.rollback()
                 raise
 
-    # Inject mock LLM service
-    mock_service = LLMService(provider=MockProvider())
-    original_service = llm_service_module._service
-    llm_service_module._service = mock_service
+    # Inject mock LLM service (using the factory's public override API)
+    llm_factory.set_service(MockProvider())
+
+    # Bypass JWT auth — return a deterministic fake user for all protected routes
+    _fake_user = User(
+        id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        email="test@example.com",
+        name="Test User",
+        password_hash="unused",
+    )
+
+    async def _override_get_current_user() -> User:
+        return _fake_user
 
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_current_user] = _override_get_current_user
+    app.dependency_overrides[get_ws_current_user] = _override_get_current_user
+    app.dependency_overrides[get_session_factory] = lambda: _test_session_factory
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
     app.dependency_overrides.clear()
-    llm_service_module._service = original_service
+    llm_factory.reset_service()

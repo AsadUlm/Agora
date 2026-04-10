@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, WebSocketException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select
@@ -51,5 +51,62 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
+        )
+    return user
+
+
+async def get_ws_current_user(
+    token: str = Query(default=""),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    FastAPI dependency for WebSocket authentication.
+
+    Reads the JWT access token from the `token` query parameter.
+    Raises WebSocketException (4008) if authentication fails, which causes
+    FastAPI to close the WebSocket with the appropriate close code.
+
+    Usage in a WebSocket endpoint:
+        @router.websocket("/ws/foo")
+        async def ws_foo(ws: WebSocket, user: User = Depends(get_ws_current_user)):
+            ...
+
+    In tests, override this dependency via app.dependency_overrides:
+        app.dependency_overrides[get_ws_current_user] = lambda: fake_user
+    """
+    if not token:
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Not authenticated",
+        )
+
+    try:
+        payload = decode_token(token)
+    except JWTError:
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Invalid or expired token",
+        )
+
+    if payload.get("type") != "access":
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Invalid token type",
+        )
+
+    try:
+        user_id = uuid.UUID(payload["sub"])
+    except (KeyError, ValueError):
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Invalid token payload",
+        )
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="User not found",
         )
     return user

@@ -46,6 +46,3 @@ class MockProvider(LLMService):
             latency_ms=1,
         )
 
-    async def generate_structured(self, prompt: str) -> dict:
-        return dict(_MOCK_STRUCTURED)
-

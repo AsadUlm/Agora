@@ -1,9 +1,23 @@
 """
 Debate API routes.
 
-POST /debates/start      — Start a new debate session (requires auth).
-GET  /debates/{id}       — Retrieve debate result by session ID.
+POST /debates/start      — Start a new debate session (async, returns immediately).
+GET  /debates/{id}       — Retrieve full debate result by session ID.
 GET  /debates            — List all debates for the current user.
+
+Async execution model (Step 4)
+-------------------------------
+POST /debates/start no longer blocks until all rounds complete.
+Instead it:
+  1. Creates session / agents / turn / user-question message
+  2. Commits to DB immediately so the background task can safely open its own session
+  3. Schedules ChatEngine execution via FastAPI BackgroundTasks
+  4. Returns 201 with status="queued" and WebSocket subscription URLs
+
+The frontend should:
+  - Subscribe to WS /ws/chat-turns/{turn_id} immediately after receiving the response
+  - Receive real-time events (turn_started, message_created, turn_completed, …)
+  - Call GET /debates/{debate_id} once turn_completed is received for the final snapshot
 """
 
 from __future__ import annotations
@@ -11,7 +25,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -32,8 +46,9 @@ from app.schemas.debate import (
     DebateStartRequest,
     DebateStartResponse,
 )
-from app.services.chat_engine import ChatEngine
-from app.services.llm.exceptions import LLMError
+from app.services.execution_runner import run_turn_background
+from app.services.ws_manager import ws_manager
+from app.db.session import get_session_factory
 
 router = APIRouter()
 
@@ -41,14 +56,21 @@ router = APIRouter()
 @router.post("/start", response_model=DebateStartResponse, status_code=status.HTTP_201_CREATED)
 async def start_debate(
     request: DebateStartRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    session_factory=Depends(get_session_factory),
 ) -> DebateStartResponse:
     """
-    Start a new debate session.
+    Start a new debate session (async execution model).
 
     Creates the session, agents, turn, and user-question message, then
-    calls ChatEngine to execute all 3 rounds synchronously within this request.
+    enqueues background execution and returns immediately with status='queued'.
+
+    The client should subscribe to the WebSocket endpoints provided in the
+    response (ws_turn_url or ws_session_url) to receive live progress events.
+    Once 'turn_completed' is received, call GET /debates/{debate_id} for the
+    full persisted result.
     """
     if not request.agents:
         raise HTTPException(
@@ -82,7 +104,7 @@ async def start_debate(
         db.add(agent)
     await db.flush()
 
-    # ── 3. Create ChatTurn (queued — ChatEngine transitions it to running) ───
+    # ── 3. Create ChatTurn (queued — background task transitions it to running)
     turn = ChatTurn(
         chat_session_id=session.id,
         turn_index=1,
@@ -91,7 +113,7 @@ async def start_debate(
     db.add(turn)
     await db.flush()
 
-    # ── 4. Save user question as Message (single source of truth) ───────────
+    # ── 4. Save user question as Message ─────────────────────────────────────
     user_message = Message(
         chat_session_id=session.id,
         chat_turn_id=turn.id,
@@ -104,28 +126,31 @@ async def start_debate(
         sequence_no=0,
     )
     db.add(user_message)
-    await db.flush()
 
-    # ── 5. Execute debate (ChatEngine owns all round creation + persistence) ─
-    engine = ChatEngine(db=db)
-    try:
-        result = await engine.start_turn_execution(turn_id=turn.id)
-    except LLMError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"LLM provider error: {exc}",
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+    # ── 5. Commit NOW so the background task can open its own session safely ─
+    #
+    # We commit explicitly here rather than relying on get_db's cleanup commit.
+    # This guarantees the data is in the DB before any background task starts,
+    # regardless of the exact ordering of FastAPI BackgroundTasks vs dependency
+    # cleanup. get_db will find nothing left to commit and exits cleanly.
+    await db.commit()
+
+    # ── 6. Schedule background debate execution ───────────────────────────────
+    background_tasks.add_task(
+        run_turn_background,
+        turn_id=turn.id,
+        session_id=session.id,
+        on_event=ws_manager.emit,
+        session_factory=session_factory,
+    )
 
     return DebateStartResponse(
         debate_id=session.id,
+        turn_id=turn.id,
         question=request.question,
-        status="completed",
-        result=result,
+        status="queued",
+        ws_session_url=f"/ws/chat-sessions/{session.id}",
+        ws_turn_url=f"/ws/chat-turns/{turn.id}",
     )
 
 

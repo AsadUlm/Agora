@@ -2,7 +2,7 @@
 Round Manager — executes a single round within a ChatTurn.
 
 Responsibilities:
-  1. Create the Round DB record and manage its lifecycle (queued → started → completed/failed)
+  1. Create the Round DB record and manage its lifecycle (queued → running → completed/failed)
   2. Call RetrievalService (RAG hook) before each round
   3. Call the LLM provider per agent and log each LLMCall record
   4. Save one Message per agent per round (correct sender_type / message_type)
@@ -39,9 +39,11 @@ from app.models.round import Round, RoundStatus, RoundType
 from app.schemas.contracts import (
     AgentContext,
     AgentRoundResult,
+    ExecutionEvent,
+    ExecutionEventType,
     LLMRequest,
+    OnEventCallback,
     RetrievedChunk,
-    RoundContext,
     TurnContext,
 )
 from app.services.debate_engine.prompts.round1_prompts import build_opening_statement_prompt
@@ -63,11 +65,17 @@ class RoundManager:
     The `seq` counter ensures messages are globally ordered within the turn.
     """
 
-    def __init__(self, db: AsyncSession, seq_start: int = 0) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        seq_start: int = 0,
+        on_event: OnEventCallback | None = None,
+    ) -> None:
         self.db = db
         self._seq = seq_start                     # monotonic message sequence counter
         self._retrieval = RetrievalService()
         self._llm: LLMService = get_llm_service()
+        self._on_event = on_event
 
     @property
     def next_seq(self) -> int:
@@ -90,7 +98,7 @@ class RoundManager:
           • confidence (0.0–1.0)
         """
         round_record = await self._create_round(ctx, round_number=1, round_type=RoundType.initial)
-        chunks = await self._retrieve(ctx)
+        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         for agent_ctx in ctx.agents:
@@ -110,7 +118,7 @@ class RoundManager:
             )
             results.append(result)
 
-        await self._complete_round(round_record)
+        await self._complete_round(round_record, ctx)
         return results
 
     async def execute_round_2(
@@ -125,7 +133,7 @@ class RoundManager:
         Agents that had zero opponents are passed through with an empty critique list.
         """
         round_record = await self._create_round(ctx, round_number=2, round_type=RoundType.critique)
-        chunks = await self._retrieve(ctx)
+        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         # Build a lookup: agent_id → round1 result for prompt construction
@@ -157,7 +165,7 @@ class RoundManager:
                     generation_status="skipped",
                     error="No opponents to critique.",
                 )
-                await self._save_message(
+                msg = await self._save_message(
                     session_id=ctx.session_id,
                     turn_id=ctx.turn_id,
                     round_id=round_record.id,
@@ -166,6 +174,24 @@ class RoundManager:
                     message_type=MessageType.critique,
                     content=empty_result.content,
                 )
+                if self._on_event is not None:
+                    await self._on_event(ExecutionEvent(
+                        event_type=ExecutionEventType.message_created,
+                        session_id=ctx.session_id,
+                        turn_id=ctx.turn_id,
+                        round_id=round_record.id,
+                        round_number=round_record.round_number,
+                        agent_id=agent_ctx.agent_id,
+                        payload={
+                            "message_id": str(msg.id),
+                            "round_id": str(round_record.id),
+                            "sender_type": msg.sender_type.value,
+                            "message_type": msg.message_type.value,
+                            "content": msg.content,
+                            "sequence_no": msg.sequence_no,
+                            "generation_status": "skipped",
+                        },
+                    ))
                 results.append(empty_result)
                 continue
 
@@ -187,7 +213,7 @@ class RoundManager:
             )
             results.append(result)
 
-        await self._complete_round(round_record)
+        await self._complete_round(round_record, ctx)
         return results
 
     async def execute_round_3(
@@ -202,7 +228,7 @@ class RoundManager:
         Each agent reflects on the full debate and produces a final verdict.
         """
         round_record = await self._create_round(ctx, round_number=3, round_type=RoundType.final)
-        chunks = await self._retrieve(ctx)
+        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         r1_by_id: dict[str, AgentRoundResult] = {
@@ -234,7 +260,7 @@ class RoundManager:
             )
             results.append(result)
 
-        await self._complete_round(round_record)
+        await self._complete_round(round_record, ctx)
         return results
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -247,33 +273,63 @@ class RoundManager:
         round_number: int,
         round_type: RoundType,
     ) -> Round:
-        """Create a Round record, mark it started, flush to DB."""
+        """
+        Create a Round record and transition it to running.
+
+        Lifecycle: queued → running  (sync path does both steps immediately).
+        In Step 3 (async), the background worker creates the Round as queued via
+        the route, then transitions to running when the worker picks it up.
+        The two-step flush here preserves the same state machine without branching.
+        """
         round_record = Round(
             chat_turn_id=ctx.turn_id,
             round_number=round_number,
             round_type=round_type,
-            status=RoundStatus.started,
-            started_at=datetime.now(timezone.utc),
+            status=RoundStatus.queued,
         )
         self.db.add(round_record)
         await self.db.flush()
+
+        # Transition: queued → running
+        round_record.status = RoundStatus.running
+        round_record.started_at = datetime.now(timezone.utc)
+        await self.db.flush()
+
         logger.info(
-            "Round %d started (id=%s, turn=%s)",
+            "Round %d running (id=%s, turn=%s)",
             round_number,
             round_record.id,
             ctx.turn_id,
         )
+
+        if self._on_event is not None:
+            await self._on_event(ExecutionEvent(
+                event_type=ExecutionEventType.round_started,
+                session_id=ctx.session_id,
+                turn_id=ctx.turn_id,
+                round_number=round_number,
+            ))
+
         return round_record
 
-    async def _complete_round(self, round_record: Round) -> None:
-        """Mark a round completed with timestamp."""
+    async def _complete_round(self, round_record: Round, ctx: TurnContext) -> None:
+        """Transition round: running → completed and emit round_completed."""
         round_record.status = RoundStatus.completed
         round_record.ended_at = datetime.now(timezone.utc)
         await self.db.flush()
         logger.info("Round %d completed.", round_record.round_number)
 
+        if self._on_event is not None:
+            await self._on_event(ExecutionEvent(
+                event_type=ExecutionEventType.round_completed,
+                session_id=ctx.session_id,
+                turn_id=ctx.turn_id,
+                round_id=round_record.id,
+                round_number=round_record.round_number,
+            ))
+
     async def _fail_round(self, round_record: Round, reason: str) -> None:
-        """Mark a round failed."""
+        """Transition round: running → failed."""
         round_record.status = RoundStatus.failed
         round_record.ended_at = datetime.now(timezone.utc)
         await self.db.flush()
@@ -323,7 +379,7 @@ class RoundManager:
             provider=provider,
             model=model,
             temperature=temperature,
-            status=LLMCallStatus.started,
+            status=LLMCallStatus.running,
             started_at=datetime.now(timezone.utc),
         )
         self.db.add(call_record)
@@ -400,7 +456,7 @@ class RoundManager:
                 )
                 structured = {"raw_content": content}
 
-            call_record.status = LLMCallStatus.success
+            call_record.status = LLMCallStatus.completed
             call_record.prompt_tokens = response.prompt_tokens
             call_record.completion_tokens = response.completion_tokens
             call_record.latency_ms = response.latency_ms
@@ -422,7 +478,7 @@ class RoundManager:
         await self.db.flush()
 
         # Save the message regardless of success/failure
-        await self._save_message(
+        msg = await self._save_message(
             session_id=session_id,
             turn_id=turn_id,
             round_id=round_record.id,
@@ -431,6 +487,25 @@ class RoundManager:
             message_type=message_type,
             content=content,
         )
+
+        if self._on_event is not None:
+            await self._on_event(ExecutionEvent(
+                event_type=ExecutionEventType.message_created,
+                session_id=session_id,
+                turn_id=turn_id,
+                round_id=round_record.id,
+                round_number=round_record.round_number,
+                agent_id=agent_ctx.agent_id,
+                payload={
+                    "message_id": str(msg.id),
+                    "round_id": str(round_record.id),
+                    "sender_type": msg.sender_type.value,
+                    "message_type": msg.message_type.value,
+                    "content": msg.content,
+                    "sequence_no": msg.sequence_no,
+                    "generation_status": generation_status,
+                },
+            ))
 
         return AgentRoundResult(
             agent_id=agent_ctx.agent_id,
