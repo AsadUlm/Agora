@@ -16,6 +16,7 @@ Contracts defined here:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -125,6 +126,7 @@ class ExecutionEventType(str, Enum):
     round_started = "round_started"
     agent_started = "agent_started"
     agent_completed = "agent_completed"
+    message_created = "message_created"
     round_completed = "round_completed"
     turn_completed = "turn_completed"
     turn_failed = "turn_failed"
@@ -142,7 +144,19 @@ class ExecutionEvent(BaseModel):
     event_type: ExecutionEventType
     session_id: uuid.UUID
     turn_id: uuid.UUID
+    round_id: uuid.UUID | None = None
     round_number: int | None = None
     agent_id: uuid.UUID | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# ── Step 3 readiness: event callback type ────────────────────────────────────
+
+# Signature for any async function that receives an ExecutionEvent.
+# Usage:
+#   async def broadcast(event: ExecutionEvent) -> None:
+#       await websocket_manager.emit(event)
+#
+#   engine = ChatEngine(db, on_event=broadcast)
+OnEventCallback = Callable[[ExecutionEvent], Awaitable[None]]
