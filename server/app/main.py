@@ -5,7 +5,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.debate import router as debate_router
 from app.api.routes.users import router as users_router
+from app.api.routes.ws import router as ws_router
 from app.core.config import settings
 from app.db.seed import seed_default_user
 from app.db.session import AsyncSessionLocal
@@ -40,6 +42,8 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(users_router)
+    app.include_router(debate_router, prefix="/debates", tags=["Debates"])
+    app.include_router(ws_router, prefix="/ws", tags=["WebSocket"])
 
     return app
 

@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     DEFAULT_USER_PASSWORD: str
     DEFAULT_USER_NAME: str = "Admin"
 
+    # ── LLM provider defaults ─────────────────────────────────────────────
+    LLM_PROVIDER: str = "groq"
+    LLM_MODEL: str = "llama-3.3-70b-versatile"
+    LLM_TEMPERATURE: float = 0.7
+
+    # ── LLM API keys (optional — falls back to mock if not set) ──────────
+    GROQ_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
+
     def cors_origins_list(self) -> list[str]:
         """Split comma-separated CORS_ORIGINS into a list."""
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

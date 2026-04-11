@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -35,3 +36,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+def get_session_factory() -> Any:
+    """
+    FastAPI dependency that returns the async session factory.
+    Background tasks use this to create their own DB sessions safely.
+    """
+    return AsyncSessionLocal
