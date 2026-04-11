@@ -8,18 +8,29 @@ import { Box, Button, Stack, Typography } from "@mui/material";
 
 interface ModeratorCardProps {
     open: boolean;
+    roundOverview: string;
+    agreementMap: string;
+    conflictMap: string;
+    keyInsight: string;
+    nextStep: string;
 }
-
-const SECTIONS = [
-    { icon: <AutoAwesomeRoundedIcon sx={{ fontSize: 14 }} />, label: "Round Overview", content: "Waiting for debate to begin…" },
-    { icon: <HandshakeRoundedIcon sx={{ fontSize: 14 }} />, label: "Agreement Map", content: "—" },
-    { icon: <CompareArrowsRoundedIcon sx={{ fontSize: 14 }} />, label: "Conflict Map", content: "—" },
-    { icon: <LightbulbRoundedIcon sx={{ fontSize: 14 }} />, label: "Key Insight", content: "—" },
-    { icon: <ArrowForwardRoundedIcon sx={{ fontSize: 14 }} />, label: "Next Step", content: "—" },
-];
-
-export default function ModeratorCard({ open }: ModeratorCardProps) {
+export default function ModeratorCard({ 
+    open,
+    roundOverview,
+    agreementMap,
+    conflictMap,
+    keyInsight,
+    nextStep
+}: ModeratorCardProps) {
     if (!open) return null;
+
+    const sections = [
+        { icon: <AutoAwesomeRoundedIcon sx={{ fontSize: 14 }} />, label: "Round Overview", content: roundOverview },
+        { icon: <HandshakeRoundedIcon sx={{ fontSize: 14 }} />, label: "Agreement Map", content: agreementMap },
+        { icon: <CompareArrowsRoundedIcon sx={{ fontSize: 14 }} />, label: "Conflict Map", content: conflictMap },
+        { icon: <LightbulbRoundedIcon sx={{ fontSize: 14 }} />, label: "Key Insight", content: keyInsight },
+        { icon: <ArrowForwardRoundedIcon sx={{ fontSize: 14 }} />, label: "Next Step", content: nextStep },
+    ];
 
     return (
         <Box
@@ -53,7 +64,7 @@ export default function ModeratorCard({ open }: ModeratorCardProps) {
             </Stack>
 
             {/* Sections */}
-            {SECTIONS.map((s) => (
+            {sections.map((s) => (
                 <Box key={s.label} sx={{ px: 2, py: 1.5, borderTop: "1px solid", borderColor: "divider" }}>
                     <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 0.5 }}>
                         <Box sx={{ color: "primary.main", display: "flex" }}>{s.icon}</Box>

@@ -1,144 +1,199 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { startDebate, buildWsUrl } from "../services/debateService";
+import { useCallback, useEffect, useState } from "react";
+import { startDebate, getDebate } from "../services/debateService";
+import { useDebateWebSocket } from "./useDebateWebSocket";
 import type {
-    AgentInput,
+    AgentCreateRequest,
     DebateStartResponse,
     DebateStatus,
-    LiveMessage,
-    WsEvent,
 } from "../types/debate";
+import type { LiveMessage, WsEvent, ConnectionStatus } from "../types/ws";
 
 interface UseDebateReturn {
     status: DebateStatus;
     debateInfo: DebateStartResponse | null;
+    agentMap: Record<string, string>;
     messages: LiveMessage[];
     currentRound: number;
     error: string | null;
-    start: (question: string, agents: AgentInput[]) => Promise<void>;
+    connectionStatus: ConnectionStatus;
+    start: (question: string, agents: AgentCreateRequest[]) => Promise<void>;
     reset: () => void;
 }
 
 export function useDebate(): UseDebateReturn {
     const [status, setStatus] = useState<DebateStatus>("idle");
     const [debateInfo, setDebateInfo] = useState<DebateStartResponse | null>(null);
+    const [agentMap, setAgentMap] = useState<Record<string, string>>({});
     const [messages, setMessages] = useState<LiveMessage[]>([]);
     const [currentRound, setCurrentRound] = useState(0);
     const [error, setError] = useState<string | null>(null);
+    const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
+    
+    // WS URL drives the connection — null means disconnected
+    const [wsUrl, setWsUrl] = useState<string | null>(null);
 
-    const wsRef = useRef<WebSocket | null>(null);
+    const handleWsEvent = useCallback((event: WsEvent) => {
+        switch (event.type) {
+            case "turn_started":
+                setStatus("running");
+                break;
 
-    // Cleanup WebSocket on unmount
-    useEffect(() => {
-        return () => {
-            wsRef.current?.close();
-        };
-    }, []);
+            case "round_started":
+                if (event.round_number != null) {
+                    setCurrentRound(event.round_number);
+                }
+                break;
 
-    const connectWs = useCallback((wsPath: string) => {
-        const url = buildWsUrl(wsPath);
-        const ws = new WebSocket(url);
-        wsRef.current = ws;
+            case "message_created": {
+                const payload = event.payload;
+                let rawContent = "";
+                if (typeof payload.content === "string") {
+                    rawContent = payload.content;
+                } else if (payload.content !== undefined && payload.content !== null) {
+                    rawContent = JSON.stringify(payload.content);
+                } else if (typeof payload.text === "string") {
+                    rawContent = payload.text;
+                }
+                const msg: LiveMessage = {
+                    messageId: (payload.message_id as string) ?? Math.random().toString(),
+                    agentId: event.agent_id ?? "",
+                    role: "", // Filled safely by HomePage using agentMap
+                    roundNumber: event.round_number ?? currentRound, // use stable currentRound reference is fine here, or just trust event
+                    messageType: (payload.message_type as string) ?? "agent_response",
+                    content: rawContent,
+                    generationStatus: (payload.generation_status as string) ?? "success",
+                };
 
-        ws.onopen = () => {
-            console.log("[WS] connected");
-        };
-
-        ws.onmessage = (e) => {
-            let event: WsEvent;
-            try {
-                event = JSON.parse(e.data);
-            } catch {
-                return;
-            }
-
-            switch (event.type) {
-                case "turn_started":
-                    setStatus("running");
-                    break;
-
-                case "round_started":
-                    if (event.round_number != null) {
-                        setCurrentRound(event.round_number);
-                    }
-                    break;
-
-                case "message_created": {
-                    const payload = event.payload;
-                    const rawContent = (payload.content as string) ?? "";
-
-                    // Try to parse JSON from LLM content
-                    let parsedPayload = null;
-                    try {
-                        parsedPayload = JSON.parse(rawContent);
-                    } catch {
-                        // content is plain text — keep parsedPayload null
-                    }
-
-                    const msg: LiveMessage = {
-                        id: (payload.message_id as string) ?? Math.random().toString(),
-                        agentId: event.agent_id,
-                        roundNumber: event.round_number ?? currentRound,
-                        messageType: (payload.message_type as string) ?? "agent_response",
-                        content: rawContent,
-                        parsedPayload,
-                        sequenceNo: (payload.sequence_no as number) ?? 0,
-                    };
-
-                    setMessages((prev) => [...prev, msg]);
-                    break;
+                // For robustness against stale currentRound closure, prefer the event's round number
+                if (event.round_number) {
+                     msg.roundNumber = event.round_number;
                 }
 
-                case "round_completed":
-                    break;
-
-                case "turn_completed":
-                    setStatus("completed");
-                    ws.close();
-                    break;
-
-                case "turn_failed":
-                    setStatus("failed");
-                    setError((event.payload.error as string) ?? "Debate failed");
-                    ws.close();
-                    break;
+                setMessages((prev) => [...prev, msg]);
+                break;
             }
-        };
 
-        ws.onerror = () => {
-            setStatus("failed");
-            setError("WebSocket connection error");
-        };
+            case "turn_completed":
+                setStatus("completed");
+                setWsUrl(null);
+                break;
 
-        ws.onclose = () => {
-            console.log("[WS] disconnected");
-        };
+            case "turn_failed":
+                setStatus("failed");
+                setError((event.payload.error as string) ?? "Debate failed");
+                setWsUrl(null);
+                break;
+        }
     }, [currentRound]);
 
-    const start = useCallback(async (question: string, agents: AgentInput[]) => {
+    useDebateWebSocket({
+        url: wsUrl,
+        onEvent: handleWsEvent,
+        onStatusChange: setConnectionStatus,
+    });
+
+    // ── Reconciliation / Agent Map Fetch ────────────────────────────────
+    useEffect(() => {
+        if (!debateInfo?.debate_id) return;
+        
+        getDebate(debateInfo.debate_id)
+            .then((detail) => {
+                // Populate Agent Map
+                const map: Record<string, string> = {};
+                for (const agent of detail.agents) {
+                    map[agent.id] = agent.role;
+                }
+                setAgentMap(map);
+
+                // Reconcile missed messages if completed
+                if (status === "completed" && detail.rounds.length > 0) {
+                    setMessages((prev) => {
+                        const existingMsgIds = new Set(prev.map(m => m.messageId));
+                        let toAdd: LiveMessage[] = [];
+                        
+                        detail.rounds.forEach(dr => {
+                            dr.data.forEach((entry, i) => {
+                                // Simple naive reconciliation match since IDs might vary slightly
+                                // If our messages count is shorter, we can just append
+                                const messageId = `${dr.id}-reconciled-${i}`;
+                                if (!existingMsgIds.has(messageId)) {
+                                     toAdd.push({
+                                        messageId,
+                                        agentId: entry.agent_id,
+                                        role: map[entry.agent_id] ?? "Agent",
+                                        roundNumber: dr.round_number,
+                                        messageType: entry.message_type,
+                                        content: JSON.stringify(entry.data),
+                                        generationStatus: "success",
+                                     });
+                                     existingMsgIds.add(messageId);
+                                }
+                            });
+                        });
+                        
+                        if (toAdd.length === 0) return prev;
+                        // For simplicity, just completely replace with full history if we reconcile
+                        // This guarantees perfect correctness after completion.
+                        
+                        const fullHistory: LiveMessage[] = [];
+                        detail.rounds.forEach(dr => {
+                            dr.data.forEach((entry, i) => {
+                                 fullHistory.push({
+                                    messageId: `${dr.id}-reconciled-${i}`,
+                                    agentId: entry.agent_id,
+                                    role: map[entry.agent_id] ?? "Agent",
+                                    roundNumber: dr.round_number,
+                                    messageType: entry.message_type,
+                                    content: JSON.stringify(entry.data),
+                                    generationStatus: "success",
+                                 });
+                            });
+                        });
+                        return fullHistory;
+                    });
+                }
+            })
+            .catch(() => {});
+    }, [debateInfo?.debate_id, status]);
+
+
+    const start = useCallback(async (question: string, agents: AgentCreateRequest[]) => {
         setStatus("queued");
         setMessages([]);
         setCurrentRound(0);
         setError(null);
         setDebateInfo(null);
+        setAgentMap({});
 
         try {
             const info = await startDebate({ question, agents });
             setDebateInfo(info);
-            connectWs(info.ws_turn_url);
+            setWsUrl(info.ws_turn_url); // triggers connection
         } catch (err: unknown) {
             setStatus("failed");
             setError(err instanceof Error ? err.message : "Failed to start debate");
         }
-    }, [connectWs]);
+    }, []);
 
     const reset = useCallback(() => {
-        wsRef.current?.close();
+        setWsUrl(null);
         setStatus("idle");
         setDebateInfo(null);
+        setAgentMap({});
         setMessages([]);
         setCurrentRound(0);
         setError(null);
     }, []);
 
-    return { status, debateInfo, messages, currentRound, error, start, reset };
+    return { 
+        status, 
+        debateInfo, 
+        agentMap,
+        messages, 
+        currentRound, 
+        error, 
+        connectionStatus,
+        start, 
+        reset 
+    };
 }

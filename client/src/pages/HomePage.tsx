@@ -1,9 +1,9 @@
-import AddIcon from "@mui/icons-material/Add";
+import GavelRoundedIcon from "@mui/icons-material/GavelRounded";
 import BalanceIcon from "@mui/icons-material/Balance";
 import GroupsRoundedIcon from "@mui/icons-material/GroupsRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
-import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import MenuRoundedIcon from "@mui/icons-material/MenuRounded";
+import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import {
     Alert,
@@ -17,11 +17,11 @@ import {
     Typography,
     Zoom,
 } from "@mui/material";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import AppShell from "../components/layout/AppShell";
 import ModeratorCard from "../components/debate/ModeratorCard";
 import { useDebate } from "../hooks/useDebate";
-import type { Round1Payload, Round2Payload, Round3Payload } from "../types/debate";
+import type { AgentCreateRequest, Round1Structured, Round2Structured, Round3Structured } from "../types/debate";
 
 const MAX_CHARS = 500;
 
@@ -42,30 +42,41 @@ const ROUND_COLORS: Record<number, string> = {
     3: "#34D399",
 };
 
-const DEFAULT_AGENTS = [
-    { role: "Proponent", config: {} },
-    { role: "Opponent", config: {} },
+// Agent role colors — cycle through a palette for N agents
+const AGENT_PALETTE = ["#6C8EF5", "#F5A623", "#34D399", "#F472B6", "#A78BFA", "#38BDF8"];
+
+const DEFAULT_AGENTS: AgentCreateRequest[] = [
+    { role: "Proponent", config: { model: { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 }, reasoning: { style: "balanced" } } },
+    { role: "Opponent", config: { model: { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 }, reasoning: { style: "balanced" } } },
 ];
 
-function parseContent(content: string): Round1Payload | Round2Payload | Round3Payload | null {
+function parseContent(content: string): Round1Structured | Round2Structured | Round3Structured | null {
     try { return JSON.parse(content); } catch { return null; }
 }
 
-function MessageBubble({ agentId, roundNumber, content }: { agentId: string | null; roundNumber: number; content: string }) {
+interface MessageBubbleProps {
+    agentId: string | null;
+    agentLabel: string;
+    agentColor: string;
+    roundNumber: number;
+    content: string;
+}
+
+function MessageBubble({ agentLabel, agentColor, roundNumber, content }: MessageBubbleProps) {
     const parsed = parseContent(content);
-    const color = ROUND_COLORS[roundNumber] ?? "#9CA3AF";
+    const roundColor = ROUND_COLORS[roundNumber] ?? "#9CA3AF";
 
     // Round 1 — opening statement
     if (parsed && "stance" in parsed) {
-        const p = parsed as Round1Payload;
+        const p = parsed as Round1Structured;
         return (
-            <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderRadius: 2, p: 2 }}>
+            <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2 }}>
                 <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-                    <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: color, flexShrink: 0 }} />
-                    <Typography variant="caption" sx={{ color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>
-                        {agentId ? `Agent` : "Agent"}
+                    <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: agentColor, flexShrink: 0 }} />
+                    <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>
+                        {agentLabel}
                     </Typography>
-                    <Chip label={`${Math.round(p.confidence * 100)}% confidence`} size="small"
+                    <Chip label={`${Math.round((p.confidence ?? 0.8) * 100)}% confidence`} size="small"
                         sx={{ height: 18, fontSize: "0.6rem", bgcolor: "rgba(108,142,245,0.12)", color: "#6C8EF5", border: "none" }} />
                 </Stack>
                 <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75 }}>{p.stance}</Typography>
@@ -73,7 +84,7 @@ function MessageBubble({ agentId, roundNumber, content }: { agentId: string | nu
                     <Stack spacing={0.4} sx={{ mt: 0.5 }}>
                         {p.key_points.map((pt, i) => (
                             <Stack key={i} direction="row" spacing={1} alignItems="flex-start">
-                                <Typography variant="caption" sx={{ color, mt: "1px", flexShrink: 0 }}>•</Typography>
+                                <Typography variant="caption" sx={{ color: roundColor, mt: "1px", flexShrink: 0 }}>•</Typography>
                                 <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>{pt}</Typography>
                             </Stack>
                         ))}
@@ -83,24 +94,24 @@ function MessageBubble({ agentId, roundNumber, content }: { agentId: string | nu
         );
     }
 
-    // Round 2 — critique
-    if (parsed && "disagreements" in parsed) {
-        const p = parsed as Round2Payload;
+    // Round 2 — cross-examination / critique
+    if (parsed && "critiques" in parsed) {
+        const p = parsed as Round2Structured;
         return (
-            <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderRadius: 2, p: 2 }}>
+            <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2 }}>
                 <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-                    <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: color, flexShrink: 0 }} />
-                    <Typography variant="caption" sx={{ color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>Response</Typography>
+                    <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: agentColor, flexShrink: 0 }} />
+                    <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>{agentLabel}</Typography>
+                    <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.65rem" }}>Response</Typography>
                 </Stack>
-                {p.revised_stance && (
-                    <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75 }}>{p.revised_stance}</Typography>
-                )}
-                {p.disagreements?.length > 0 && (
+                {p.critiques?.length > 0 && (
                     <Stack spacing={0.4}>
-                        {p.disagreements.map((d, i) => (
+                        {p.critiques.map((d, i) => (
                             <Stack key={i} direction="row" spacing={1} alignItems="flex-start">
-                                <Typography variant="caption" sx={{ color, mt: "1px", flexShrink: 0 }}>↳</Typography>
-                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>{d}</Typography>
+                                <Typography variant="caption" sx={{ color: roundColor, mt: "1px", flexShrink: 0 }}>↳</Typography>
+                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>
+                                    <strong>vs {d.target_role}:</strong> {d.challenge}
+                                </Typography>
                             </Stack>
                         ))}
                     </Stack>
@@ -111,12 +122,13 @@ function MessageBubble({ agentId, roundNumber, content }: { agentId: string | nu
 
     // Round 3 — final synthesis
     if (parsed && "final_stance" in parsed) {
-        const p = parsed as Round3Payload;
+        const p = parsed as Round3Structured;
         return (
-            <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${color}`, borderRadius: 2, p: 2 }}>
+            <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2 }}>
                 <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-                    <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: color, flexShrink: 0 }} />
-                    <Typography variant="caption" sx={{ color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>Final Position</Typography>
+                    <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: agentColor, flexShrink: 0 }} />
+                    <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>{agentLabel}</Typography>
+                    <Typography variant="caption" sx={{ color: roundColor, fontSize: "0.65rem", fontWeight: 600 }}>Final Position</Typography>
                 </Stack>
                 <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75 }}>{p.final_stance}</Typography>
                 {p.recommendation && (
@@ -126,9 +138,13 @@ function MessageBubble({ agentId, roundNumber, content }: { agentId: string | nu
         );
     }
 
-    // Fallback — raw text
+    // Fallback — raw text (plain string from LLM)
     return (
-        <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderRadius: 2, p: 2 }}>
+        <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2 }}>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.75 }}>
+                <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: agentColor, flexShrink: 0 }} />
+                <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>{agentLabel}</Typography>
+            </Stack>
             <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.6 }}>{content}</Typography>
         </Box>
     );
@@ -137,13 +153,34 @@ function MessageBubble({ agentId, roundNumber, content }: { agentId: string | nu
 export default function HomePage() {
     const [tab, setTab] = useState(0);
     const [question, setQuestion] = useState("");
-    const [moderatorOpen, setModeratorOpen] = useState(true);
+    const [moderatorOpen, setModeratorOpen] = useState(false);
 
-    const { status, messages, currentRound, error, start, reset } = useDebate();
+    const { status, messages, currentRound, agentMap, error, start, reset } = useDebate();
 
     const submitted = status !== "idle";
-    const isLoading = status === "queued" || status === "running";
+    const isLoading = status === "queued" || status === "running" || status === "unknown";
     const canSubmit = question.trim().length > 0 && question.length <= MAX_CHARS && !isLoading;
+
+    // Use agentMap strictly from backend, preserving appearance order just for deterministic colors.
+    const agentAppearanceOrder = useMemo<string[]>(() => {
+        const seen: string[] = [];
+        for (const msg of messages) {
+            if (msg.agentId && !seen.includes(msg.agentId)) {
+                seen.push(msg.agentId);
+            }
+        }
+        return seen;
+    }, [messages]);
+
+    function getAgentMeta(agentId: string | null): { label: string; color: string } {
+        if (!agentId) return { label: "Agent", color: AGENT_PALETTE[0] };
+        const idx = agentAppearanceOrder.indexOf(agentId);
+        
+        // Priority: Real DB role > static array map > fallback
+        const role = agentMap[agentId] ?? DEFAULT_AGENTS[idx]?.role ?? `Agent ${idx + 1}`;
+        const color = AGENT_PALETTE[Math.max(0, idx) % AGENT_PALETTE.length] ?? "#9CA3AF";
+        return { label: role, color };
+    }
 
     async function handleSubmit() {
         if (!canSubmit) return;
@@ -163,8 +200,76 @@ export default function HomePage() {
     }
     const rounds = Object.keys(byRound).map(Number).sort();
 
+    // Build moderator snapshot for the sidebar
+    const agentLabels = agentAppearanceOrder.map((_id, i) => {
+        const role = DEFAULT_AGENTS[i]?.role ?? `Agent ${i + 1}`;
+        return role;
+    });
+
+    // Agreement / conflict summary from round 2 messages
+    const round2Msgs = byRound[2] ?? [];
+    const round3Msgs = byRound[3] ?? [];
+
+    const agreementSummary = round2Msgs.length > 0
+        ? `${round2Msgs.length} critique(s) recorded in cross-examination.`
+        : "—";
+
+    const synthesisSummary = round3Msgs.length > 0
+        ? round3Msgs.map((m) => {
+            const p = parseContent(m.content) as Round3Structured | null;
+            return p?.final_stance ?? null;
+        }).filter(Boolean).join(" · ") || "—"
+        : "—";
+
+    const nextStep = status === "queued"
+        ? "Agents are preparing…"
+        : status === "running"
+        ? `Round ${currentRound} — agents generating…`
+        : status === "completed"
+        ? "Debate complete. Start a new debate below."
+        : "—";
     return (
         <AppShell>
+            {/* Right moderator sidebar — always rendered, shown after submit */}
+            <ModeratorCard
+                open={moderatorOpen && submitted}
+                roundOverview={
+                    (status as string) === "idle"
+                        ? "Waiting for debate to begin…"
+                        : `Round ${currentRound} of 3 — ${ROUND_LABELS[currentRound] ?? "Starting…"}`
+                }
+                agreementMap={agreementSummary}
+                conflictMap={
+                    round2Msgs.length > 0
+                        ? `${agentLabels.join(" vs ")} — active disagreements recorded.`
+                        : "—"
+                }
+                keyInsight={synthesisSummary !== "—" ? synthesisSummary : "Awaiting final synthesis…"}
+                nextStep={nextStep}
+            />
+
+            {/* Floating amber moderator toggle button */}
+            {submitted && (
+                <Zoom in={submitted}>
+                    <Tooltip title="Moderator" placement="left">
+                        <IconButton
+                            onClick={() => setModeratorOpen((v) => !v)}
+                            sx={{
+                                position: "fixed", top: 20, right: 20,
+                                width: 42, height: 42,
+                                bgcolor: "primary.main", color: "#0F1117",
+                                borderRadius: "50%",
+                                boxShadow: "0 4px 16px rgba(245,166,35,0.35)",
+                                zIndex: 201,
+                                "&:hover": { bgcolor: "primary.light" },
+                            }}
+                        >
+                            <MenuRoundedIcon sx={{ fontSize: 20 }} />
+                        </IconButton>
+                    </Tooltip>
+                </Zoom>
+            )}
+
             <Box
                 sx={{
                     display: "flex",
@@ -252,9 +357,9 @@ export default function HomePage() {
                         {/* Bottom toolbar */}
                         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 2, pb: 1.5, pt: 0.5 }}>
                             <Stack direction="row" alignItems="center" spacing={0.75}>
-                                <Tooltip title="Attach document">
-                                    <IconButton size="small" sx={{ width: 32, height: 32, color: "text.secondary", border: "1px solid #3A3E52", borderRadius: "50%", "&:hover": { color: "text.primary", borderColor: "text.secondary" } }}>
-                                        <AddIcon sx={{ fontSize: 16 }} />
+                                <Tooltip title="Moderator Card">
+                                    <IconButton size="small" onClick={() => setModeratorOpen(!moderatorOpen)} sx={{ width: 32, height: 32, color: "text.secondary", border: "1px solid #3A3E52", borderRadius: "50%", "&:hover": { color: "text.primary", borderColor: "text.secondary" } }}>
+                                        <GavelRoundedIcon sx={{ fontSize: 16 }} />
                                     </IconButton>
                                 </Tooltip>
                                 <Tooltip title="Agent personas">
@@ -281,10 +386,13 @@ export default function HomePage() {
                                 {status === "completed" && (
                                     <Typography variant="caption" sx={{ color: "#34D399", fontSize: "0.72rem", fontWeight: 600 }}>✓ Debate complete</Typography>
                                 )}
+                                {status === "failed" && (
+                                    <Typography variant="caption" sx={{ color: "error.main", fontSize: "0.72rem", fontWeight: 600 }}>✗ Failed</Typography>
+                                )}
                             </Stack>
 
                             <Stack direction="row" spacing={1} alignItems="center">
-                                {/* Reset button when done */}
+                                {/* Reset button when done / failed */}
                                 {submitted && !isLoading && (
                                     <Stack direction="row" alignItems="center" spacing={0.75} onClick={handleReset}
                                         sx={{ px: 1.5, py: 0.85, borderRadius: "999px", cursor: "pointer", border: "1px solid #3A3E52", color: "text.secondary", "&:hover": { color: "text.primary", borderColor: "text.secondary" }, transition: "all 0.2s", userSelect: "none" }}>
@@ -304,7 +412,7 @@ export default function HomePage() {
                     </Box>
                 </Box>
 
-                {/* Error */}
+                {/* Error banner */}
                 {error && (
                     <Box sx={{ width: "100%", maxWidth: 700, mt: 2 }}>
                         <Alert severity="error" onClose={reset}>{error}</Alert>
@@ -337,9 +445,19 @@ export default function HomePage() {
 
                                 {/* Messages in this round */}
                                 <Stack spacing={1.5}>
-                                    {byRound[rn].map((msg) => (
-                                        <MessageBubble key={msg.id} agentId={msg.agentId} roundNumber={msg.roundNumber} content={msg.content} />
-                                    ))}
+                                    {byRound[rn].map((msg) => {
+                                        const { label, color } = getAgentMeta(msg.agentId);
+                                        return (
+                                            <MessageBubble
+                                                key={msg.messageId}
+                                                agentId={msg.agentId}
+                                                agentLabel={label}
+                                                agentColor={color}
+                                                roundNumber={msg.roundNumber}
+                                                content={msg.content}
+                                            />
+                                        );
+                                    })}
                                 </Stack>
                             </Box>
                         ))}
@@ -356,31 +474,6 @@ export default function HomePage() {
                     </Box>
                 )}
             </Box>
-
-            {/* Moderator card — fixed below amber button */}
-            <ModeratorCard open={moderatorOpen && submitted} />
-
-            {/* Floating amber moderator toggle button */}
-            {submitted && (
-                <Zoom in={submitted}>
-                    <Tooltip title="Moderator" placement="left">
-                        <IconButton
-                            onClick={() => setModeratorOpen((v) => !v)}
-                            sx={{
-                                position: "fixed", top: 20, right: 20,
-                                width: 42, height: 42,
-                                bgcolor: "primary.main", color: "#0F1117",
-                                borderRadius: "50%",
-                                boxShadow: "0 4px 16px rgba(245,166,35,0.35)",
-                                zIndex: 201,
-                                "&:hover": { bgcolor: "primary.light" },
-                            }}
-                        >
-                            <MenuRoundedIcon sx={{ fontSize: 20 }} />
-                        </IconButton>
-                    </Tooltip>
-                </Zoom>
-            )}
         </AppShell>
     );
 }
