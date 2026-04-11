@@ -32,7 +32,7 @@ const NAV_ITEMS: NavItem[] = [
 
 export default function AppShell({ children }: AppShellProps) {
     const { user, logout } = useAuth();
-    const [expanded, setExpanded] = useState(true);
+    const [expanded, setExpanded] = useState(false);
 
     const sidebarWidth = expanded ? SIDEBAR_EXPANDED : SIDEBAR_COLLAPSED;
 
@@ -155,77 +155,97 @@ export default function AppShell({ children }: AppShellProps) {
 
                 <Divider sx={{ borderColor: "divider", mx: 1, mt: 1 }} />
 
-                {/* User info */}
+                {/* User info + logout */}
                 {user && (
-                    <Stack
-                        direction="row"
-                        alignItems="center"
-                        spacing={1.5}
-                        sx={{
-                            px: expanded ? 1.5 : 1,
-                            py: 1.5,
-                            mx: 0.5,
-                            mb: 0.5,
-                            borderRadius: 2,
-                            overflow: "hidden",
-                            transition: "padding 0.22s",
-                        }}
-                    >
-                        <Tooltip title={expanded ? "" : (user.display_name ?? user.email ?? "")} placement="right">
-                            <Avatar
-                                sx={{
-                                    width: 32,
-                                    height: 32,
-                                    bgcolor: "primary.dark",
-                                    color: "#0F1117",
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    flexShrink: 0,
-                                    cursor: "default",
-                                }}
-                            >
-                                {initials}
-                            </Avatar>
-                        </Tooltip>
-
-                        <Box
+                    <Box sx={{ px: 0.5, pb: 0.5 }}>
+                        {/* User row */}
+                        <Stack
+                            direction="row"
+                            alignItems="center"
+                            spacing={1.5}
                             sx={{
-                                flexGrow: 1,
-                                minWidth: 0,
-                                opacity: expanded ? 1 : 0,
-                                width: expanded ? "auto" : 0,
+                                px: expanded ? 1.5 : 1,
+                                py: 1,
+                                borderRadius: 2,
                                 overflow: "hidden",
-                                transition: "opacity 0.18s, width 0.22s",
-                                whiteSpace: "nowrap",
+                                transition: "padding 0.22s",
                             }}
                         >
-                            <Typography variant="body2" sx={{ fontWeight: 600, color: "text.primary", lineHeight: 1.2 }} noWrap>
-                                {user.display_name ?? user.email}
-                            </Typography>
-                            {user.display_name && (
-                                <Typography variant="caption" color="text.secondary" noWrap>
-                                    {user.email}
-                                </Typography>
-                            )}
-                        </Box>
-
-                        <Tooltip title="Sign out" placement="right">
-                            <IconButton
-                                size="small"
-                                onClick={logout}
+                            <Tooltip title={expanded ? "" : (user.display_name ?? user.email ?? "")} placement="right">
+                                <Avatar
+                                    sx={{
+                                        width: 32,
+                                        height: 32,
+                                        bgcolor: "primary.dark",
+                                        color: "#0F1117",
+                                        fontSize: 12,
+                                        fontWeight: 700,
+                                        flexShrink: 0,
+                                        cursor: "default",
+                                    }}
+                                >
+                                    {initials}
+                                </Avatar>
+                            </Tooltip>
+                            <Box
                                 sx={{
-                                    flexShrink: 0,
-                                    color: "text.secondary",
+                                    flexGrow: 1,
+                                    minWidth: 0,
                                     opacity: expanded ? 1 : 0,
-                                    pointerEvents: expanded ? "auto" : "none",
-                                    transition: "opacity 0.18s, color 0.15s",
-                                    "&:hover": { color: "primary.main" },
+                                    width: expanded ? "auto" : 0,
+                                    overflow: "hidden",
+                                    transition: "opacity 0.18s, width 0.22s",
+                                    whiteSpace: "nowrap",
                                 }}
                             >
-                                <LogoutIcon fontSize="small" />
-                            </IconButton>
+                                <Typography variant="body2" sx={{ fontWeight: 600, color: "text.primary", lineHeight: 1.2 }} noWrap>
+                                    {user.display_name ?? user.email}
+                                </Typography>
+                                {user.display_name && (
+                                    <Typography variant="caption" color="text.secondary" noWrap>
+                                        {user.email}
+                                    </Typography>
+                                )}
+                            </Box>
+                        </Stack>
+
+                        {/* Logout row — icon only when collapsed, icon+text when expanded */}
+                        <Tooltip title={expanded ? "" : "Sign out"} placement="right">
+                            <Stack
+                                direction="row"
+                                alignItems="center"
+                                spacing={1.5}
+                                onClick={logout}
+                                sx={{
+                                    px: expanded ? 1.5 : 1,
+                                    py: 0.85,
+                                    borderRadius: 2,
+                                    cursor: "pointer",
+                                    color: "text.secondary",
+                                    overflow: "hidden",
+                                    transition: "padding 0.22s, color 0.15s",
+                                    "&:hover": { color: "error.main", bgcolor: "rgba(248,113,113,0.06)" },
+                                }}
+                            >
+                                <LogoutIcon sx={{ fontSize: 18, flexShrink: 0 }} />
+                                <Typography
+                                    variant="body2"
+                                    sx={{
+                                        fontWeight: 500,
+                                        fontSize: "0.82rem",
+                                        whiteSpace: "nowrap",
+                                        opacity: expanded ? 1 : 0,
+                                        width: expanded ? "auto" : 0,
+                                        overflow: "hidden",
+                                        transition: "opacity 0.18s, width 0.22s",
+                                        color: "inherit",
+                                    }}
+                                >
+                                    Sign out
+                                </Typography>
+                            </Stack>
                         </Tooltip>
-                    </Stack>
+                    </Box>
                 )}
             </Box>
 

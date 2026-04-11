@@ -2,7 +2,7 @@ import { Box, Paper, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 
 interface AuthLayoutProps {
-    title: string;
+    title?: string;
     subtitle?: string;
     children: ReactNode;
 }
@@ -50,9 +50,11 @@ export default function AuthLayout({ title, subtitle, children }: AuthLayoutProp
                     </Typography>
                 </Box>
 
-                <Typography variant="h6" sx={{ mb: 0.5, textAlign: "center" }}>
-                    {title}
-                </Typography>
+                {title && (
+                    <Typography variant="h6" sx={{ mb: 0.5, textAlign: "center" }}>
+                        {title}
+                    </Typography>
+                )}
                 {subtitle && (
                     <Typography
                         variant="body2"
