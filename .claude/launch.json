@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "Agora Client",
-      "runtimeExecutable": "curl",
-      "runtimeArgs": ["http://localhost:5173"],
+      "runtimeExecutable": "/Users/susandiko/.nvm/versions/node/v22.22.0/bin/node",
+      "runtimeArgs": ["/Users/susandiko/.nvm/versions/node/v22.22.0/bin/npm", "--prefix", "/Users/susandiko/Desktop/AGORA/client", "run", "dev"],
       "port": 5173
     }
   ]

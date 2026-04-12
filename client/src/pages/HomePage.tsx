@@ -70,7 +70,7 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
     if (parsed && "stance" in parsed) {
         const p = parsed as Round1Structured;
         return (
-            <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2 }}>
+            <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2, height: "100%" }}>
                 <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
                     <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: agentColor, flexShrink: 0 }} />
                     <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>
@@ -79,13 +79,13 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
                     <Chip label={`${Math.round((p.confidence ?? 0.8) * 100)}% confidence`} size="small"
                         sx={{ height: 18, fontSize: "0.6rem", bgcolor: "rgba(108,142,245,0.12)", color: "#6C8EF5", border: "none" }} />
                 </Stack>
-                <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75 }}>{p.stance}</Typography>
+                <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.stance}</Typography>
                 {p.key_points?.length > 0 && (
                     <Stack spacing={0.4} sx={{ mt: 0.5 }}>
-                        {p.key_points.map((pt, i) => (
+                        {p.key_points.slice(0, 3).map((pt, i) => (
                             <Stack key={i} direction="row" spacing={1} alignItems="flex-start">
                                 <Typography variant="caption" sx={{ color: roundColor, mt: "1px", flexShrink: 0 }}>•</Typography>
-                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>{pt}</Typography>
+                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{pt}</Typography>
                             </Stack>
                         ))}
                     </Stack>
@@ -106,10 +106,10 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
                 </Stack>
                 {p.critiques?.length > 0 && (
                     <Stack spacing={0.4}>
-                        {p.critiques.map((d, i) => (
+                        {p.critiques.slice(0, 2).map((d, i) => (
                             <Stack key={i} direction="row" spacing={1} alignItems="flex-start">
                                 <Typography variant="caption" sx={{ color: roundColor, mt: "1px", flexShrink: 0 }}>↳</Typography>
-                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>
+                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>
                                     <strong>vs {d.target_role}:</strong> {d.challenge}
                                 </Typography>
                             </Stack>
@@ -130,9 +130,9 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
                     <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>{agentLabel}</Typography>
                     <Typography variant="caption" sx={{ color: roundColor, fontSize: "0.65rem", fontWeight: 600 }}>Final Position</Typography>
                 </Stack>
-                <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75 }}>{p.final_stance}</Typography>
+                <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.final_stance}</Typography>
                 {p.recommendation && (
-                    <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>{p.recommendation}</Typography>
+                    <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{p.recommendation}</Typography>
                 )}
             </Box>
         );
@@ -421,7 +421,7 @@ export default function HomePage() {
 
                 {/* Debate timeline */}
                 {submitted && (
-                    <Box sx={{ width: "100%", maxWidth: 700, mt: 4, pb: 6 }}>
+                    <Box sx={{ width: "100%", maxWidth: 900, mt: 4, pb: 6 }}>
 
                         {/* Loading skeleton while queued */}
                         {status === "queued" && messages.length === 0 && (
@@ -443,19 +443,20 @@ export default function HomePage() {
                                     <Box sx={{ height: 1, flex: 1, bgcolor: "#2A2D3A" }} />
                                 </Stack>
 
-                                {/* Messages in this round */}
-                                <Stack spacing={1.5}>
+                                {/* Messages in this round — side by side */}
+                                <Stack direction="row" spacing={1.5} alignItems="stretch">
                                     {byRound[rn].map((msg) => {
                                         const { label, color } = getAgentMeta(msg.agentId);
                                         return (
-                                            <MessageBubble
-                                                key={msg.messageId}
-                                                agentId={msg.agentId}
-                                                agentLabel={label}
-                                                agentColor={color}
-                                                roundNumber={msg.roundNumber}
-                                                content={msg.content}
-                                            />
+                                            <Box key={msg.messageId} sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                                                <MessageBubble
+                                                    agentId={msg.agentId}
+                                                    agentLabel={label}
+                                                    agentColor={color}
+                                                    roundNumber={msg.roundNumber}
+                                                    content={msg.content}
+                                                />
+                                            </Box>
                                         );
                                     })}
                                 </Stack>
