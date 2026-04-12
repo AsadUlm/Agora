@@ -4,7 +4,7 @@ import AddIcon from "@mui/icons-material/Add";
 import SearchIcon from "@mui/icons-material/Search";
 import DescriptionIcon from "@mui/icons-material/Description";
 import HistoryIcon from "@mui/icons-material/History";
-import { Avatar, Box, Divider, IconButton, Stack, Tooltip, Typography } from "@mui/material";
+import { Avatar, Box, Divider, Stack, Tooltip, Typography } from "@mui/material";
 
 import type { ReactNode } from "react";
 import { useState } from "react";
