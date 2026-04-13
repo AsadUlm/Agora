@@ -1,67 +1,95 @@
 """
-Groq LLM provider.
+Groq LLM Provider.
 
-Uses the official `groq` Python SDK (AsyncGroq) so calls are fully async
-and never block the event loop.
+Uses the official `groq` Python SDK (AsyncGroq) to call the Groq API.
+Requires GROQ_API_KEY in environment / .env file.
 
-Supported models (as of early 2026):
-  • llama-3.3-70b-versatile   ← default, supports json_object response format
-  • llama3-70b-8192
-  • mixtral-8x7b-32768
-
-Selection: set LLM_PROVIDER=groq and GROQ_API_KEY in .env.
-Model: controlled via LLM_MODEL in .env.
+Supported models (as of 2026):
+  - llama-3.3-70b-versatile  (default, recommended)
+  - llama-3.1-70b-versatile
+  - mixtral-8x7b-32768
+  - gemma2-9b-it
 """
 
+from __future__ import annotations
+
 import logging
+import time
 
-from groq import AsyncGroq
+from groq import AsyncGroq, APIStatusError, APITimeoutError
 
-from app.services.llm.base import LLMProvider
+from app.schemas.contracts import LLMRequest, LLMResponse
+from app.services.llm.exceptions import LLMGenerationError
+from app.services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = (
-    "You are a precise AI assistant that always responds with valid JSON only. "
-    "Never include markdown formatting, code fences, or any text outside the JSON object. "
-    "Your entire response must be a single, parseable JSON object."
-)
 
-
-class GroqProvider(LLMProvider):
+class GroqProvider(LLMService):
     """
-    Async Groq provider.
+    LLM service backed by Groq's inference API.
 
-    All Groq-specific SDK details are isolated here.
-    The rest of the application never imports from `groq` directly.
+    Thread-safe: AsyncGroq client is reused across calls.
     """
 
-    def __init__(self, api_key: str, model: str, temperature: float) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        default_model: str,
+        default_temperature: float,
+    ) -> None:
         self._client = AsyncGroq(api_key=api_key)
-        self._model = model
-        self._temperature = temperature
+        self._default_model = default_model
+        self._default_temperature = default_temperature
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(self, request: LLMRequest) -> LLMResponse:
         """
-        Send a prompt to Groq and return the raw JSON string.
+        Call Groq API and return a raw LLMResponse.
 
-        Uses response_format=json_object to enforce structured output.
-        A system prompt reinforces the JSON-only constraint as a second layer.
+        Raises:
+            LLMGenerationError: On API error or timeout.
         """
-        logger.debug("GroqProvider: calling model=%s", self._model)
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=self._temperature,
-            response_format={"type": "json_object"},
+        model = request.model or self._default_model
+        temperature = request.temperature if request.temperature is not None else self._default_temperature
+
+        logger.debug(
+            "GroqProvider.generate: model=%s temperature=%.2f prompt_len=%d",
+            model,
+            temperature,
+            len(request.prompt),
         )
-        content = response.choices[0].message.content
-        logger.debug("GroqProvider: received %d chars.", len(content or ""))
-        return content or ""
 
-    @property
-    def provider_name(self) -> str:
-        return "groq"
+        t_start = time.monotonic()
+        try:
+            response = await self._client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": request.prompt}],
+                temperature=temperature,
+                max_tokens=request.max_tokens,
+            )
+        except APITimeoutError as exc:
+            raise LLMGenerationError(f"Groq API timeout: {exc}") from exc
+        except APIStatusError as exc:
+            raise LLMGenerationError(
+                f"Groq API error {exc.status_code}: {exc.message}"
+            ) from exc
+        except Exception as exc:
+            raise LLMGenerationError(f"Groq unexpected error: {exc}") from exc
+
+        latency_ms = int((time.monotonic() - t_start) * 1000)
+        content = response.choices[0].message.content or ""
+        usage = response.usage
+
+        logger.debug(
+            "GroqProvider.generate: done latency=%dms tokens_in=%d tokens_out=%d",
+            latency_ms,
+            usage.prompt_tokens if usage else 0,
+            usage.completion_tokens if usage else 0,
+        )
+
+        return LLMResponse(
+            content=content,
+            prompt_tokens=usage.prompt_tokens if usage else 0,
+            completion_tokens=usage.completion_tokens if usage else 0,
+            latency_ms=latency_ms,
+        )

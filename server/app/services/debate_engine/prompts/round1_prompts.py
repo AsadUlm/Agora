@@ -1,55 +1,40 @@
-"""Prompt builders for Round 1 — Opening Statements."""
+"""Round 1 — Opening Statement prompts."""
+
+from __future__ import annotations
 
 
 def build_opening_statement_prompt(
     role: str,
     question: str,
-    reasoning_style: str = "",
-    reasoning_depth: str = "",
+    reasoning_style: str = "balanced",
+    reasoning_depth: str = "normal",
 ) -> str:
-    """
-    Construct the prompt that asks an agent to generate its opening statement.
+    """Build the prompt for an agent's Round 1 opening statement."""
+    depth_instruction = {
+        "shallow": "Be concise. 2-3 key points only.",
+        "normal": "Be thorough. Provide 3-5 well-argued key points.",
+        "deep": "Be exhaustive. Provide 5+ key points with detailed reasoning.",
+    }.get(reasoning_depth, "Be thorough. Provide 3-5 well-argued key points.")
 
-    Args:
-        role:             The agent's role (e.g. "analyst", "critic", "optimist").
-        question:         The central debate question.
-        reasoning_style:  Optional style hint (analytical, creative, …).
-        reasoning_depth:  Optional depth hint (shallow, normal, deep).
+    style_instruction = {
+        "analytical": "Reason analytically. Focus on evidence and logical structure.",
+        "creative": "Reason creatively. Explore unconventional angles and possibilities.",
+        "devil_advocate": "Take a contrarian position. Challenge assumptions aggressively.",
+        "balanced": "Reason in a balanced way. Acknowledge multiple perspectives.",
+    }.get(reasoning_style, "Reason in a balanced way.")
 
-    Returns:
-        A fully rendered prompt string ready to be sent to the LLM.
-    """
-    style_hint = ""
-    if reasoning_style:
-        style_hint += f"\n- Reasoning style: {reasoning_style}."
-    if reasoning_depth:
-        style_hint += f"\n- Reasoning depth: {reasoning_depth}."
+    return f"""You are a debate participant with the role: {role}.
 
-    return f"""RESPONSE FORMAT
-- Respond with a SINGLE valid JSON object.
-- No markdown. No code fences. No text before or after the JSON.
-- Do not include comments inside the JSON.
+The debate question is: {question}
 
-ROLE
-You are a {role} participating in a structured, multi-round AI debate.{style_hint}
+Your task: Generate your opening statement for Round 1.
 
-DEBATE QUESTION
-"{question}"
+Reasoning style: {style_instruction}
+{depth_instruction}
 
-TASK
-Generate your opening statement. Produce exactly this JSON structure:
+Respond ONLY with a valid JSON object in this exact format:
 {{
-    "stance": "<Your clear and concise position — 1 to 2 sentences>",
-    "key_points": [
-        "<First key argument supporting your stance>",
-        "<Second key argument>",
-        "<Third key argument>"
-    ],
-    "confidence": 0.85
-}}
-
-CONSTRAINTS
-- key_points: minimum 3, maximum 5 items.
-- confidence: float in [0.0, 1.0].
-- Write entirely from the perspective of a {role}.
-- Output the JSON object and nothing else."""
+  "stance": "<your clear position on the question>",
+  "key_points": ["<point 1>", "<point 2>", "<point 3>"],
+  "confidence": <float between 0.0 and 1.0>
+}}"""

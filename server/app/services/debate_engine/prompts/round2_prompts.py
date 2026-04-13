@@ -1,53 +1,73 @@
-"""Prompt builders for Round 2 — Cross-Examination / Direct Debate."""
+"""Round 2 — Cross Examination prompts."""
+
+from __future__ import annotations
 
 
-def build_cross_debate_prompt(
-    challenger_role: str,
-    responder_role: str,
-    challenger_stance: str,
-    responder_stance: str,
+def build_critique_prompt(
+    role: str,
     question: str,
+    own_stance: str,
+    other_agents: list[dict],  # [{"role": str, "stance": str, "key_points": list[str]}]
+    reasoning_style: str = "balanced",
+    reasoning_depth: str = "normal",
 ) -> str:
     """
-    Construct the prompt for a cross-examination exchange between two conflicting agents.
+    Build the Round 2 prompt for an agent critiquing all other agents.
 
     Args:
-        challenger_role:   Role of the agent initiating the challenge.
-        responder_role:    Role of the agent being challenged.
-        challenger_stance: Challenger's opening stance from Round 1.
-        responder_stance:  Responder's opening stance from Round 1.
-        question:          The central debate question.
-
-    Returns:
-        A fully rendered prompt string ready to be sent to the LLM.
+        role:         This agent's role label.
+        question:     The central debate question.
+        own_stance:   This agent's Round 1 stance (for context).
+        other_agents: List of other agents' Round 1 outputs to critique.
+        reasoning_style: How this agent reasons.
+        reasoning_depth: How deeply to critique.
     """
-    return f"""RESPONSE FORMAT
-- Respond with a SINGLE valid JSON object.
-- No markdown. No code fences. No text before or after the JSON.
-- Do not include comments inside the JSON.
+    depth_instruction = {
+        "shallow": "Be concise. One focused challenge per opponent.",
+        "normal": "Be substantive. Identify the core weakness per opponent (2-3 sentences each).",
+        "deep": "Be rigorous. Dissect each argument thoroughly, cite logical fallacies or missing evidence.",
+    }.get(reasoning_depth, "Be substantive.")
 
-ROLE
-You are moderating a cross-examination round in a structured AI debate.
+    style_instruction = {
+        "analytical": "Critique analytically — focus on logical consistency and evidence gaps.",
+        "creative": "Challenge creatively — expose hidden assumptions and alternative framings.",
+        "devil_advocate": "Challenge aggressively — find the sharpest weakness in each argument.",
+        "balanced": "Critique fairly — acknowledge strengths before identifying weaknesses.",
+    }.get(reasoning_style, "Critique fairly.")
 
-DEBATE QUESTION
-"{question}"
+    # Format other agents' stances
+    opponents_block = ""
+    for i, agent in enumerate(other_agents, start=1):
+        key_pts = "\n".join(f"    - {pt}" for pt in agent.get("key_points", []))
+        opponents_block += (
+            f"\nOpponent {i} — {agent['role']}:\n"
+            f"  Stance: {agent.get('stance', '(no stance provided)')}\n"
+            f"  Key points:\n{key_pts or '    (none provided)'}\n"
+        )
 
-PARTICIPANT STANCES (Round 1)
-- {challenger_role}: "{challenger_stance}"
-- {responder_role}: "{responder_stance}"
+    return f"""You are a debate participant with the role: {role}.
 
-TASK
-These two positions conflict. Generate the cross-examination exchange:
+The debate question is: {question}
+
+Your own opening stance was: {own_stance}
+
+Your task: Critique the following opponents' arguments in Round 2 Cross-Examination.
+
+{opponents_block}
+
+Critique style: {style_instruction}
+{depth_instruction}
+
+For each opponent, identify their weakest argument, challenge it directly, and explain the flaw.
+
+Respond ONLY with a valid JSON object in this exact format:
 {{
-    "challenger_role": "{challenger_role}",
-    "responder_role": "{responder_role}",
-    "challenge": "<Specific critique the {challenger_role} raises against the {responder_role}'s position>",
-    "response": "<The {responder_role}'s direct, substantive response to the challenge>",
-    "rebuttal": "<The {challenger_role}'s closing rebuttal after hearing the response>"
-}}
-
-CONSTRAINTS
-- Each field: single coherent paragraph, 2–4 sentences.
-- Base arguments on the stances provided above.
-- Output the JSON object and nothing else."""
-
+  "critiques": [
+    {{
+      "target_role": "<opponent's role>",
+      "challenge": "<your direct challenge to their argument>",
+      "weakness": "<the core flaw or gap you identified>",
+      "counter_evidence": "<any evidence or reasoning that refutes them>"
+    }}
+  ]
+}}"""

@@ -1,15 +1,12 @@
 """
-Typed Agent Configuration Schema.
+Internal agent configuration schema.
 
-Defines the rich, nested configuration that an agent can carry.
-All sections are optional with sensible defaults so that a minimal
-payload like ``{"role": "critic"}`` keeps working without any config.
+AgentConfig is the canonical internal representation of how a single
+debate agent is configured. It is NOT a public API DTO — it is used
+only inside the backend service layer.
 
-Sections:
-  • identity  — display name, avatar, description
-  • model     — provider, model name, temperature, max_tokens
-  • reasoning — style preset, depth level
-  • prompting — system prompt, few-shot examples
+Public-facing agent creation uses AgentCreate (schemas/agent.py),
+which carries raw config dict that is parsed into AgentConfig here.
 """
 
 from __future__ import annotations
@@ -18,66 +15,61 @@ from pydantic import BaseModel, Field
 
 
 class IdentityConfig(BaseModel):
-    """Display-level identity for the agent."""
+    """Optional agent identity metadata."""
 
     name: str = ""
-    avatar: str = ""
     description: str = ""
 
 
 class ModelConfig(BaseModel):
-    """Which LLM provider/model/params this agent should use."""
+    """LLM model selection for an agent."""
 
     provider: str = ""
     model: str = ""
     temperature: float | None = None
-    max_tokens: int | None = None
 
 
 class ReasoningConfig(BaseModel):
-    """High-level reasoning style for the agent."""
+    """How the agent reasons and structures its output."""
 
-    style: str = Field(
-        default="balanced",
-        description="Preset: analytical | creative | balanced | critical | formal",
-    )
-    depth: str = Field(
-        default="normal",
-        description="Depth level: shallow | normal | deep",
-    )
-
-
-class PromptingConfig(BaseModel):
-    """Custom prompt overrides."""
-
-    system_prompt: str = ""
-    few_shot_examples: list[dict] = Field(default_factory=list)
+    style: str = "balanced"   # analytical | creative | balanced | devil_advocate | ...
+    depth: str = "normal"     # shallow | normal | deep
 
 
 class AgentConfig(BaseModel):
     """
-    Full typed agent configuration.
+    Canonical internal representation of a debate agent's configuration.
 
-    Every section is optional — omitted sections get safe defaults.
-    The ``from_raw`` class method handles backward-compatible conversion
-    from the legacy ``config: dict = {}`` format.
+    Built from the raw `config` dict supplied at debate creation time.
+    Use `AgentConfig.from_raw(raw_dict)` to parse safely.
     """
 
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
-    prompting: PromptingConfig = Field(default_factory=PromptingConfig)
 
     @classmethod
-    def from_raw(cls, raw: dict) -> AgentConfig:
+    def from_raw(cls, raw: dict) -> "AgentConfig":
         """
-        Build an ``AgentConfig`` from an arbitrary dict.
+        Parse a raw config dict (from the API request) into AgentConfig.
 
-        If the dict already has the typed structure (``identity``, ``model``, …)
-        they are parsed directly.  Otherwise the dict is treated as legacy
-        flat config and returned with all-default sections.
+        Handles:
+        - Empty dict           → all defaults
+        - Flat legacy dicts    → ignored, returns defaults
+        - Nested structured    → parsed properly
         """
-        known_sections = {"identity", "model", "reasoning", "prompting"}
-        if raw.keys() & known_sections:
-            return cls.model_validate(raw)
-        return cls()
+        if not isinstance(raw, dict):
+            return cls()
+
+        data: dict = {}
+
+        if "identity" in raw and isinstance(raw["identity"], dict):
+            data["identity"] = raw["identity"]
+
+        if "model" in raw and isinstance(raw["model"], dict):
+            data["model"] = raw["model"]
+
+        if "reasoning" in raw and isinstance(raw["reasoning"], dict):
+            data["reasoning"] = raw["reasoning"]
+
+        return cls.model_validate(data)

@@ -46,7 +46,7 @@ export default function LoginPage() {
     }
 
     return (
-        <AuthLayout title="Welcome back" subtitle="Sign in to your account">
+        <AuthLayout subtitle="Sign in to your account">
             <form onSubmit={handleSubmit} noValidate>
                 <Stack spacing={2}>
                     {error && (

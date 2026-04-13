@@ -2,7 +2,7 @@ import { Box, Paper, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 
 interface AuthLayoutProps {
-    title: string;
+    title?: string;
     subtitle?: string;
     children: ReactNode;
 }
@@ -27,7 +27,10 @@ export default function AuthLayout({ title, subtitle, children }: AuthLayoutProp
                     p: { xs: 3, sm: 4 },
                     border: "1px solid",
                     borderColor: "divider",
+                    borderTop: "3px solid",
+                    borderTopColor: "primary.main",
                     borderRadius: 3,
+                    boxShadow: "0 0 40px rgba(245, 166, 35, 0.08)",
                 }}
             >
                 {/* Brand mark */}
@@ -47,9 +50,11 @@ export default function AuthLayout({ title, subtitle, children }: AuthLayoutProp
                     </Typography>
                 </Box>
 
-                <Typography variant="h6" sx={{ mb: 0.5, textAlign: "center" }}>
-                    {title}
-                </Typography>
+                {title && (
+                    <Typography variant="h6" sx={{ mb: 0.5, textAlign: "center" }}>
+                        {title}
+                    </Typography>
+                )}
                 {subtitle && (
                     <Typography
                         variant="body2"

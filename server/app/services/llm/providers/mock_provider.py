@@ -1,105 +1,48 @@
 """
-Mock LLM provider.
+Mock LLM provider — used in tests and when no API key is configured.
 
-Returns deterministic, schema-valid JSON responses for each debate round.
-Used for:
-  • Local development without API keys
-  • Automated tests
-  • CI / CD pipelines
-
-Selection: set LLM_PROVIDER=mock in .env (this is the default).
+Returns deterministic structured responses without making real API calls.
 """
 
-import json
-import logging
+from __future__ import annotations
 
-from app.services.llm.base import LLMProvider
+from app.schemas.contracts import LLMRequest, LLMResponse
+from app.services.llm.service import LLMService
 
-logger = logging.getLogger(__name__)
-
-# ── Static response fixtures ─────────────────────────────────────────────────
-
-_ROUND1_RESPONSE = {
-    "stance": (
-        "Based on available evidence, a balanced and data-driven approach "
-        "is the most effective path forward on this question."
-    ),
+_MOCK_STRUCTURED = {
+    # Round 1 fields
+    "stance": "Mock stance: this topic has multiple valid perspectives.",
     "key_points": [
-        "The empirical evidence strongly supports a structured framework.",
-        "Historical precedent demonstrates consistent outcomes under similar conditions.",
-        "Stakeholder alignment is critical to sustainable implementation.",
-        "Risk assessment must precede any large-scale commitment.",
-        "Iterative evaluation ensures adaptability over time.",
+        "First key argument supporting the position.",
+        "Second key argument with evidence.",
+        "Third key argument addressing counterpoints.",
     ],
-    "confidence": 0.78,
+    "confidence": 0.75,
+    # Round 2 fields
+    "critiques": [
+        {
+            "target_role": "opponent",
+            "challenge": "The opposing argument lacks empirical support.",
+            "weakness": "Relies on anecdotal evidence rather than data.",
+        }
+    ],
+    # Round 3 fields
+    "final_stance": "After debate, the position remains largely unchanged but refined.",
+    "what_changed": "The critique round highlighted nuances not initially considered.",
+    "remaining_concerns": "The opposing view raises valid points on implementation.",
+    "recommendation": "A balanced approach incorporating both perspectives is optimal.",
 }
 
-_ROUND2_RESPONSE = {
-    "challenge": (
-        "The opposing position underestimates the systemic risks embedded in "
-        "rapid implementation without adequate safeguards."
-    ),
-    "response": (
-        "While the concern is noted, the proposed framework explicitly accounts "
-        "for risk mitigation through phased rollout and continuous monitoring."
-    ),
-    "rebuttal": (
-        "The phased approach is insufficient given the scale of interdependencies; "
-        "a more conservative baseline is warranted before escalation."
-    ),
-}
 
-_ROUND3_RESPONSE = {
-    "final_stance": (
-        "The core position remains valid, though the debate has surfaced "
-        "important nuances regarding implementation timelines and risk thresholds."
-    ),
-    "what_changed": (
-        "The cross-examination revealed that the original confidence level was "
-        "slightly overstated; a more cautious optimism is appropriate."
-    ),
-    "remaining_concerns": (
-        "The long-term second-order effects remain insufficiently modeled, "
-        "and external dependency risks need further analysis."
-    ),
-    "recommendation": (
-        "Proceed with a controlled pilot program, establish clear success metrics, "
-        "and conduct a formal review at the 6-month milestone before full deployment."
-    ),
-}
+class MockProvider(LLMService):
+    """Deterministic mock: returns a valid structured response for any round."""
 
-_FALLBACK_RESPONSE = {
-    "result": "Mock LLM response.",
-}
+    async def generate(self, request: LLMRequest) -> LLMResponse:
+        import json
+        return LLMResponse(
+            content=json.dumps(_MOCK_STRUCTURED),
+            prompt_tokens=10,
+            completion_tokens=50,
+            latency_ms=1,
+        )
 
-# ── Keywords used to detect which round is being served ─────────────────────
-
-_ROUND1_KEYWORDS = {"opening statement", "round 1", "key_points", "confidence"}
-_ROUND2_KEYWORDS = {"challenge", "cross-examination", "round 2", "rebuttal"}
-_ROUND3_KEYWORDS = {"final", "synthesis", "round 3", "what_changed", "recommendation"}
-
-
-def _detect_round(prompt_lower: str) -> dict:
-    if any(kw in prompt_lower for kw in _ROUND1_KEYWORDS):
-        return _ROUND1_RESPONSE
-    if any(kw in prompt_lower for kw in _ROUND2_KEYWORDS):
-        return _ROUND2_RESPONSE
-    if any(kw in prompt_lower for kw in _ROUND3_KEYWORDS):
-        return _ROUND3_RESPONSE
-    return _FALLBACK_RESPONSE
-
-
-class MockProvider(LLMProvider):
-    """
-    Deterministic provider that returns pre-defined JSON for each round type.
-    No network calls are made.
-    """
-
-    async def generate(self, prompt: str) -> str:
-        logger.debug("MockProvider: returning fixture response.")
-        response = _detect_round(prompt.lower())
-        return json.dumps(response)
-
-    @property
-    def provider_name(self) -> str:
-        return "mock"

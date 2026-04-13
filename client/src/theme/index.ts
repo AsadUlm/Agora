@@ -2,29 +2,29 @@ import { createTheme } from "@mui/material/styles";
 
 const theme = createTheme({
     palette: {
-        mode: "light",
+        mode: "dark",
         primary: {
-            main: "#1B2A4A",
-            light: "#2E4068",
-            dark: "#111D35",
+            main: "#F5A623",
+            light: "#F7BA55",
+            dark: "#C4841A",
         },
         secondary: {
-            main: "#5C7CFA",
-            light: "#849DFB",
-            dark: "#3D5FD9",
+            main: "#6C8EF5",
+            light: "#8FA8F8",
+            dark: "#4A6BE0",
         },
         background: {
-            default: "#F5F6FA",
-            paper: "#FFFFFF",
+            default: "#0F1117",
+            paper: "#1A1D27",
         },
         text: {
-            primary: "#1A1D26",
-            secondary: "#5F6577",
+            primary: "#F0F0F0",
+            secondary: "#9CA3AF",
         },
-        divider: "#E2E5EF",
-        success: { main: "#2E7D4F" },
-        error: { main: "#C93545" },
-        warning: { main: "#D4860A" },
+        divider: "#2A2D3A",
+        success: { main: "#34D399" },
+        error: { main: "#F87171" },
+        warning: { main: "#FBBF24" },
     },
     typography: {
         fontFamily: "'Inter', 'Roboto', 'Helvetica', 'Arial', sans-serif",
@@ -32,7 +32,7 @@ const theme = createTheme({
         h5: { fontWeight: 600, letterSpacing: "-0.01em" },
         h6: { fontWeight: 600 },
         subtitle1: { fontWeight: 500 },
-        body2: { color: "#5F6577" },
+        body2: { color: "#9CA3AF" },
     },
     shape: {
         borderRadius: 12,
@@ -42,7 +42,8 @@ const theme = createTheme({
             defaultProps: { elevation: 0 },
             styleOverrides: {
                 root: {
-                    border: "1px solid #E2E5EF",
+                    border: "1px solid #2A2D3A",
+                    backgroundImage: "none",
                 },
             },
         },
@@ -58,11 +59,46 @@ const theme = createTheme({
                     padding: "14px 32px",
                     fontSize: "1rem",
                 },
+                containedPrimary: {
+                    color: "#0F1117",
+                    "&:hover": {
+                        backgroundColor: "#F7BA55",
+                    },
+                },
             },
         },
         MuiTextField: {
             defaultProps: {
                 variant: "outlined",
+            },
+        },
+        MuiOutlinedInput: {
+            styleOverrides: {
+                root: {
+                    "& .MuiOutlinedInput-notchedOutline": {
+                        borderColor: "#2A2D3A",
+                    },
+                    "&:hover .MuiOutlinedInput-notchedOutline": {
+                        borderColor: "#6C8EF5",
+                    },
+                },
+            },
+        },
+        MuiCssBaseline: {
+            styleOverrides: {
+                "input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus, input:-webkit-autofill:active": {
+                    WebkitBoxShadow: "0 0 0 1000px #1A1D27 inset !important",
+                    WebkitTextFillColor: "#F0F0F0 !important",
+                    caretColor: "#F0F0F0",
+                    borderRadius: "inherit",
+                },
+            },
+        },
+        MuiPaper: {
+            styleOverrides: {
+                root: {
+                    backgroundImage: "none",
+                },
             },
         },
         MuiChip: {

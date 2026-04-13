@@ -1,98 +1,112 @@
 /* ------------------------------------------------------------------ */
-/*  Domain types for the Agora debate platform                        */
+/*  Debate domain types — mirrors backend response shapes              */
 /* ------------------------------------------------------------------ */
 
-// ── Request types ────────────────────────────────────────────────────
+/** Per-agent, per-round generation outcome. */
+export type GenerationStatus = "success" | "failed" | "skipped";
 
-export interface AgentInput {
-    role: string;
-    config?: Record<string, unknown>;
-}
+/** The three structural round types in every debate. */
+export type RoundType = "initial" | "critique" | "final";
 
-export interface StartDebateRequest {
-    question: string;
-    agents: AgentInput[];
-}
+/** Overall debate turn lifecycle status. */
+export type DebateStatus = "idle" | "queued" | "running" | "completed" | "failed" | "unknown";
 
-// ── Shared enums / literals ──────────────────────────────────────────
+// ── Structured JSON shapes returned inside AgentRoundResult.structured ─
 
-export type GenerationStatus = "success" | "failed";
-
-export type DebateStatus = "pending" | "in_progress" | "completed" | "failed";
-
-// ── Round 1 — Opening Statements ─────────────────────────────────────
-
-export interface Round1Entry {
-    agent_role: string;
+export interface Round1Structured {
     stance: string;
     key_points: string[];
     confidence: number;
-    generation_status: GenerationStatus;
-    error?: string;
 }
 
-// ── Round 2 — Cross Examination ──────────────────────────────────────
-
-export interface Round2Entry {
-    challenger: string;
-    responder: string;
+export interface CritiqueEntry {
+    target_role: string;
     challenge: string;
-    response: string;
-    rebuttal: string;
-    generation_status: GenerationStatus;
-    error?: string;
+    weakness: string;
+    counter_evidence?: string;
 }
 
-// ── Round 3 — Final Synthesis ────────────────────────────────────────
+export interface Round2Structured {
+    critiques: CritiqueEntry[];
+}
 
-export interface Round3Entry {
-    agent_role: string;
+export interface Round3Structured {
     final_stance: string;
     what_changed: string;
-    remaining_concerns: string[];
+    remaining_concerns: string;
     recommendation: string;
+}
+
+// ── API response: POST /debates/start ────────────────────────────────
+
+/** One agent's output in a single round (used in GET /debates/{id} round data). */
+export interface AgentRoundResult {
+    agent_id: string;
+    role: string;
+    content: string;
+    structured: Record<string, unknown>;
     generation_status: GenerationStatus;
-    error?: string;
+    error: string | null;
 }
 
-// ── Composite round data ─────────────────────────────────────────────
-
-export type RoundData = Round1Entry[] | Round2Entry[] | Round3Entry[];
-
-// ── Response types — POST /debates/start ─────────────────────────────
-
-export interface DebateResult {
-    round1: Round1Entry[];
-    round2: Round2Entry[];
-    round3: Round3Entry[];
-}
-
+/** Full response from POST /debates/start — async model, returns immediately. */
 export interface DebateStartResponse {
     debate_id: string;
+    turn_id: string;
     question: string;
-    status: DebateStatus;
-    result: DebateResult;
+    status: DebateStatus; // always "queued"
+    ws_session_url: string;
+    ws_turn_url: string;
 }
 
-// ── Response types — GET /debates/:id ────────────────────────────────
+// ── API response: GET /debates/{id} ──────────────────────────────────
 
-export interface AgentResponse {
+export interface DebateAgent {
     id: string;
     role: string;
     config: Record<string, unknown>;
 }
 
-export interface RoundResponse {
-    id: string;
-    round_number: number;
-    data: RoundData;
+export interface RoundDataEntry {
+    agent_id: string;
+    message_type: string;
+    data: Record<string, unknown>;
 }
 
-export interface DebateResponse {
+export interface DebateRound {
+    id: string;
+    round_number: number;
+    round_type: RoundType;
+    status: string;
+    data: RoundDataEntry[];
+}
+
+export interface DebateDetail {
     id: string;
     question: string;
     status: DebateStatus;
     created_at: string;
-    agents: AgentResponse[];
-    rounds: RoundResponse[];
+    agents: DebateAgent[];
+    rounds: DebateRound[];
+}
+
+// ── API response: GET /debates ────────────────────────────────────────
+
+export interface DebateListItem {
+    id: string;
+    title: string;
+    status: DebateStatus;
+    created_at: string;
+}
+
+// ── Request types ─────────────────────────────────────────────────────
+
+export interface AgentCreateRequest {
+    role: string;
+    config: Record<string, unknown>;
+}
+
+export interface DebateStartRequest {
+    question: string;
+    agents: AgentCreateRequest[];
 }

@@ -1,10 +1,14 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
-from sqlalchemy import DateTime, Integer, Text, Uuid, ForeignKey, JSON
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import DateTime, Integer, Text, Uuid, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+EMBEDDING_DIM = 1536  # OpenAI text-embedding-3-small / ada-002 dimension
 
 
 class DocumentChunk(Base):
@@ -19,7 +23,7 @@ class DocumentChunk(Base):
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding = mapped_column(JSON, nullable=True)  # Stores embedding as JSON array (pgvector not required)
+    embedding: Mapped[Optional[list[float]]] = mapped_column(Vector(EMBEDDING_DIM), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

@@ -1,21 +1,31 @@
 import api from "./api";
 import type {
-    StartDebateRequest,
+    DebateDetail,
+    DebateListItem,
+    DebateStartRequest,
     DebateStartResponse,
-    DebateResponse,
 } from "../types/debate";
 
 export async function startDebate(
-    payload: StartDebateRequest,
+    data: DebateStartRequest,
 ): Promise<DebateStartResponse> {
-    const { data } = await api.post<DebateStartResponse>(
-        "/debates/start",
-        payload,
-    );
-    return data;
+    const res = await api.post<DebateStartResponse>("/debates/start", data);
+    return res.data;
 }
 
-export async function getDebateById(id: string): Promise<DebateResponse> {
-    const { data } = await api.get<DebateResponse>(`/debates/${encodeURIComponent(id)}`);
-    return data;
+export async function getDebate(id: string): Promise<DebateDetail> {
+    const res = await api.get<DebateDetail>(`/debates/${id}`);
+    return res.data;
+}
+
+export async function listDebates(): Promise<DebateListItem[]> {
+    const res = await api.get<DebateListItem[]>("/debates");
+    return res.data;
+}
+
+export function buildWsUrl(wsPath: string): string {
+    const base = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000")
+        .replace(/^https?/, (s: string) => (s === "https" ? "wss" : "ws"));
+    const token = localStorage.getItem("agora_access_token") ?? "";
+    return `${base}${wsPath}?token=${encodeURIComponent(token)}`;
 }

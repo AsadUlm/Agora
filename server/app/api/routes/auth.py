@@ -16,7 +16,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db.session import get_db
-from app.models.user import User, UserSettings
+from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
     RefreshRequest,
@@ -51,15 +51,9 @@ async def signup(body: SignupRequest, db: AsyncSession = Depends(get_db)):
         id=uuid.uuid4(),
         email=body.email,
         password_hash=hash_password(body.password),
-        display_name=body.display_name,
-        auth_provider="email",
+        name=body.display_name,
     )
     db.add(user)
-    await db.flush()
-
-    # Create default settings
-    user_settings = UserSettings(user_id=user.id)
-    db.add(user_settings)
     await db.flush()
 
     return _build_token_response(user)
@@ -74,12 +68,6 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
-        )
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is deactivated",
         )
 
     return _build_token_response(user)
@@ -113,10 +101,10 @@ async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    if user is None or not user.is_active:
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
+            detail="User not found",
         )
 
     return _build_token_response(user)

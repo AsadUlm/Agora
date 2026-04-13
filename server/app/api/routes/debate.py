@@ -1,102 +1,156 @@
 """
 Debate API routes.
 
-POST /debates/start  — Start a new debate (creates DB records + runs engine).
-GET  /debates/{id}   — Retrieve a full debate with all agents and rounds.
+POST /debates/start      — Start a new debate session (async, returns immediately).
+GET  /debates/{id}       — Retrieve full debate result by session ID.
+GET  /debates            — List all debates for the current user.
+
+Async execution model (Step 4)
+-------------------------------
+POST /debates/start no longer blocks until all rounds complete.
+Instead it:
+  1. Creates session / agents / turn / user-question message
+  2. Commits to DB immediately so the background task can safely open its own session
+  3. Schedules ChatEngine execution via FastAPI BackgroundTasks
+  4. Returns 201 with status="queued" and WebSocket subscription URLs
+
+The frontend should:
+  - Subscribe to WS /ws/chat-turns/{turn_id} immediately after receiving the response
+  - Receive real-time events (turn_started, message_created, turn_completed, …)
+  - Call GET /debates/{debate_id} once turn_completed is received for the final snapshot
 """
 
+from __future__ import annotations
+
+import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.auth import get_current_user
+from app.core.config import settings
 from app.db.session import get_db
-from app.models.agent import Agent
-from app.models.debate import Debate
+from app.models.chat_agent import ChatAgent
+from app.models.chat_session import ChatSession
+from app.models.chat_turn import ChatTurn, ChatTurnStatus
+from app.models.message import Message, MessageType, MessageVisibility, SenderType
 from app.models.round import Round
-from app.schemas.debate import DebateResponse, DebateStartRequest, DebateStartResponse
-from app.services.debate_engine.engine import DebateEngine
-from app.services.llm.exceptions import LLMError
+from app.models.user import User
+from app.schemas.agent_config import AgentConfig
+from app.schemas.debate import (
+    DebateListItem,
+    DebateResponse,
+    DebateStartRequest,
+    DebateStartResponse,
+)
+from app.services.execution_runner import run_turn_background
+from app.services.ws_manager import ws_manager
+from app.db.session import get_session_factory
 
 router = APIRouter()
 
 
-@router.post("/start", response_model=DebateStartResponse, status_code=201)
+@router.post("/start", response_model=DebateStartResponse, status_code=status.HTTP_201_CREATED)
 async def start_debate(
     request: DebateStartRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    session_factory=Depends(get_session_factory),
 ) -> DebateStartResponse:
     """
-    Start a new debate:
+    Start a new debate session (async execution model).
 
-    1. Persist a Debate record (status = in_progress).
-    2. Persist one Agent record per requested agent.
-    3. Run the DebateEngine (Rounds 1-3).
-    4. Persist three Round records with the engine output.
-    5. Mark the Debate as completed and return the full result.
+    Creates the session, agents, turn, and user-question message, then
+    enqueues background execution and returns immediately with status='queued'.
+
+    The client should subscribe to the WebSocket endpoints provided in the
+    response (ws_turn_url or ws_session_url) to receive live progress events.
+    Once 'turn_completed' is received, call GET /debates/{debate_id} for the
+    full persisted result.
     """
-    # ------------------------------------------------------------------
-    # 1. Create and flush the Debate so we get its UUID immediately.
-    # ------------------------------------------------------------------
-    debate = Debate(question=request.question, status="in_progress")
-    db.add(debate)
+    if not request.agents:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one agent is required.",
+        )
+
+    # ── 1. Create ChatSession ────────────────────────────────────────────────
+    session = ChatSession(user_id=current_user.id, title=request.question[:255])
+    db.add(session)
     await db.flush()
 
-    # ------------------------------------------------------------------
-    # 2. Create Agents and flush to obtain their UUIDs before passing
-    #    them to the engine (the engine uses agent.id and agent.role).
-    # ------------------------------------------------------------------
-    db_agents: list[Agent] = []
-    for agent_req in request.agents:
-        # Merge the typed config back into the raw dict for storage.
-        stored_config = agent_req.config.copy()
-        if agent_req.parsed_config:
-            stored_config["_parsed"] = agent_req.parsed_config.model_dump()
-        agent = Agent(
-            debate_id=debate.id,
+    # ── 2. Create ChatAgents ─────────────────────────────────────────────────
+    for i, agent_req in enumerate(request.agents):
+        cfg = AgentConfig.from_raw(agent_req.config)
+        agent = ChatAgent(
+            chat_session_id=session.id,
+            name=agent_req.role,
             role=agent_req.role,
-            config=stored_config,
+            provider=cfg.model.provider or settings.LLM_PROVIDER,
+            model=cfg.model.model or settings.LLM_MODEL,
+            temperature=(
+                cfg.model.temperature
+                if cfg.model.temperature is not None
+                else settings.LLM_TEMPERATURE
+            ),
+            reasoning_style=cfg.reasoning.style,
+            position_order=i,
+            is_active=True,
         )
         db.add(agent)
-        db_agents.append(agent)
-
     await db.flush()
 
-    # ------------------------------------------------------------------
-    # 3. Run the DebateEngine.
-    # ------------------------------------------------------------------
-    engine = DebateEngine()
-    try:
-        result = await engine.run_debate(question=request.question, agents=db_agents)
-    except LLMError as exc:
-        debate.status = "failed"
-        await db.flush()
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    # ------------------------------------------------------------------
-    # 4. Persist one Round record per round.
-    # ------------------------------------------------------------------
-    for round_number, round_key in enumerate(["round1", "round2", "round3"], start=1):
-        round_record = Round(
-            debate_id=debate.id,
-            round_number=round_number,
-            data=result[round_key],
-        )
-        db.add(round_record)
-
-    # ------------------------------------------------------------------
-    # 5. Mark debate complete and let the dependency commit the session.
-    # ------------------------------------------------------------------
-    debate.status = "completed"
+    # ── 3. Create ChatTurn (queued — background task transitions it to running)
+    turn = ChatTurn(
+        chat_session_id=session.id,
+        turn_index=1,
+        status=ChatTurnStatus.queued,
+    )
+    db.add(turn)
     await db.flush()
+
+    # ── 4. Save user question as Message ─────────────────────────────────────
+    user_message = Message(
+        chat_session_id=session.id,
+        chat_turn_id=turn.id,
+        round_id=None,
+        chat_agent_id=None,
+        sender_type=SenderType.user,
+        message_type=MessageType.user_input,
+        visibility=MessageVisibility.visible,
+        content=request.question,
+        sequence_no=0,
+    )
+    db.add(user_message)
+
+    # ── 5. Commit NOW so the background task can open its own session safely ─
+    #
+    # We commit explicitly here rather than relying on get_db's cleanup commit.
+    # This guarantees the data is in the DB before any background task starts,
+    # regardless of the exact ordering of FastAPI BackgroundTasks vs dependency
+    # cleanup. get_db will find nothing left to commit and exits cleanly.
+    await db.commit()
+
+    # ── 6. Schedule background debate execution ───────────────────────────────
+    background_tasks.add_task(
+        run_turn_background,
+        turn_id=turn.id,
+        session_id=session.id,
+        on_event=ws_manager.emit,
+        session_factory=session_factory,
+    )
 
     return DebateStartResponse(
-        debate_id=debate.id,
-        question=debate.question,
-        status=debate.status,
-        result=result,
+        debate_id=session.id,
+        turn_id=turn.id,
+        question=request.question,
+        status="queued",
+        ws_session_url=f"/ws/chat-sessions/{session.id}",
+        ws_turn_url=f"/ws/chat-turns/{turn.id}",
     )
 
 
@@ -104,26 +158,114 @@ async def start_debate(
 async def get_debate(
     debate_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> DebateResponse:
     """
-    Return the full debate detail including all agents and rounds.
-    Rounds are ordered by round_number (ascending).
+    Return full debate detail including all rounds and agent messages.
+
+    Only the session owner can view their debate.
     """
     stmt = (
-        select(Debate)
-        .where(Debate.id == debate_id)
+        select(ChatSession)
+        .where(ChatSession.id == debate_id)
+        .where(ChatSession.user_id == current_user.id)
         .options(
-            selectinload(Debate.agents),
-            selectinload(Debate.rounds),
+            selectinload(ChatSession.chat_agents),
+            selectinload(ChatSession.chat_turns)
+            .selectinload(ChatTurn.rounds)
+            .selectinload(Round.messages),
+            selectinload(ChatSession.chat_turns)
+            .selectinload(ChatTurn.messages),
         )
     )
     row = await db.execute(stmt)
-    debate = row.scalar_one_or_none()
+    session = row.scalar_one_or_none()
 
-    if debate is None:
-        raise HTTPException(status_code=404, detail=f"Debate {debate_id} not found.")
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Debate {debate_id} not found.",
+        )
 
-    # Sort rounds by round_number for a predictable response order.
-    debate.rounds.sort(key=lambda r: r.round_number)
+    # Recover the original question from the user_input message
+    question = session.title or ""
+    for turn in session.chat_turns:
+        for msg in turn.messages:
+            if msg.message_type == MessageType.user_input:
+                question = msg.content
+                break
 
-    return debate
+    rounds_out = []
+    for turn in session.chat_turns:
+        for round_obj in sorted(turn.rounds, key=lambda r: r.round_number):
+            agent_outputs = []
+            for msg in sorted(round_obj.messages, key=lambda m: m.sequence_no):
+                if msg.sender_type != SenderType.agent:
+                    continue
+                try:
+                    structured = json.loads(msg.content)
+                except (json.JSONDecodeError, TypeError):
+                    structured = {"raw_content": msg.content}
+                agent_outputs.append({
+                    "agent_id": str(msg.chat_agent_id),
+                    "message_type": msg.message_type.value,
+                    "data": structured,
+                })
+            rounds_out.append({
+                "id": str(round_obj.id),
+                "round_number": round_obj.round_number,
+                "round_type": round_obj.round_type.value,
+                "status": round_obj.status.value,
+                "data": agent_outputs,
+            })
+
+    turn_status = "unknown"
+    if session.chat_turns:
+        turn_status = session.chat_turns[0].status.value
+
+    return DebateResponse(
+        id=session.id,
+        question=question,
+        status=turn_status,
+        created_at=session.created_at,
+        agents=[
+            {"id": str(a.id), "role": a.role, "config": {}}
+            for a in session.chat_agents
+        ],
+        rounds=rounds_out,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /debates
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("", response_model=list[DebateListItem])
+async def list_debates(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[DebateListItem]:
+    """Return a summary list of all debates for the authenticated user."""
+    stmt = (
+        select(ChatSession)
+        .where(ChatSession.user_id == current_user.id)
+        .options(selectinload(ChatSession.chat_turns))
+        .order_by(ChatSession.created_at.desc())
+    )
+    rows = await db.execute(stmt)
+    sessions = rows.scalars().all()
+
+    result = []
+    for s in sessions:
+        turn_status = "unknown"
+        if s.chat_turns:
+            turn_status = s.chat_turns[0].status.value
+        result.append(
+            DebateListItem(
+                id=s.id,
+                title=s.title or "",
+                status=turn_status,
+                created_at=s.created_at,
+            )
+        )
+    return result

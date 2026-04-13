@@ -1,55 +1,23 @@
-"""
-Custom exception hierarchy for the LLM service layer.
+"""LLM service exception hierarchy — internal contract."""
 
-These exceptions provide explicit, typed error signals to callers
-instead of silent empty-dict fallbacks.
-
-Hierarchy:
-    LLMError
-    ├── LLMGenerationError     — provider call failed (network, auth, rate-limit)
-    ├── LLMParsingError        — response received but JSON parsing failed
-    ├── ProviderConfigError    — provider misconfigured (missing key, unknown name)
-    └── ProviderUnavailableError — placeholder provider requested
-"""
+from __future__ import annotations
 
 
 class LLMError(Exception):
-    """Base for all LLM-layer exceptions."""
-
-
-class LLMGenerationError(LLMError):
-    """The underlying LLM provider failed to produce a response."""
-
-    def __init__(self, provider: str, detail: str) -> None:
-        self.provider = provider
-        self.detail = detail
-        super().__init__(f"[{provider}] generation failed: {detail}")
-
-
-class LLMParsingError(LLMError):
-    """We received a response but could not parse it as valid JSON."""
-
-    def __init__(self, provider: str, raw: str, detail: str) -> None:
-        self.provider = provider
-        self.raw = raw
-        self.detail = detail
-        super().__init__(f"[{provider}] JSON parse failed: {detail}")
+    """Base class for all LLM-related errors."""
 
 
 class ProviderConfigError(LLMError):
-    """The LLM provider is incorrectly configured (missing key, bad name, etc.)."""
-
-    def __init__(self, detail: str) -> None:
-        self.detail = detail
-        super().__init__(f"Provider configuration error: {detail}")
+    """Raised when an LLM provider is misconfigured (missing API key, etc.)."""
 
 
 class ProviderUnavailableError(LLMError):
-    """A placeholder provider was requested but is not yet implemented."""
+    """Raised when the selected provider is a placeholder and cannot be used."""
 
-    def __init__(self, provider: str) -> None:
-        self.provider = provider
-        super().__init__(
-            f"Provider '{provider}' is registered as a placeholder and "
-            f"is not yet available for use. Please choose an active provider."
-        )
+
+class LLMGenerationError(LLMError):
+    """Raised when the LLM call itself fails (API error, timeout, etc.)."""
+
+
+class LLMParseError(LLMError):
+    """Raised when the LLM response cannot be parsed into expected structure."""

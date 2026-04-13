@@ -1,73 +1,64 @@
 """
-DebateEngine — orchestrates a full 3-round AI debate.
+Debate Engine — orchestrates a 3-round debate across multiple agents.
 
-Usage:
-    engine = DebateEngine()
-    result = await engine.run_debate(question="...", agents=[agent1, agent2])
-
-Returns:
-    {
-        "round1": [...],   # Opening statements
-        "round2": [...],   # Cross-examination exchanges
-        "round3": [...]    # Final syntheses
-    }
+Step 1 stub: imports resolve, interface is defined.
+Actual round execution is wired in Step 2.
 """
+
+from __future__ import annotations
 
 import logging
 from typing import Any
-
-from app.services.debate_engine.round1 import generate_round1
-from app.services.debate_engine.round2 import generate_round2
-from app.services.debate_engine.round3 import generate_round3
 
 logger = logging.getLogger(__name__)
 
 
 class DebateEngine:
     """
-    Orchestrates a structured 3-round AI debate.
+    Orchestrates a full 3-round debate.
 
-    • Round 1 — Each agent generates an opening statement (stance, key_points, confidence).
-    • Round 2 — All agent pairs engage in cross-examination (challenge, response, rebuttal).
-    • Round 3 — Each agent produces a final synthesis (final_stance, what_changed,
-                remaining_concerns, recommendation).
+    Round 1 — Opening Statements (generate_round1)
+    Round 2 — Cross Examination  (generate_round2)
+    Round 3 — Final Synthesis    (generate_round3)
     """
 
-    async def run_debate(self, question: str, agents: list[Any]) -> dict:
+    async def run_debate(
+        self,
+        question: str,
+        agents: list[Any],
+    ) -> dict[str, Any]:
         """
-        Execute all three debate rounds sequentially.
-
-        Each round's output is passed forward as context to subsequent rounds,
-        allowing agents to build on what was said earlier.
-
-        Args:
-            question: The central debate question or proposition.
-            agents:   List of Agent ORM objects with .id and .role attributes.
+        Execute all 3 rounds for the given agents on the given question.
 
         Returns:
-            Structured dict containing round1, round2, and round3 results.
+            {
+                "round1": [...],   # list of per-agent opening statements
+                "round2": [...],   # list of cross-examination exchanges
+                "round3": [...],   # list of final synthesis per agent
+            }
         """
-        if not agents:
-            raise ValueError("A debate requires at least one agent.")
+        from app.services.debate_engine.round1 import generate_round1
+        from app.services.debate_engine.round3 import generate_round3
 
-        logger.info("DebateEngine starting. Question: %s | Agents: %d", question, len(agents))
+        logger.info("Debate engine starting: question=%r, agents=%d", question[:80], len(agents))
 
-        round1 = await generate_round1(question=question, agents=agents)
-        logger.info("Round 1 complete — %d opening statements.", len(round1))
+        round1_results = await generate_round1(question=question, agents=agents)
+        logger.info("Round 1 completed for %d agents.", len(round1_results))
 
-        round2 = await generate_round2(question=question, agents=agents, round1_results=round1)
-        logger.info("Round 2 complete — %d exchanges.", len(round2))
+        # Round 2 is implemented in Step 2
+        round2_results: list[dict] = []
+        logger.info("Round 2 skipped (not yet implemented).")
 
-        round3 = await generate_round3(
+        round3_results = await generate_round3(
             question=question,
             agents=agents,
-            round1_results=round1,
-            round2_results=round2,
+            round1_results=round1_results,
+            round2_results=round2_results,
         )
-        logger.info("Round 3 complete — %d final syntheses.", len(round3))
+        logger.info("Round 3 completed for %d agents.", len(round3_results))
 
         return {
-            "round1": round1,
-            "round2": round2,
-            "round3": round3,
+            "round1": round1_results,
+            "round2": round2_results,
+            "round3": round3_results,
         }

@@ -9,8 +9,8 @@ from app.db.base import Base
 
 
 class LLMCallStatus(str, enum.Enum):
-    started = "started"
-    success = "success"
+    running = "running"
+    completed = "completed"
     failed = "failed"
 
 
@@ -39,7 +39,7 @@ class LLMCall(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     
     status: Mapped[LLMCallStatus] = mapped_column(
-        SQLEnum(LLMCallStatus, name="llm_call_status"), nullable=False, default=LLMCallStatus.started
+        SQLEnum(LLMCallStatus, name="llm_call_status"), nullable=False, default=LLMCallStatus.running
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

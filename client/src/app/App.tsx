@@ -4,7 +4,7 @@ import ProtectedRoute from "../components/auth/ProtectedRoute";
 import { AuthProvider } from "../context/AuthContext";
 import LoginPage from "../pages/LoginPage";
 import SignupPage from "../pages/SignupPage";
-import DebatePage from "../pages/DebatePage";
+import HomePage from "../pages/HomePage";
 import theme from "../theme";
 
 export default function App() {
@@ -14,21 +14,16 @@ export default function App() {
             <BrowserRouter>
                 <AuthProvider>
                     <Routes>
-                        {/* Public routes */}
                         <Route path="/login" element={<LoginPage />} />
                         <Route path="/signup" element={<SignupPage />} />
-
-                        {/* Protected routes */}
                         <Route
                             path="/"
                             element={
                                 <ProtectedRoute>
-                                    <DebatePage />
+                                    <HomePage />
                                 </ProtectedRoute>
                             }
                         />
-
-                        {/* Fallback */}
                         <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
                 </AuthProvider>
