@@ -45,7 +45,7 @@ from app.models.chat_agent import ChatAgent
 from app.models.chat_session import ChatSession
 from app.models.chat_turn import ChatTurn, ChatTurnStatus
 from app.models.message import MessageType
-from app.schemas.contracts import AgentContext, AgentRoundResult, TurnContext
+from app.schemas.contracts import AgentContext, AgentRoundResult, ExecutionEvent, ExecutionEventType, OnEventCallback, TurnContext
 from app.services.debate_engine.round_manager import RoundManager
 
 logger = logging.getLogger(__name__)
@@ -55,13 +55,22 @@ class ChatEngine:
     """
     Synchronous (blocking within the request) debate turn executor.
 
-    Usage:
+    Usage (sync, Step 2):
         engine = ChatEngine(db)
         result = await engine.start_turn_execution(turn_id)
+
+    Usage (async + streaming, Step 3):
+        engine = ChatEngine(db, on_event=ws_broadcast_fn)
+        asyncio.create_task(engine.start_turn_execution(turn_id))
+
+    The `on_event` callback receives ExecutionEvent objects at every lifecycle
+    transition (turn_started, round_started, agent_completed, turn_completed, …).
+    When None (default), the engine runs silently — no change to synchronous behavior.
     """
 
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(self, db: AsyncSession, on_event: OnEventCallback | None = None) -> None:
         self.db = db
+        self._on_event = on_event
 
     async def start_turn_execution(self, turn_id: uuid.UUID) -> dict[str, Any]:
         """
@@ -91,9 +100,14 @@ class ChatEngine:
         turn.current_round_no = 1
         await self.db.flush()
         logger.info("Turn %s started: question=%r agents=%d", turn_id, ctx.question[:60], len(ctx.agents))
+        await self._emit(ExecutionEvent(
+            event_type=ExecutionEventType.turn_started,
+            session_id=ctx.session_id,
+            turn_id=ctx.turn_id,
+        ))
 
-        # ── Execute rounds via RoundManager ──────────────────────────────────
-        round_manager = RoundManager(db=self.db, seq_start=1)
+        # ── Execute rounds via RoundManager ────────────────────────────────────
+        round_manager = RoundManager(db=self.db, seq_start=1, on_event=self._on_event)
 
         try:
             # Round 1
@@ -116,6 +130,11 @@ class ChatEngine:
             await self.db.flush()
 
             logger.info("Turn %s completed successfully.", turn_id)
+            await self._emit(ExecutionEvent(
+                event_type=ExecutionEventType.turn_completed,
+                session_id=ctx.session_id,
+                turn_id=ctx.turn_id,
+            ))
 
         except Exception as exc:
             # ── Transition: running → failed ──────────────────────────────────
@@ -123,6 +142,12 @@ class ChatEngine:
             turn.ended_at = datetime.now(timezone.utc)
             await self.db.flush()
             logger.exception("Turn %s failed: %s", turn_id, exc)
+            await self._emit(ExecutionEvent(
+                event_type=ExecutionEventType.turn_failed,
+                session_id=ctx.session_id,
+                turn_id=ctx.turn_id,
+                payload={"error": str(exc)},
+            ))
             raise
 
         # ── Serialize results ─────────────────────────────────────────────────
@@ -182,6 +207,19 @@ class ChatEngine:
             agents=[_agent_to_ctx(a) for a in active_agents],
             turn_index=turn.turn_index,
         )
+
+    async def _emit(self, event: ExecutionEvent) -> None:
+        """
+        Emit a lifecycle event to the registered callback (if any).
+
+        During synchronous execution (Step 2) this is a no-op unless a
+        callback is provided. In Step 3, the route will wire in a WebSocket
+        broadcast function:
+
+            engine = ChatEngine(db, on_event=ws_manager.broadcast)
+        """
+        if self._on_event is not None:
+            await self._on_event(event)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

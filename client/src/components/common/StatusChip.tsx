@@ -18,6 +18,11 @@ const config: Record<
         color: "error",
         icon: <ErrorOutlineIcon fontSize="small" />,
     },
+    skipped: {
+        label: "Skipped",
+        color: "default",
+        icon: <ErrorOutlineIcon fontSize="small" />,
+    },
 };
 
 interface StatusChipProps {

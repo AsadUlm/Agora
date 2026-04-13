@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "llama-3.3-70b-versatile"
     LLM_TEMPERATURE: float = 0.7
 
-    # ── LLM API keys (optional — server starts without them, falls back to mock)
+    # ── LLM API keys (optional — falls back to mock if not set) ──────────
     GROQ_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
 

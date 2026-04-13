@@ -19,8 +19,7 @@ import time
 from groq import AsyncGroq, APIStatusError, APITimeoutError
 
 from app.schemas.contracts import LLMRequest, LLMResponse
-from app.services.llm.exceptions import LLMGenerationError, LLMParseError
-from app.services.llm.parser import parse_json_from_llm
+from app.services.llm.exceptions import LLMGenerationError
 from app.services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
@@ -94,20 +93,3 @@ class GroqProvider(LLMService):
             completion_tokens=usage.completion_tokens if usage else 0,
             latency_ms=latency_ms,
         )
-
-    async def generate_structured(self, prompt: str) -> dict:
-        """
-        Call Groq and parse the response as JSON.
-
-        Raises:
-            LLMGenerationError: On API failure.
-            LLMParseError:      If the response cannot be parsed as JSON.
-        """
-        request = LLMRequest(
-            provider="groq",
-            model=self._default_model,
-            prompt=prompt,
-            temperature=self._default_temperature,
-        )
-        response = await self.generate(request)
-        return parse_json_from_llm(response.content)
