@@ -14,9 +14,9 @@ interface AppShellProps {
     children: ReactNode;
 }
 
-const SIDEBAR_EXPANDED = 240;
-const SIDEBAR_COLLAPSED = 60;
-const SIDEBAR_BG = "#090B0F";
+const SIDEBAR_EXPANDED = 220;
+const SIDEBAR_COLLAPSED = 52;
+const SIDEBAR_MARGIN = 12;
 
 interface NavItem {
     icon: ReactNode;
@@ -42,21 +42,23 @@ export default function AppShell({ children }: AppShellProps) {
 
     return (
         <Box sx={{ display: "flex", minHeight: "100vh", bgcolor: "background.default" }}>
-            {/* Sidebar */}
+            {/* Sidebar — island style */}
             <Box
                 component="aside"
                 sx={{
                     width: sidebarWidth,
                     flexShrink: 0,
-                    bgcolor: SIDEBAR_BG,
+                    bgcolor: "rgba(14,16,24,0.92)",
+                    backdropFilter: "blur(10px)",
                     display: "flex",
                     flexDirection: "column",
-                    borderRight: "1px solid",
-                    borderColor: "divider",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                    borderRadius: "16px",
+                    boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
                     position: "fixed",
-                    top: 0,
-                    left: 0,
-                    height: "100vh",
+                    top: `${SIDEBAR_MARGIN}px`,
+                    left: `${SIDEBAR_MARGIN}px`,
+                    height: `calc(100vh - ${SIDEBAR_MARGIN * 2}px)`,
                     zIndex: 100,
                     overflow: "hidden",
                     transition: "width 0.22s cubic-bezier(0.4,0,0.2,1)",
@@ -254,7 +256,7 @@ export default function AppShell({ children }: AppShellProps) {
                 component="main"
                 sx={{
                     flexGrow: 1,
-                    ml: `${sidebarWidth}px`,
+                    ml: `${sidebarWidth + SIDEBAR_MARGIN + 8}px`,
                     minHeight: "100vh",
                     display: "flex",
                     flexDirection: "column",

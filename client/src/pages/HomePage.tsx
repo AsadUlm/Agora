@@ -5,11 +5,14 @@ import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
 import MenuRoundedIcon from "@mui/icons-material/MenuRounded";
 import PlayArrowRoundedIcon from "@mui/icons-material/PlayArrowRounded";
 import StopRoundedIcon from "@mui/icons-material/StopRounded";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import {
     Alert,
     Box,
     Chip,
     CircularProgress,
+    Divider,
     IconButton,
     InputBase,
     Stack,
@@ -20,14 +23,15 @@ import {
 import { useState, useMemo } from "react";
 import AppShell from "../components/layout/AppShell";
 import ModeratorCard from "../components/debate/ModeratorCard";
+import PresetSelector from "../components/debate/PresetSelector";
 import { useDebate } from "../hooks/useDebate";
 import type { AgentCreateRequest, Round1Structured, Round2Structured, Round3Structured } from "../types/debate";
 
 const MAX_CHARS = 500;
 
 const TABS = [
-    { icon: <BalanceIcon sx={{ fontSize: 15 }} />, label: "Start Debate", badge: null },
-    { icon: <GroupsRoundedIcon sx={{ fontSize: 15 }} />, label: "Agent Setup", badge: "Configure agents" },
+    { icon: <BalanceIcon sx={{ fontSize: 15 }} />, label: "Start Debate" },
+    { icon: <GroupsRoundedIcon sx={{ fontSize: 15 }} />, label: "Agent Setup" },
 ];
 
 const ROUND_LABELS: Record<number, string> = {
@@ -45,10 +49,8 @@ const ROUND_COLORS: Record<number, string> = {
 // Agent role colors — cycle through a palette for N agents
 const AGENT_PALETTE = ["#6C8EF5", "#F5A623", "#34D399", "#F472B6", "#A78BFA", "#38BDF8"];
 
-const DEFAULT_AGENTS: AgentCreateRequest[] = [
-    { role: "Proponent", config: { model: { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 }, reasoning: { style: "balanced" } } },
-    { role: "Opponent", config: { model: { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 }, reasoning: { style: "balanced" } } },
-];
+const DEFAULT_MODEL_CONFIG = { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 };
+const DEFAULT_REASONING = { style: "balanced" };
 
 function parseContent(content: string): Round1Structured | Round2Structured | Round3Structured | null {
     try { return JSON.parse(content); } catch { return null; }
@@ -62,13 +64,29 @@ interface MessageBubbleProps {
     content: string;
 }
 
+function ShowMoreToggle({ expanded, onToggle }: { expanded: boolean; onToggle: () => void }) {
+    return (
+        <Typography
+            variant="caption"
+            onClick={onToggle}
+            sx={{ color: "primary.main", cursor: "pointer", fontSize: "0.72rem", fontWeight: 600, mt: 0.75, display: "block", userSelect: "none", "&:hover": { color: "primary.light" } }}
+        >
+            {expanded ? "Show less ↑" : "Show more ↓"}
+        </Typography>
+    );
+}
+
 function MessageBubble({ agentLabel, agentColor, roundNumber, content }: MessageBubbleProps) {
+    const [expanded, setExpanded] = useState(false);
     const parsed = parseContent(content);
     const roundColor = ROUND_COLORS[roundNumber] ?? "#9CA3AF";
 
     // Round 1 — opening statement
     if (parsed && "stance" in parsed) {
         const p = parsed as Round1Structured;
+        const allPoints = p.key_points ?? [];
+        const visiblePoints = expanded ? allPoints : allPoints.slice(0, 2);
+        const hasMore = allPoints.length > 2 || (p.stance?.length ?? 0) > 120;
         return (
             <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2, height: "100%" }}>
                 <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
@@ -79,17 +97,20 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
                     <Chip label={`${Math.round((p.confidence ?? 0.8) * 100)}% confidence`} size="small"
                         sx={{ height: 18, fontSize: "0.6rem", bgcolor: "rgba(108,142,245,0.12)", color: "#6C8EF5", border: "none" }} />
                 </Stack>
-                <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.stance}</Typography>
-                {p.key_points?.length > 0 && (
+                <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75, ...(expanded ? {} : { overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }) }}>
+                    {p.stance}
+                </Typography>
+                {visiblePoints.length > 0 && (
                     <Stack spacing={0.4} sx={{ mt: 0.5 }}>
-                        {p.key_points.slice(0, 3).map((pt, i) => (
+                        {visiblePoints.map((pt, i) => (
                             <Stack key={i} direction="row" spacing={1} alignItems="flex-start">
                                 <Typography variant="caption" sx={{ color: roundColor, mt: "1px", flexShrink: 0 }}>•</Typography>
-                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{pt}</Typography>
+                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>{pt}</Typography>
                             </Stack>
                         ))}
                     </Stack>
                 )}
+                {hasMore && <ShowMoreToggle expanded={expanded} onToggle={() => setExpanded(v => !v)} />}
             </Box>
         );
     }
@@ -97,6 +118,9 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
     // Round 2 — cross-examination / critique
     if (parsed && "critiques" in parsed) {
         const p = parsed as Round2Structured;
+        const allCritiques = p.critiques ?? [];
+        const visibleCritiques = expanded ? allCritiques : allCritiques.slice(0, 2);
+        const hasMore = allCritiques.length > 2;
         return (
             <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2 }}>
                 <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
@@ -104,18 +128,19 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
                     <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>{agentLabel}</Typography>
                     <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.65rem" }}>Response</Typography>
                 </Stack>
-                {p.critiques?.length > 0 && (
+                {visibleCritiques.length > 0 && (
                     <Stack spacing={0.4}>
-                        {p.critiques.slice(0, 2).map((d, i) => (
+                        {visibleCritiques.map((d, i) => (
                             <Stack key={i} direction="row" spacing={1} alignItems="flex-start">
                                 <Typography variant="caption" sx={{ color: roundColor, mt: "1px", flexShrink: 0 }}>↳</Typography>
-                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>
+                                <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>
                                     <strong>vs {d.target_role}:</strong> {d.challenge}
                                 </Typography>
                             </Stack>
                         ))}
                     </Stack>
                 )}
+                {hasMore && <ShowMoreToggle expanded={expanded} onToggle={() => setExpanded(v => !v)} />}
             </Box>
         );
     }
@@ -123,6 +148,7 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
     // Round 3 — final synthesis
     if (parsed && "final_stance" in parsed) {
         const p = parsed as Round3Structured;
+        const hasMore = (p.final_stance?.length ?? 0) > 120 || !!p.recommendation;
         return (
             <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2 }}>
                 <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
@@ -130,22 +156,29 @@ function MessageBubble({ agentLabel, agentColor, roundNumber, content }: Message
                     <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>{agentLabel}</Typography>
                     <Typography variant="caption" sx={{ color: roundColor, fontSize: "0.65rem", fontWeight: 600 }}>Final Position</Typography>
                 </Stack>
-                <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{p.final_stance}</Typography>
-                {p.recommendation && (
-                    <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{p.recommendation}</Typography>
+                <Typography variant="body2" sx={{ color: "text.primary", fontWeight: 600, mb: 0.75, ...(expanded ? {} : { overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }) }}>
+                    {p.final_stance}
+                </Typography>
+                {expanded && p.recommendation && (
+                    <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.5 }}>{p.recommendation}</Typography>
                 )}
+                {hasMore && <ShowMoreToggle expanded={expanded} onToggle={() => setExpanded(v => !v)} />}
             </Box>
         );
     }
 
     // Fallback — raw text (plain string from LLM)
+    const hasMore = content.length > 200;
     return (
         <Box sx={{ bgcolor: "#1A1D27", border: "1px solid #2A2D3A", borderLeft: `3px solid ${agentColor}`, borderRadius: 2, p: 2 }}>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.75 }}>
                 <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: agentColor, flexShrink: 0 }} />
                 <Typography variant="caption" sx={{ color: agentColor, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.65rem" }}>{agentLabel}</Typography>
             </Stack>
-            <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.6 }}>{content}</Typography>
+            <Typography variant="body2" sx={{ color: "text.secondary", fontSize: "0.82rem", lineHeight: 1.6, ...(expanded ? {} : { overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical" }) }}>
+                {content}
+            </Typography>
+            {hasMore && <ShowMoreToggle expanded={expanded} onToggle={() => setExpanded(v => !v)} />}
         </Box>
     );
 }
@@ -154,12 +187,40 @@ export default function HomePage() {
     const [tab, setTab] = useState(0);
     const [question, setQuestion] = useState("");
     const [moderatorOpen, setModeratorOpen] = useState(false);
+    const [selectedRoles, setSelectedRoles] = useState<string[]>(["Proponent", "Opponent"]);
+    const [agentInstructions, setAgentInstructions] = useState<Record<string, string>>({});
+    const [agentMode, setAgentMode] = useState<"presets" | "custom">("presets");
+    const [customAgents, setCustomAgents] = useState<Array<{ role: string; instructions: string }>>([
+        { role: "", instructions: "" },
+        { role: "", instructions: "" },
+    ]);
 
     const { status, messages, currentRound, agentMap, error, start, reset } = useDebate();
 
+    const agentsFromRoles: AgentCreateRequest[] = agentMode === "presets"
+        ? selectedRoles.map((role) => ({
+            role,
+            config: {
+                model: DEFAULT_MODEL_CONFIG,
+                reasoning: DEFAULT_REASONING,
+                ...(agentInstructions[role] ? { system_prompt: agentInstructions[role] } : {}),
+            },
+        }))
+        : customAgents.filter((a) => a.role.trim()).map((a) => ({
+            role: a.role.trim(),
+            config: {
+                model: DEFAULT_MODEL_CONFIG,
+                reasoning: DEFAULT_REASONING,
+                ...(a.instructions ? { system_prompt: a.instructions } : {}),
+            },
+        }));
+
     const submitted = status !== "idle";
     const isLoading = status === "queued" || status === "running" || status === "unknown";
-    const canSubmit = question.trim().length > 0 && question.length <= MAX_CHARS && !isLoading;
+    const enoughAgents = agentMode === "presets"
+        ? selectedRoles.length >= 2
+        : customAgents.filter((a) => a.role.trim()).length >= 2;
+    const canSubmit = question.trim().length > 0 && question.length <= MAX_CHARS && !isLoading && enoughAgents;
 
     // Use agentMap strictly from backend, preserving appearance order just for deterministic colors.
     const agentAppearanceOrder = useMemo<string[]>(() => {
@@ -176,20 +237,22 @@ export default function HomePage() {
         if (!agentId) return { label: "Agent", color: AGENT_PALETTE[0] };
         const idx = agentAppearanceOrder.indexOf(agentId);
         
-        // Priority: Real DB role > static array map > fallback
-        const role = agentMap[agentId] ?? DEFAULT_AGENTS[idx]?.role ?? `Agent ${idx + 1}`;
+        // Priority: Real DB role > selected roles > fallback
+        const role = agentMap[agentId] ?? agentsFromRoles[idx]?.role ?? `Agent ${idx + 1}`;
         const color = AGENT_PALETTE[Math.max(0, idx) % AGENT_PALETTE.length] ?? "#9CA3AF";
         return { label: role, color };
     }
 
     async function handleSubmit() {
         if (!canSubmit) return;
-        await start(question.trim(), DEFAULT_AGENTS);
+        await start(question.trim(), agentsFromRoles);
     }
 
     function handleReset() {
         reset();
         setQuestion("");
+        setSelectedRoles(["Proponent", "Opponent"]);
+        setAgentInstructions({});
     }
 
     // Group messages by round
@@ -202,8 +265,7 @@ export default function HomePage() {
 
     // Build moderator snapshot for the sidebar
     const agentLabels = agentAppearanceOrder.map((_id, i) => {
-        const role = DEFAULT_AGENTS[i]?.role ?? `Agent ${i + 1}`;
-        return role;
+        return agentsFromRoles[i]?.role ?? `Agent ${i + 1}`;
     });
 
     // Agreement / conflict summary from round 2 messages
@@ -296,6 +358,42 @@ export default function HomePage() {
                 {/* Prompt area */}
                 <Box sx={{ width: "100%", maxWidth: 700 }}>
 
+                    {/* Control buttons — above the card */}
+                    <Stack direction="row" justifyContent="flex-end" spacing={1} sx={{ mb: 1 }}>
+                        <Tooltip title="Agent Setup">
+                            <IconButton
+                                size="small"
+                                onClick={() => setTab(1)}
+                                sx={{
+                                    width: 32, height: 32,
+                                    color: tab === 1 ? "primary.main" : "text.secondary",
+                                    border: `1px solid ${tab === 1 ? "primary.main" : "#3A3E52"}`,
+                                    borderRadius: "50%",
+                                    transition: "all 0.15s",
+                                    "&:hover": { color: "text.primary", borderColor: "text.secondary" },
+                                }}
+                            >
+                                <GroupsRoundedIcon sx={{ fontSize: 16 }} />
+                            </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Moderator">
+                            <IconButton
+                                size="small"
+                                onClick={() => setModeratorOpen((v) => !v)}
+                                sx={{
+                                    width: 32, height: 32,
+                                    color: moderatorOpen ? "primary.main" : "text.secondary",
+                                    border: `1px solid ${moderatorOpen ? "primary.main" : "#3A3E52"}`,
+                                    borderRadius: "50%",
+                                    transition: "all 0.15s",
+                                    "&:hover": { color: "text.primary", borderColor: "text.secondary" },
+                                }}
+                            >
+                                <GavelRoundedIcon sx={{ fontSize: 16 }} />
+                            </IconButton>
+                        </Tooltip>
+                    </Stack>
+
                     {/* Folder tabs */}
                     <Stack direction="row" spacing={1} sx={{ mb: "-1px", zIndex: 1, position: "relative", pl: 2 }}>
                         {TABS.map((t, i) => {
@@ -323,8 +421,10 @@ export default function HomePage() {
                                     <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.85rem", color: selected ? "text.primary" : "text.secondary", whiteSpace: "nowrap" }}>
                                         {t.label}
                                     </Typography>
-                                    {t.badge && (
-                                        <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.85rem", color: "primary.main" }}>{t.badge}</Typography>
+                                    {i === 1 && (
+                                        <Typography variant="caption" sx={{ fontSize: "0.72rem", color: "primary.main", fontWeight: 600 }}>
+                                            {selectedRoles.length} agents
+                                        </Typography>
                                     )}
                                 </Stack>
                             );
@@ -334,39 +434,86 @@ export default function HomePage() {
                     {/* Input card */}
                     <Box sx={{ bgcolor: "#1E2130", borderRadius: "16px", border: "1px solid #2E3248", boxShadow: "0 8px 40px rgba(0,0,0,0.45)", overflow: "hidden" }}>
                         <Box sx={{ px: 2.5, pt: 2, pb: 1 }}>
-                            <InputBase
-                                fullWidth
-                                multiline
-                                minRows={submitted ? 2 : 4}
-                                maxRows={10}
-                                placeholder={tab === 0 ? "Ask anything, debate anything…" : "Describe the agents you want — roles, perspectives, models…"}
-                                value={question}
-                                onChange={(e) => setQuestion(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
-                                inputProps={{ maxLength: MAX_CHARS }}
-                                disabled={isLoading}
-                                sx={{
-                                    fontSize: "0.97rem",
-                                    color: "text.primary",
-                                    alignItems: "flex-start",
-                                    "& textarea::placeholder": { color: "text.secondary", opacity: 1 },
-                                }}
-                            />
+                            {tab === 0 ? (
+                                <InputBase
+                                    fullWidth
+                                    multiline
+                                    minRows={submitted ? 2 : 4}
+                                    maxRows={10}
+                                    placeholder="Ask anything, debate anything…"
+                                    value={question}
+                                    onChange={(e) => setQuestion(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
+                                    inputProps={{ maxLength: MAX_CHARS }}
+                                    disabled={isLoading}
+                                    sx={{
+                                        fontSize: "0.97rem",
+                                        color: "text.primary",
+                                        alignItems: "flex-start",
+                                        "& textarea::placeholder": { color: "text.secondary", opacity: 1 },
+                                    }}
+                                />
+                            ) : (
+                                <Box>
+                                    {/* Preset role selector */}
+                                    <PresetSelector
+                                        selected={selectedRoles}
+                                        onChange={(roles) => {
+                                            setSelectedRoles(roles);
+                                            // clear instructions for removed roles
+                                            setAgentInstructions((prev) => {
+                                                const next = { ...prev };
+                                                Object.keys(next).forEach((r) => { if (!roles.includes(r)) delete next[r]; });
+                                                return next;
+                                            });
+                                        }}
+                                        disabled={submitted}
+                                    />
+
+                                    {/* Per-agent custom instruction cards */}
+                                    <Box sx={{ mt: 2 }}>
+                                        <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.72rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", mb: 1 }}>
+                                            Agent Configuration
+                                        </Typography>
+                                        <Stack spacing={1} sx={{ maxHeight: 200, overflowY: "auto", pr: 0.5 }}>
+                                            {selectedRoles.map((role, idx) => {
+                                                const color = AGENT_PALETTE[idx % AGENT_PALETTE.length];
+                                                return (
+                                                    <Box key={role} sx={{ border: "1px solid #2A2D3A", borderLeft: `3px solid ${color}`, borderRadius: 2, p: 1.5 }}>
+                                                        <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 1 }}>
+                                                            <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: color, flexShrink: 0 }} />
+                                                            <Typography variant="caption" sx={{ color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", fontSize: "0.68rem" }}>
+                                                                {role}
+                                                            </Typography>
+                                                        </Stack>
+                                                        <InputBase
+                                                            fullWidth
+                                                            multiline
+                                                            minRows={2}
+                                                            maxRows={4}
+                                                            placeholder="Add custom instructions or context for this agent… (optional)"
+                                                            value={agentInstructions[role] ?? ""}
+                                                            onChange={(e) => setAgentInstructions((prev) => ({ ...prev, [role]: e.target.value }))}
+                                                            disabled={submitted}
+                                                            sx={{
+                                                                fontSize: "0.82rem",
+                                                                color: "text.primary",
+                                                                alignItems: "flex-start",
+                                                                "& textarea::placeholder": { color: "text.secondary", opacity: 1, fontSize: "0.8rem" },
+                                                            }}
+                                                        />
+                                                    </Box>
+                                                );
+                                            })}
+                                        </Stack>
+                                    </Box>
+                                </Box>
+                            )}
                         </Box>
 
                         {/* Bottom toolbar */}
                         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 2, pb: 1.5, pt: 0.5 }}>
                             <Stack direction="row" alignItems="center" spacing={0.75}>
-                                <Tooltip title="Moderator Card">
-                                    <IconButton size="small" onClick={() => setModeratorOpen(!moderatorOpen)} sx={{ width: 32, height: 32, color: "text.secondary", border: "1px solid #3A3E52", borderRadius: "50%", "&:hover": { color: "text.primary", borderColor: "text.secondary" } }}>
-                                        <GavelRoundedIcon sx={{ fontSize: 16 }} />
-                                    </IconButton>
-                                </Tooltip>
-                                <Tooltip title="Agent personas">
-                                    <IconButton size="small" sx={{ width: 32, height: 32, color: "text.secondary", border: "1px solid #3A3E52", borderRadius: "50%", "&:hover": { color: "text.primary", borderColor: "text.secondary" } }}>
-                                        <GroupsRoundedIcon sx={{ fontSize: 16 }} />
-                                    </IconButton>
-                                </Tooltip>
                                 <Tooltip title="Debate settings">
                                     <Stack direction="row" alignItems="center" spacing={0.5} sx={{ px: 1.25, height: 32, border: "1px solid #3A3E52", borderRadius: "999px", cursor: "pointer", color: "text.secondary", "&:hover": { color: "text.primary", borderColor: "text.secondary" }, transition: "all 0.15s" }}>
                                         <SettingsRoundedIcon sx={{ fontSize: 14 }} />
