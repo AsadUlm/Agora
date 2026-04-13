@@ -33,3 +33,8 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+report
+
+# Dev notes (local only)
+KO_DEV_NOTES.md
