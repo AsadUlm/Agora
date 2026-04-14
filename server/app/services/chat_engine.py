@@ -234,6 +234,7 @@ def _agent_to_ctx(agent: ChatAgent) -> AgentContext:
         model=agent.model,
         temperature=float(agent.temperature) if agent.temperature is not None else 0.7,
         reasoning_style=agent.reasoning_style or "balanced",
+        system_prompt=agent.system_prompt or "",
     )
 
 

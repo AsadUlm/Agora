@@ -20,7 +20,7 @@ const PRESETS: Preset[] = [
         tagline: "Argues in favor",
         description:
             "Builds the strongest case for the topic. Presents evidence, logical arguments, and anticipates counterarguments to defend the position.",
-        icon: <ThumbUpAltRoundedIcon sx={{ fontSize: 18 }} />,
+        icon: <ThumbUpAltRoundedIcon sx={{ fontSize: 20 }} />,
         color: "#6C8EF5",
     },
     {
@@ -28,7 +28,7 @@ const PRESETS: Preset[] = [
         tagline: "Challenges the position",
         description:
             "Systematically argues against the topic. Identifies weaknesses, inconsistencies, and alternative interpretations to counter every claim.",
-        icon: <ThumbDownAltRoundedIcon sx={{ fontSize: 18 }} />,
+        icon: <ThumbDownAltRoundedIcon sx={{ fontSize: 20 }} />,
         color: "#F5A623",
     },
     {
@@ -36,7 +36,7 @@ const PRESETS: Preset[] = [
         tagline: "Data-driven & objective",
         description:
             "Breaks down the topic with structured reasoning and evidence. Stays neutral and focuses on verifiable facts and measurable outcomes.",
-        icon: <BarChartRoundedIcon sx={{ fontSize: 18 }} />,
+        icon: <BarChartRoundedIcon sx={{ fontSize: 20 }} />,
         color: "#34D399",
     },
     {
@@ -44,7 +44,7 @@ const PRESETS: Preset[] = [
         tagline: "Questions every assumption",
         description:
             "Challenges all positions — even seemingly obvious ones — to expose hidden flaws and stress-test every argument in the debate.",
-        icon: <PsychologyRoundedIcon sx={{ fontSize: 18 }} />,
+        icon: <PsychologyRoundedIcon sx={{ fontSize: 20 }} />,
         color: "#F472B6",
     },
     {
@@ -52,7 +52,7 @@ const PRESETS: Preset[] = [
         tagline: "Practical & long-term",
         description:
             "Evaluates practical implementation, feasibility, and long-term strategic impact. Focuses on what actually works in the real world.",
-        icon: <AccountTreeRoundedIcon sx={{ fontSize: 18 }} />,
+        icon: <AccountTreeRoundedIcon sx={{ fontSize: 20 }} />,
         color: "#A78BFA",
     },
     {
@@ -60,7 +60,7 @@ const PRESETS: Preset[] = [
         tagline: "Risks & downsides",
         description:
             "Focuses on potential failure modes, unintended consequences, and what could go wrong. Ensures no risk goes unexamined.",
-        icon: <WarningAmberRoundedIcon sx={{ fontSize: 18 }} />,
+        icon: <WarningAmberRoundedIcon sx={{ fontSize: 20 }} />,
         color: "#38BDF8",
     },
 ];
@@ -90,19 +90,19 @@ export default function PresetSelector({ selected, onChange, disabled }: PresetS
                     sx={{
                         color: "text.secondary",
                         fontSize: "0.72rem",
-                        fontWeight: 600,
+                        fontWeight: 700,
                         textTransform: "uppercase",
-                        letterSpacing: "0.06em",
+                        letterSpacing: "0.08em",
                     }}
                 >
-                    Select agent roles
+                    Choose Roles
                 </Typography>
                 <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.7rem" }}>
-                    {selected.length} selected · min 2
+                    <Box component="span" sx={{ color: "primary.main", fontWeight: 700 }}>{selected.length}</Box> selected · min 2
                 </Typography>
             </Stack>
 
-            <Box sx={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1 }}>
+            <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 1.5 }}>
                 {PRESETS.map((preset) => {
                     const isSelected = selected.includes(preset.role);
                     const canDeselect = selected.length > 2;
@@ -135,56 +135,50 @@ export default function PresetSelector({ selected, onChange, disabled }: PresetS
                             <Box
                                 onClick={() => toggle(preset.role)}
                                 sx={{
-                                    p: 1.5,
-                                    borderRadius: 2,
+                                    p: 2,
+                                    borderRadius: 2.5,
                                     border: `1px solid ${isSelected ? preset.color : "#2A2D3A"}`,
-                                    bgcolor: isSelected ? `${preset.color}18` : "transparent",
+                                    bgcolor: isSelected ? `${preset.color}1A` : "transparent",
                                     cursor: disabled
                                         ? "default"
                                         : isSelected && !canDeselect
                                         ? "not-allowed"
                                         : "pointer",
-                                    transition: "border-color 0.15s, background-color 0.15s",
+                                    transition: "border-color 0.18s, background-color 0.18s, box-shadow 0.18s",
                                     opacity: disabled ? 0.45 : 1,
+                                    position: "relative",
+                                    boxShadow: isSelected ? `0 0 0 1px ${preset.color}40` : "none",
                                     "&:hover": !disabled
                                         ? {
                                               borderColor: preset.color,
-                                              bgcolor: `${preset.color}0C`,
+                                              bgcolor: `${preset.color}0E`,
                                           }
                                         : {},
                                 }}
                             >
-                                <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 0.6 }}>
-                                    <Box
-                                        sx={{
-                                            color: isSelected ? preset.color : "text.secondary",
-                                            display: "flex",
-                                            flexShrink: 0,
-                                            transition: "color 0.15s",
-                                        }}
-                                    >
-                                        {preset.icon}
-                                    </Box>
-                                    {isSelected && (
-                                        <Box
-                                            sx={{
-                                                width: 5,
-                                                height: 5,
-                                                borderRadius: "50%",
-                                                bgcolor: preset.color,
-                                                flexShrink: 0,
-                                            }}
-                                        />
-                                    )}
-                                </Stack>
+                                {/* Selected indicator — top-right dot */}
+                                {isSelected && (
+                                    <Box sx={{
+                                        position: "absolute", top: 10, right: 10,
+                                        width: 8, height: 8, borderRadius: "50%",
+                                        bgcolor: preset.color,
+                                        boxShadow: `0 0 6px ${preset.color}`,
+                                    }} />
+                                )}
+
+                                <Box sx={{ color: isSelected ? preset.color : "text.secondary", display: "flex", mb: 1, transition: "color 0.15s" }}>
+                                    {/* icon cloned at size 20 */}
+                                    {preset.icon}
+                                </Box>
+
                                 <Typography
                                     variant="body2"
                                     sx={{
                                         fontWeight: 700,
-                                        fontSize: "0.78rem",
+                                        fontSize: "0.85rem",
                                         color: isSelected ? "text.primary" : "text.secondary",
                                         lineHeight: 1.2,
-                                        mb: 0.3,
+                                        mb: 0.4,
                                         transition: "color 0.15s",
                                     }}
                                 >
@@ -193,13 +187,14 @@ export default function PresetSelector({ selected, onChange, disabled }: PresetS
                                 <Typography
                                     variant="caption"
                                     sx={{
-                                        color: "text.secondary",
-                                        fontSize: "0.67rem",
-                                        lineHeight: 1.3,
+                                        color: isSelected ? `${preset.color}CC` : "text.secondary",
+                                        fontSize: "0.73rem",
+                                        lineHeight: 1.4,
                                         display: "-webkit-box",
                                         overflow: "hidden",
                                         WebkitLineClamp: 2,
                                         WebkitBoxOrient: "vertical",
+                                        transition: "color 0.15s",
                                     }}
                                 >
                                     {preset.tagline}

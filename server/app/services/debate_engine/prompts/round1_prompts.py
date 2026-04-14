@@ -8,6 +8,7 @@ def build_opening_statement_prompt(
     question: str,
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
+    system_prompt: str = "",
 ) -> str:
     """Build the prompt for an agent's Round 1 opening statement."""
     depth_instruction = {
@@ -23,7 +24,9 @@ def build_opening_statement_prompt(
         "balanced": "Reason in a balanced way. Acknowledge multiple perspectives.",
     }.get(reasoning_style, "Reason in a balanced way.")
 
-    return f"""You are a debate participant with the role: {role}.
+    extra = f"\nAdditional instructions: {system_prompt}" if system_prompt.strip() else ""
+
+    return f"""You are a debate participant with the role: {role}.{extra}
 
 The debate question is: {question}
 

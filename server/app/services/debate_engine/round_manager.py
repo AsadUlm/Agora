@@ -107,6 +107,7 @@ class RoundManager:
                 question=ctx.question,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                system_prompt=agent_ctx.system_prompt,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,

@@ -72,6 +72,7 @@ class AgentContext(BaseModel):
     temperature: float
     reasoning_style: str = "balanced"
     reasoning_depth: str = "normal"
+    system_prompt: str = ""
 
 
 class AgentRoundResult(BaseModel):

@@ -47,6 +47,7 @@ class AgentConfig(BaseModel):
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
+    system_prompt: str = ""
 
     @classmethod
     def from_raw(cls, raw: dict) -> "AgentConfig":
@@ -71,5 +72,8 @@ class AgentConfig(BaseModel):
 
         if "reasoning" in raw and isinstance(raw["reasoning"], dict):
             data["reasoning"] = raw["reasoning"]
+
+        if "system_prompt" in raw and isinstance(raw["system_prompt"], str):
+            data["system_prompt"] = raw["system_prompt"]
 
         return cls.model_validate(data)

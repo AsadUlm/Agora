@@ -23,6 +23,7 @@ class ChatAgent(Base):
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasoning_style: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    system_prompt: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     position_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
