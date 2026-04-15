@@ -353,8 +353,8 @@ function FinalSummary({ summary }: { summary: Record<string, unknown> }) {
                             {typeof summary[k] === "string"
                                 ? summary[k] as string
                                 : Array.isArray(summary[k])
-                                ? (summary[k] as unknown[]).join(", ")
-                                : JSON.stringify(summary[k])}
+                                    ? (summary[k] as unknown[]).join(", ")
+                                    : JSON.stringify(summary[k])}
                         </Typography>
                     </Box>
                 ))}
@@ -393,10 +393,10 @@ function ProgressIndicator({ turnStatus, rounds, currentRoundNumber }: ProgressI
                                 bgcolor: step.failed
                                     ? "error.main"
                                     : step.done
-                                    ? "#34D399"
-                                    : step.active
-                                    ? "primary.main"
-                                    : "#2A2D3A",
+                                        ? "#34D399"
+                                        : step.active
+                                            ? "primary.main"
+                                            : "#2A2D3A",
                                 transition: "background 0.3s",
                             }}
                         />
@@ -513,7 +513,7 @@ export default function DebateDetailPage() {
                 setConnectionStatus("error");
             }
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleWsEvent = useCallback((event: WsEvent) => {
@@ -586,10 +586,10 @@ export default function DebateDetailPage() {
             const newTurnStatus = event.type === "turn_completed"
                 ? "completed"
                 : event.type === "turn_failed"
-                ? "failed"
-                : event.type === "turn_started"
-                ? "running"
-                : turnStatus;
+                    ? "failed"
+                    : event.type === "turn_started"
+                        ? "running"
+                        : turnStatus;
 
             return { rounds, turnStatus: newTurnStatus };
         });
@@ -665,9 +665,9 @@ export default function DebateDetailPage() {
                                     sx={{ flexShrink: 0, fontWeight: 600 }}
                                     icon={
                                         session.status === "running" ? <PlayArrowIcon sx={{ fontSize: "14px !important" }} /> :
-                                        session.status === "completed" ? <CheckCircleIcon sx={{ fontSize: "14px !important" }} /> :
-                                        session.status === "failed" ? <ErrorIcon sx={{ fontSize: "14px !important" }} /> :
-                                        <HourglassTopIcon sx={{ fontSize: "14px !important" }} />
+                                            session.status === "completed" ? <CheckCircleIcon sx={{ fontSize: "14px !important" }} /> :
+                                                session.status === "failed" ? <ErrorIcon sx={{ fontSize: "14px !important" }} /> :
+                                                    <HourglassTopIcon sx={{ fontSize: "14px !important" }} />
                                     }
                                 />
                             </Stack>

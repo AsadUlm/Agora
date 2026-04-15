@@ -175,7 +175,7 @@ export default function HomePage() {
     function getAgentMeta(agentId: string | null): { label: string; color: string } {
         if (!agentId) return { label: "Agent", color: AGENT_PALETTE[0] };
         const idx = agentAppearanceOrder.indexOf(agentId);
-        
+
         // Priority: Real DB role > static array map > fallback
         const role = agentMap[agentId] ?? DEFAULT_AGENTS[idx]?.role ?? `Agent ${idx + 1}`;
         const color = AGENT_PALETTE[Math.max(0, idx) % AGENT_PALETTE.length] ?? "#9CA3AF";
@@ -224,10 +224,10 @@ export default function HomePage() {
     const nextStep = status === "queued"
         ? "Agents are preparing…"
         : status === "running"
-        ? `Round ${currentRound} — agents generating…`
-        : status === "completed"
-        ? "Debate complete. Start a new debate below."
-        : "—";
+            ? `Round ${currentRound} — agents generating…`
+            : status === "completed"
+                ? "Debate complete. Start a new debate below."
+                : "—";
     return (
         <AppShell>
             {/* Right moderator sidebar — always rendered, shown after submit */}

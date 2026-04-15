@@ -28,7 +28,7 @@ export function useDebate(): UseDebateReturn {
     const [currentRound, setCurrentRound] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
-    
+
     // WS URL drives the connection — null means disconnected
     const [wsUrl, setWsUrl] = useState<string | null>(null);
 
@@ -66,7 +66,7 @@ export function useDebate(): UseDebateReturn {
 
                 // For robustness against stale currentRound closure, prefer the event's round number
                 if (event.round_number) {
-                     msg.roundNumber = event.round_number;
+                    msg.roundNumber = event.round_number;
                 }
 
                 setMessages((prev) => [...prev, msg]);
@@ -95,7 +95,7 @@ export function useDebate(): UseDebateReturn {
     // ── Reconciliation / Agent Map Fetch ────────────────────────────────
     useEffect(() => {
         if (!debateInfo?.debate_id) return;
-        
+
         getDebate(debateInfo.debate_id)
             .then((detail) => {
                 // Populate Agent Map
@@ -125,7 +125,7 @@ export function useDebate(): UseDebateReturn {
                     if (fullHistory.length > 0) setMessages(fullHistory);
                 }
             })
-            .catch(() => {});
+            .catch(() => { });
     }, [debateInfo?.debate_id, status]);
 
 
@@ -157,15 +157,15 @@ export function useDebate(): UseDebateReturn {
         setError(null);
     }, []);
 
-    return { 
-        status, 
-        debateInfo, 
+    return {
+        status,
+        debateInfo,
         agentMap,
-        messages, 
-        currentRound, 
-        error, 
+        messages,
+        currentRound,
+        error,
         connectionStatus,
-        start, 
-        reset 
+        start,
+        reset
     };
 }
