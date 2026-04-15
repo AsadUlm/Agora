@@ -1,38 +1,38 @@
 import BalanceIcon from "@mui/icons-material/Balance";
 import LogoutIcon from "@mui/icons-material/Logout";
 import AddIcon from "@mui/icons-material/Add";
-import SearchIcon from "@mui/icons-material/Search";
+import ForumIcon from "@mui/icons-material/Forum";
 import DescriptionIcon from "@mui/icons-material/Description";
-import HistoryIcon from "@mui/icons-material/History";
 import { Avatar, Box, Divider, Stack, Tooltip, Typography } from "@mui/material";
-
 import type { ReactNode } from "react";
 import { useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 
 interface AppShellProps {
     children: ReactNode;
 }
 
-const SIDEBAR_EXPANDED = 240;
+const SIDEBAR_EXPANDED = 220;
 const SIDEBAR_COLLAPSED = 60;
 const SIDEBAR_BG = "#090B0F";
 
 interface NavItem {
     icon: ReactNode;
     label: string;
+    to: string;
 }
 
 const NAV_ITEMS: NavItem[] = [
-    { icon: <SearchIcon fontSize="small" />, label: "Search" },
-    { icon: <AddIcon fontSize="small" />, label: "New Debate" },
-    { icon: <DescriptionIcon fontSize="small" />, label: "Documents" },
-    { icon: <HistoryIcon fontSize="small" />, label: "History" },
+    { icon: <ForumIcon fontSize="small" />, label: "Debates", to: "/debates" },
+    { icon: <AddIcon fontSize="small" />, label: "New Debate", to: "/debates/new" },
 ];
 
 export default function AppShell({ children }: AppShellProps) {
     const { user, logout } = useAuth();
     const [expanded, setExpanded] = useState(false);
+    const navigate = useNavigate();
+    const location = useLocation();
 
     const sidebarWidth = expanded ? SIDEBAR_EXPANDED : SIDEBAR_COLLAPSED;
 
@@ -105,52 +105,92 @@ export default function AppShell({ children }: AppShellProps) {
                 </Tooltip>
 
                 {/* Nav items */}
-                <Stack spacing={0.5} sx={{ px: 0.5, flexGrow: 1 }}>
-                    {NAV_ITEMS.map((item) => (
-                        <Tooltip
-                            key={item.label}
-                            title={expanded ? "" : item.label}
-                            placement="right"
-                        >
-                            <Stack
-                                direction="row"
-                                alignItems="center"
-                                spacing={1.5}
-                                sx={{
-                                    px: expanded ? 1.5 : 1.5,
-                                    py: 1.2,
-                                    borderRadius: 2,
-                                    cursor: "pointer",
-                                    color: "text.secondary",
-                                    "&:hover": {
-                                        bgcolor: "rgba(245,166,35,0.08)",
-                                        color: "primary.main",
-                                    },
-                                    transition: "background 0.15s, color 0.15s",
-                                    minWidth: 0,
-                                    overflow: "hidden",
-                                }}
-                            >
-                                <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
-                                    {item.icon}
-                                </Box>
-                                <Typography
-                                    variant="body2"
+                <Stack spacing={0.5} sx={{ px: 0.5, flexGrow: 1, mt: 1 }}>
+                    {NAV_ITEMS.map((item) => {
+                        const isActive = location.pathname === item.to ||
+                            (item.to !== "/debates/new" && location.pathname.startsWith(item.to + "/"));
+                        return (
+                            <Tooltip key={item.label} title={expanded ? "" : item.label} placement="right">
+                                <Stack
+                                    direction="row"
+                                    alignItems="center"
+                                    spacing={1.5}
+                                    onClick={() => navigate(item.to)}
                                     sx={{
-                                        fontWeight: 500,
-                                        whiteSpace: "nowrap",
-                                        opacity: expanded ? 1 : 0,
-                                        width: expanded ? "auto" : 0,
+                                        px: 1.5,
+                                        py: 1.2,
+                                        borderRadius: 2,
+                                        cursor: "pointer",
+                                        color: isActive ? "primary.main" : "text.secondary",
+                                        bgcolor: isActive ? "rgba(245,166,35,0.10)" : "transparent",
+                                        "&:hover": {
+                                            bgcolor: "rgba(245,166,35,0.08)",
+                                            color: "primary.main",
+                                        },
+                                        transition: "background 0.15s, color 0.15s",
+                                        minWidth: 0,
                                         overflow: "hidden",
-                                        transition: "opacity 0.18s, width 0.22s",
-                                        color: "inherit",
                                     }}
                                 >
-                                    {item.label}
-                                </Typography>
-                            </Stack>
-                        </Tooltip>
-                    ))}
+                                    <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+                                        {item.icon}
+                                    </Box>
+                                    <Typography
+                                        variant="body2"
+                                        sx={{
+                                            fontWeight: 600,
+                                            whiteSpace: "nowrap",
+                                            opacity: expanded ? 1 : 0,
+                                            width: expanded ? "auto" : 0,
+                                            overflow: "hidden",
+                                            transition: "opacity 0.18s, width 0.22s",
+                                            color: "inherit",
+                                        }}
+                                    >
+                                        {item.label}
+                                    </Typography>
+                                </Stack>
+                            </Tooltip>
+                        );
+                    })}
+
+                    {/* Documents icon — shown when on a debate detail page */}
+                    <Tooltip title={expanded ? "" : "Documents"} placement="right">
+                        <Stack
+                            direction="row"
+                            alignItems="center"
+                            spacing={1.5}
+                            sx={{
+                                px: 1.5,
+                                py: 1.2,
+                                borderRadius: 2,
+                                cursor: "default",
+                                color: "text.secondary",
+                                opacity: 0.4,
+                                minWidth: 0,
+                                overflow: "hidden",
+                            }}
+                        >
+                            <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
+                                <DescriptionIcon fontSize="small" />
+                            </Box>
+                            <Typography
+                                variant="body2"
+                                sx={{
+                                    fontWeight: 500,
+                                    whiteSpace: "nowrap",
+                                    opacity: expanded ? 1 : 0,
+                                    width: expanded ? "auto" : 0,
+                                    overflow: "hidden",
+                                    transition: "opacity 0.18s, width 0.22s",
+                                    color: "inherit",
+                                    fontSize: "0.82rem",
+                                }}
+                            >
+                                Documents (per debate)
+                            </Typography>
+                        </Stack>
+                    </Tooltip>
                 </Stack>
 
                 <Divider sx={{ borderColor: "divider", mx: 1, mt: 1 }} />
@@ -158,7 +198,6 @@ export default function AppShell({ children }: AppShellProps) {
                 {/* User info + logout */}
                 {user && (
                     <Box sx={{ px: 0.5, pb: 0.5 }}>
-                        {/* User row */}
                         <Stack
                             direction="row"
                             alignItems="center"
@@ -209,7 +248,6 @@ export default function AppShell({ children }: AppShellProps) {
                             </Box>
                         </Stack>
 
-                        {/* Logout row — icon only when collapsed, icon+text when expanded */}
                         <Tooltip title={expanded ? "" : "Sign out"} placement="right">
                             <Stack
                                 direction="row"

@@ -46,8 +46,8 @@ const ROUND_COLORS: Record<number, string> = {
 const AGENT_PALETTE = ["#6C8EF5", "#F5A623", "#34D399", "#F472B6", "#A78BFA", "#38BDF8"];
 
 const DEFAULT_AGENTS: AgentCreateRequest[] = [
-    { role: "Proponent", config: { model: { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 }, reasoning: { style: "balanced" } } },
-    { role: "Opponent", config: { model: { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 }, reasoning: { style: "balanced" } } },
+    { role: "Proponent", config: { model: { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 }, reasoning: { style: "balanced", depth: "normal" } } },
+    { role: "Opponent", config: { model: { provider: "groq", model: "llama-3.3-70b-versatile", temperature: 0.7 }, reasoning: { style: "balanced", depth: "normal" } } },
 ];
 
 function parseContent(content: string): Round1Structured | Round2Structured | Round3Structured | null {

@@ -23,6 +23,11 @@ const config: Record<
         color: "default",
         icon: <ErrorOutlineIcon fontSize="small" />,
     },
+    completed: {
+        label: "Completed",
+        color: "success",
+        icon: <CheckCircleOutlineIcon fontSize="small" />,
+    },
 };
 
 interface StatusChipProps {

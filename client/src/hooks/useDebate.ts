@@ -106,51 +106,23 @@ export function useDebate(): UseDebateReturn {
                 setAgentMap(map);
 
                 // Reconcile missed messages if completed
-                if (status === "completed" && detail.rounds.length > 0) {
-                    setMessages((prev) => {
-                        const existingMsgIds = new Set(prev.map(m => m.messageId));
-                        let toAdd: LiveMessage[] = [];
-                        
-                        detail.rounds.forEach(dr => {
-                            dr.data.forEach((entry, i) => {
-                                // Simple naive reconciliation match since IDs might vary slightly
-                                // If our messages count is shorter, we can just append
-                                const messageId = `${dr.id}-reconciled-${i}`;
-                                if (!existingMsgIds.has(messageId)) {
-                                     toAdd.push({
-                                        messageId,
-                                        agentId: entry.agent_id,
-                                        role: map[entry.agent_id] ?? "Agent",
-                                        roundNumber: dr.round_number,
-                                        messageType: entry.message_type,
-                                        content: JSON.stringify(entry.data),
-                                        generationStatus: "success",
-                                     });
-                                     existingMsgIds.add(messageId);
-                                }
+                const rounds = detail.latest_turn?.rounds ?? [];
+                if (status === "completed" && rounds.length > 0) {
+                    const fullHistory: LiveMessage[] = [];
+                    rounds.forEach((dr) => {
+                        dr.messages.forEach((msg, i) => {
+                            fullHistory.push({
+                                messageId: msg.id ?? `${dr.id}-reconciled-${i}`,
+                                agentId: msg.agent_id ?? "",
+                                role: msg.agent_role ?? map[msg.agent_id ?? ""] ?? "Agent",
+                                roundNumber: dr.round_number,
+                                messageType: msg.message_type,
+                                content: msg.text,
+                                generationStatus: "success",
                             });
                         });
-                        
-                        if (toAdd.length === 0) return prev;
-                        // For simplicity, just completely replace with full history if we reconcile
-                        // This guarantees perfect correctness after completion.
-                        
-                        const fullHistory: LiveMessage[] = [];
-                        detail.rounds.forEach(dr => {
-                            dr.data.forEach((entry, i) => {
-                                 fullHistory.push({
-                                    messageId: `${dr.id}-reconciled-${i}`,
-                                    agentId: entry.agent_id,
-                                    role: map[entry.agent_id] ?? "Agent",
-                                    roundNumber: dr.round_number,
-                                    messageType: entry.message_type,
-                                    content: JSON.stringify(entry.data),
-                                    generationStatus: "success",
-                                 });
-                            });
-                        });
-                        return fullHistory;
                     });
+                    if (fullHistory.length > 0) setMessages(fullHistory);
                 }
             })
             .catch(() => {});
