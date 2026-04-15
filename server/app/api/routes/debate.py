@@ -44,6 +44,7 @@ from app.models.chat_turn import ChatTurn, ChatTurnStatus
 from app.models.message import Message, MessageType, MessageVisibility, SenderType
 from app.models.round import Round
 from app.models.user import User
+from app.models.agent_document_binding import AgentDocumentBinding
 from app.schemas.agent_config import AgentConfig
 from app.schemas.debate import (
     DebateListItem,
@@ -106,6 +107,7 @@ async def start_debate(
     await db.flush()
 
     # ── 2. Create ChatAgents ─────────────────────────────────────────────────
+    agent_records: list[ChatAgent] = []
     for i, agent_req in enumerate(request.agents):
         cfg = AgentConfig.from_raw(agent_req.config)
         agent = ChatAgent(
@@ -122,8 +124,21 @@ async def start_debate(
             reasoning_style=cfg.reasoning.style,
             position_order=i,
             is_active=True,
+            knowledge_mode=cfg.knowledge.mode,
+            knowledge_strict=cfg.knowledge.strict,
         )
         db.add(agent)
+        agent_records.append((agent, agent_req.document_ids))
+    await db.flush()
+
+    # ── 2b. Create AgentDocumentBindings ──────────────────────────────────────
+    for agent, doc_ids in agent_records:
+        for doc_id in doc_ids:
+            binding = AgentDocumentBinding(
+                chat_agent_id=agent.id,
+                document_id=doc_id,
+            )
+            db.add(binding)
     await db.flush()
 
     # ── 3. Create ChatTurn (queued — background task transitions it to running)

@@ -36,6 +36,13 @@ class ReasoningConfig(BaseModel):
     depth: str = "normal"     # shallow | normal | deep
 
 
+class KnowledgeConfig(BaseModel):
+    """Agent-level knowledge / RAG scoping."""
+
+    mode: str = "shared_session_docs"   # "no_docs" | "shared_session_docs" | "assigned_docs_only"
+    strict: bool = False                # strict grounding: only use provided docs, no general knowledge
+
+
 class AgentConfig(BaseModel):
     """
     Canonical internal representation of a debate agent's configuration.
@@ -47,6 +54,7 @@ class AgentConfig(BaseModel):
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     reasoning: ReasoningConfig = Field(default_factory=ReasoningConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
 
     @classmethod
     def from_raw(cls, raw: dict) -> "AgentConfig":
@@ -71,5 +79,8 @@ class AgentConfig(BaseModel):
 
         if "reasoning" in raw and isinstance(raw["reasoning"], dict):
             data["reasoning"] = raw["reasoning"]
+
+        if "knowledge" in raw and isinstance(raw["knowledge"], dict):
+            data["knowledge"] = raw["knowledge"]
 
         return cls.model_validate(data)

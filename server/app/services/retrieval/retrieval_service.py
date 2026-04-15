@@ -57,29 +57,108 @@ class RetrievalService:
         top_k: int = 5,
     ) -> list[RetrievedChunk]:
         """
-        Retrieve the top-k most relevant chunks for the query.
+        Retrieve the top-k most relevant chunks for the query (session-wide).
+        Legacy entry point — equivalent to shared_session_docs mode.
+        """
+        return await self._retrieve_impl(
+            query=query,
+            session_id=session_id,
+            db=db,
+            top_k=top_k,
+            document_ids=None,
+        )
+
+    async def retrieve_for_agent(
+        self,
+        agent_id: uuid.UUID,
+        session_id: uuid.UUID,
+        query: str,
+        db: AsyncSession,
+        knowledge_mode: str = "shared_session_docs",
+        assigned_document_ids: list[uuid.UUID] | None = None,
+        top_k: int = 5,
+    ) -> list[RetrievedChunk]:
+        """
+        Agent-aware retrieval — respects the agent's knowledge configuration.
 
         Args:
-            query:      The text to match against stored embeddings.
-            session_id: Scopes retrieval to documents uploaded in this session.
-            db:         Async SQLAlchemy session.
-            top_k:      Maximum number of chunks to return.
+            agent_id:              The agent requesting retrieval.
+            session_id:            Current session scope.
+            query:                 The query text.
+            db:                    Async SQLAlchemy session.
+            knowledge_mode:        "no_docs" | "shared_session_docs" | "assigned_docs_only"
+            assigned_document_ids: Document IDs bound to this agent (used when mode == assigned_docs_only).
+            top_k:                 Max chunks to return.
+        """
+        if knowledge_mode == "no_docs":
+            logger.debug(
+                "RetrievalService: agent %s has knowledge_mode=no_docs — skipping retrieval",
+                agent_id,
+            )
+            return []
+
+        if knowledge_mode == "assigned_docs_only":
+            if not assigned_document_ids:
+                logger.debug(
+                    "RetrievalService: agent %s has assigned_docs_only but no documents — skipping",
+                    agent_id,
+                )
+                return []
+            return await self._retrieve_impl(
+                query=query,
+                session_id=session_id,
+                db=db,
+                top_k=top_k,
+                document_ids=assigned_document_ids,
+            )
+
+        # Default: shared_session_docs — retrieve from all session documents
+        return await self._retrieve_impl(
+            query=query,
+            session_id=session_id,
+            db=db,
+            top_k=top_k,
+            document_ids=None,
+        )
+
+    async def _retrieve_impl(
+        self,
+        query: str,
+        session_id: uuid.UUID,
+        db: AsyncSession,
+        top_k: int,
+        document_ids: list[uuid.UUID] | None,
+    ) -> list[RetrievedChunk]:
+        """
+        Core retrieval implementation.
+
+        Args:
+            query:        The text to match against stored embeddings.
+            session_id:   Scopes retrieval to documents uploaded in this session.
+            db:           Async SQLAlchemy session.
+            top_k:        Maximum number of chunks to return.
+            document_ids: If provided, restrict retrieval to only these document IDs.
 
         Returns:
             List of RetrievedChunk ordered by similarity descending.
             Empty list whenever no context is available (safe fallback).
         """
         # ── 1. Check there are ready documents for this session ───────────────
-        ready_check = await db.execute(
+        ready_check_stmt = (
             select(Document.id)
             .where(Document.chat_session_id == session_id)
             .where(Document.status == DocumentStatus.ready)
-            .limit(1)
         )
+        if document_ids is not None:
+            ready_check_stmt = ready_check_stmt.where(Document.id.in_(document_ids))
+        ready_check_stmt = ready_check_stmt.limit(1)
+
+        ready_check = await db.execute(ready_check_stmt)
         if ready_check.scalar_one_or_none() is None:
             logger.debug(
-                "RetrievalService: no ready documents for session %s — skipping retrieval",
+                "RetrievalService: no ready documents for session %s (scope=%s) — skipping retrieval",
                 session_id,
+                "filtered" if document_ids else "all",
             )
             return []
 
@@ -118,6 +197,11 @@ class RetrievalService:
                 .where(
                     text(f"document_chunks.embedding <=> '{vector_literal}'::vector < {1 - _MIN_SIMILARITY}")
                 )
+            )
+            if document_ids is not None:
+                stmt = stmt.where(Document.id.in_(document_ids))
+            stmt = (
+                stmt
                 .order_by(text(f"document_chunks.embedding <=> '{vector_literal}'::vector"))
                 .limit(top_k)
             )

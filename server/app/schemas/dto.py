@@ -72,6 +72,8 @@ def serialize_agent(agent: ChatAgent) -> AgentDTO:
         temperature=agent.temperature,
         reasoning_style=agent.reasoning_style,
         position_order=agent.position_order,
+        knowledge_mode=agent.knowledge_mode,
+        knowledge_strict=agent.knowledge_strict if agent.knowledge_strict is not None else False,
     )
 
 

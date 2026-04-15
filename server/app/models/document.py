@@ -45,3 +45,4 @@ class Document(Base):
 
     # Relationships
     document_chunks: Mapped[list["DocumentChunk"]] = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+    agent_bindings: Mapped[list["AgentDocumentBinding"]] = relationship("AgentDocumentBinding", back_populates="document", cascade="all, delete-orphan")

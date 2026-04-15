@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # ── LLM API keys (optional — server starts without them, falls back to mock)
     GROQ_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
+    OPENROUTER_API_KEY: str | None = None
+
+    # ── OpenRouter defaults ───────────────────────────────────────────────
+    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
 
     # ── Embeddings ────────────────────────────────────────────────────────
     # Provider: "openai" (uses text-embedding-3-small, dim=1536)

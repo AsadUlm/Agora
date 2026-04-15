@@ -28,6 +28,8 @@ class AgentDTO(BaseModel):
     temperature: float | None
     reasoning_style: str | None
     position_order: int | None
+    knowledge_mode: str | None
+    knowledge_strict: bool | None
 
 
 class MessageDTO(BaseModel):

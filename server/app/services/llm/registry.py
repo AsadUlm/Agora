@@ -49,6 +49,18 @@ class ProviderRegistry:
                     ModelInfo(id="mixtral-8x7b-32768", name="Mixtral 8x7B", context_length=32768),
                 ],
             ),
+            "openrouter": ProviderInfo(
+                id="openrouter",
+                name="OpenRouter",
+                status="configured",
+                models=[
+                    ModelInfo(id="meta-llama/llama-3.3-70b-instruct:free", name="LLaMA 3.3 70B (free)", context_length=131072),
+                    ModelInfo(id="qwen/qwen-2.5-72b-instruct:free", name="Qwen 2.5 72B (free)", context_length=131072),
+                    ModelInfo(id="google/gemma-2-9b-it:free", name="Gemma 2 9B (free)", context_length=8192),
+                    ModelInfo(id="mistralai/mistral-7b-instruct:free", name="Mistral 7B (free)", context_length=32768),
+                    ModelInfo(id="deepseek/deepseek-r1-0528:free", name="DeepSeek R1 (free)", context_length=163840),
+                ],
+            ),
             "openai": ProviderInfo(
                 id="openai",
                 name="OpenAI",

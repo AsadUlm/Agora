@@ -12,6 +12,21 @@ def _format_context_block(chunks: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _knowledge_instruction(
+    knowledge_mode: str,
+    knowledge_strict: bool,
+    has_chunks: bool,
+) -> str:
+    if knowledge_mode == "no_docs":
+        return "\nYou do not have access to any documents. Base your final synthesis on reasoning alone.\n"
+    if not has_chunks:
+        return ""
+    instruction = "\nUse the following documents as your primary source of truth in your final synthesis. If unsure, explicitly say so.\n"
+    if knowledge_strict:
+        instruction += "IMPORTANT: Only answer using the provided documents. Do not rely on general knowledge.\n"
+    return instruction
+
+
 def build_final_synthesis_prompt(
     role: str,
     question: str,
@@ -20,6 +35,8 @@ def build_final_synthesis_prompt(
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
     retrieved_chunks: list[dict] | None = None,
+    knowledge_mode: str = "shared_session_docs",
+    knowledge_strict: bool = False,
 ) -> str:
     """Build the prompt for an agent's Round 3 final synthesis."""
     depth_instruction = {
@@ -36,6 +53,7 @@ def build_final_synthesis_prompt(
     }.get(reasoning_style, "Reflect in a balanced, nuanced way.")
 
     context_block = _format_context_block(retrieved_chunks or [])
+    knowledge_block = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(retrieved_chunks or []))
 
     return f"""You are a debate participant with the role: {role}.
 
@@ -46,7 +64,7 @@ Your original opening stance was:
 
 The full debate exchange (Round 2 cross-examination) was:
 {debate_summary}
-{context_block}
+{knowledge_block}{context_block}
 Your task: Generate your final synthesis for Round 3.
 
 Reasoning style: {style_instruction}
