@@ -116,11 +116,11 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
                             nodes: s.graph.nodes.map((n) =>
                                 n.id === node.id
                                     ? {
-                                          ...n,
-                                          summary: n.summary || node.summary,
-                                          content: n.content || node.content,
-                                          label: node.label || n.label,
-                                      }
+                                        ...n,
+                                        summary: n.summary || node.summary,
+                                        content: n.content || node.content,
+                                        label: node.label || n.label,
+                                    }
                                     : n,
                             ),
                         },
