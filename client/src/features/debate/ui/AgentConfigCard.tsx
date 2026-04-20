@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/shared/lib/cn";
 import type { AgentConfig } from "../model/agent-config.types";
 import {
@@ -11,9 +11,10 @@ import {
     AGENT_PRESETS,
 } from "../model/agent-config.types";
 
-interface DocumentItem {
+export interface DocumentItem {
     id: string;
     filename: string;
+    status: string;
 }
 
 interface AgentConfigCardProps {
@@ -42,7 +43,6 @@ export default function AgentConfigCard({
 
     return (
         <motion.div
-            layout
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
@@ -139,13 +139,17 @@ export default function AgentConfigCard({
             </div>
 
             {/* Expanded settings */}
+            <AnimatePresence initial={false}>
             {expanded && (
                 <motion.div
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: "auto", opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
-                    className="px-4 pb-4 pt-1 border-t border-agora-border/50"
+                    transition={{ duration: 0.2, ease: "easeInOut" }}
+                    style={{ overflow: "hidden" }}
+                    className="border-t border-agora-border/50"
                 >
+                    <div className="px-4 pb-4 pt-1">
                     {/* Preset selector */}
                     <div className="mt-3 mb-3">
                         <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1 block">
@@ -340,39 +344,93 @@ export default function AgentConfigCard({
                             <div className="mb-3">
                                 <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1 block">
                                     Assigned Documents
+                                    {agent.documentIds.length > 0 && (
+                                        <span className="ml-2 text-indigo-400">
+                                            ({agent.documentIds.length} selected)
+                                        </span>
+                                    )}
                                 </label>
                                 {documents.length === 0 ? (
-                                    <p className="text-[10px] text-agora-text-muted italic">
-                                        No documents uploaded yet. Upload documents first, then assign them.
-                                    </p>
+                                    <div className="px-3 py-3 rounded-lg border border-dashed border-agora-border/50 bg-agora-bg/30 text-center">
+                                        <p className="text-[10px] text-agora-text-muted">
+                                            No documents uploaded yet.
+                                        </p>
+                                        <p className="text-[10px] text-indigo-400/80 mt-1">
+                                            Upload documents in the panel above to enable assignment.
+                                        </p>
+                                    </div>
                                 ) : (
                                     <div className="space-y-1">
-                                        {documents.map((doc) => (
-                                            <label
-                                                key={doc.id}
-                                                className={cn(
-                                                    "flex items-center gap-2 p-1.5 rounded-lg border cursor-pointer text-xs transition-all",
-                                                    agent.documentIds.includes(doc.id)
-                                                        ? "border-indigo-500/50 bg-indigo-500/5 text-white"
-                                                        : "border-agora-border/30 text-agora-text-muted hover:border-agora-border",
-                                                )}
+                                        {documents.length > 2 && (
+                                            <button
+                                                onClick={() => {
+                                                    const allSelected = documents.every((d) =>
+                                                        agent.documentIds.includes(d.id),
+                                                    );
+                                                    onUpdate({
+                                                        documentIds: allSelected
+                                                            ? []
+                                                            : documents
+                                                                .filter((d) => d.status === "ready")
+                                                                .map((d) => d.id),
+                                                    });
+                                                }}
+                                                className="text-[10px] text-indigo-400 hover:text-indigo-300 transition-colors mb-1"
                                             >
-                                                <input
-                                                    type="checkbox"
-                                                    checked={agent.documentIds.includes(doc.id)}
-                                                    onChange={(e) => {
-                                                        const ids = e.target.checked
-                                                            ? [...agent.documentIds, doc.id]
-                                                            : agent.documentIds.filter((id) => id !== doc.id);
-                                                        onUpdate({ documentIds: ids });
-                                                    }}
-                                                    className="accent-indigo-500"
-                                                />
-                                                <span className="truncate">{doc.filename}</span>
-                                            </label>
-                                        ))}
+                                                {documents.every((d) => agent.documentIds.includes(d.id))
+                                                    ? "Deselect all"
+                                                    : "Select all ready"}
+                                            </button>
+                                        )}
+                                        {documents.map((doc) => {
+                                            const isReady = doc.status === "ready";
+                                            const isSelected = agent.documentIds.includes(doc.id);
+                                            const ext = doc.filename.split(".").pop()?.toLowerCase() ?? "";
+                                            const icon = ext === "pdf" ? "📄" : ext === "docx" ? "📋" : "📝";
+
+                                            return (
+                                                <label
+                                                    key={doc.id}
+                                                    className={cn(
+                                                        "flex items-center gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-all",
+                                                        !isReady && "opacity-50 cursor-not-allowed",
+                                                        isSelected
+                                                            ? "border-indigo-500/50 bg-indigo-500/5 text-white"
+                                                            : "border-agora-border/30 text-agora-text-muted hover:border-agora-border",
+                                                    )}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isSelected}
+                                                        disabled={!isReady}
+                                                        onChange={(e) => {
+                                                            const ids = e.target.checked
+                                                                ? [...agent.documentIds, doc.id]
+                                                                : agent.documentIds.filter((id) => id !== doc.id);
+                                                            onUpdate({ documentIds: ids });
+                                                        }}
+                                                        className="accent-indigo-500"
+                                                    />
+                                                    <span className="text-sm shrink-0">{icon}</span>
+                                                    <span className="truncate flex-1">{doc.filename}</span>
+                                                    {!isReady && (
+                                                        <span className={cn(
+                                                            "px-1.5 py-0.5 rounded text-[9px] font-medium shrink-0",
+                                                            doc.status === "processing"
+                                                                ? "bg-amber-500/15 text-amber-400"
+                                                                : "bg-red-500/15 text-red-400",
+                                                        )}>
+                                                            {doc.status}
+                                                        </span>
+                                                    )}
+                                                </label>
+                                            );
+                                        })}
                                     </div>
                                 )}
+                                <p className="text-[9px] text-agora-text-muted/60 mt-1.5 italic">
+                                    This agent will only use the selected documents as its knowledge base.
+                                </p>
                             </div>
                         )}
 
@@ -402,8 +460,10 @@ export default function AgentConfigCard({
                             </label>
                         )}
                     </div>
+                    </div>
                 </motion.div>
             )}
+            </AnimatePresence>
         </motion.div>
     );
 }

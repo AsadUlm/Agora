@@ -14,6 +14,7 @@ class DebateStartRequest(BaseModel):
 
     question: str
     agents: list[AgentCreate]
+    session_id: uuid.UUID | None = None
 
 
 # ── Response schemas (Step 6 — structured, frontend-ready) ────────────────────

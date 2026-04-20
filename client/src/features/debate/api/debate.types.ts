@@ -64,6 +64,7 @@ export interface SessionDetailDTO {
 export interface DebateStartRequest {
     question: string;
     agents: { role: string; config: Record<string, unknown>; document_ids?: string[] }[];
+    session_id?: string;
 }
 
 export interface DebateStartResponse {

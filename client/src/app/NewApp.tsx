@@ -5,6 +5,7 @@ import NewLoginPage from "@/pages/NewLoginPage";
 import NewSignupPage from "@/pages/NewSignupPage";
 import DebateListPage from "@/pages/DebateListPage";
 import DebateWorkspacePage from "@/pages/DebateWorkspacePage";
+import AppShell from "@/features/debate/ui/AppShell";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -43,13 +44,14 @@ export default function App() {
                     <Route path="/login" element={<NewLoginPage />} />
                     <Route path="/signup" element={<NewSignupPage />} />
                     <Route
-                        path="/debates"
                         element={
                             <ProtectedRoute>
-                                <DebateListPage />
+                                <AppShell />
                             </ProtectedRoute>
                         }
-                    />
+                    >
+                        <Route path="/debates" element={<DebateListPage />} />
+                    </Route>
                     <Route
                         path="/debates/:debateId"
                         element={

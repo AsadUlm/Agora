@@ -101,9 +101,23 @@ async def start_debate(
             detail="At least one agent is required.",
         )
 
-    # ── 1. Create ChatSession ────────────────────────────────────────────────
-    session = ChatSession(user_id=current_user.id, title=request.question[:255])
-    db.add(session)
+    # ── 1. Create or reuse ChatSession ─────────────────────────────────────
+    if request.session_id:
+        stmt = select(ChatSession).where(
+            ChatSession.id == request.session_id,
+            ChatSession.user_id == current_user.id,
+        )
+        row = await db.execute(stmt)
+        session = row.scalar_one_or_none()
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found or access denied.",
+            )
+        session.title = request.question[:255]
+    else:
+        session = ChatSession(user_id=current_user.id, title=request.question[:255])
+        db.add(session)
     await db.flush()
 
     # ── 2. Create ChatAgents ─────────────────────────────────────────────────

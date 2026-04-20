@@ -544,6 +544,12 @@ export function wsEventToAnimationSteps(
                     targetId: QUESTION_NODE_ID,
                     duration: T.NODE_ENTER,
                     delay: T.STEP_GAP,
+                    nodeData: {
+                        id: QUESTION_NODE_ID,
+                        kind: "question",
+                        label: "Question",
+                        round: 0,
+                    },
                 });
                 steps.push({
                     id: stepId(),
@@ -572,6 +578,14 @@ export function wsEventToAnimationSteps(
                     duration: T.NODE_ENTER,
                     delay: 100,
                     meta: { round: 1, description: `${capitalize(role)} enters the debate` },
+                    nodeData: {
+                        id: nodeId,
+                        kind: "agent",
+                        label: role,
+                        round: 1,
+                        agentId: event.agent_id!,
+                        agentRole: role,
+                    },
                 });
                 steps.push({
                     id: stepId(),
@@ -606,6 +620,14 @@ export function wsEventToAnimationSteps(
                     duration: T.NODE_ENTER,
                     delay: 100,
                     meta: { round: 2, description: `${capitalize(role)} enters the critique round` },
+                    nodeData: {
+                        id: intermId,
+                        kind: "intermediate",
+                        label: role,
+                        round: 2,
+                        agentId: event.agent_id!,
+                        agentRole: role,
+                    },
                 });
                 steps.push({
                     id: stepId(),
@@ -798,6 +820,12 @@ export function wsEventToAnimationSteps(
                 duration: T.NODE_ENTER + 200,
                 delay: T.STEP_GAP,
                 meta: { round: 3, description: "Synthesis is forming from all arguments" },
+                nodeData: {
+                    id: SYNTHESIS_NODE_ID,
+                    kind: "synthesis",
+                    label: "Synthesis",
+                    round: 3,
+                },
             });
             steps.push({
                 id: stepId(),

@@ -18,6 +18,8 @@ import {
     sessionToAnimationSteps,
     wsEventToAnimationSteps,
 } from "./animation/animation.converter";
+import { formatRound1Summary, formatRound2Summary } from "./formatters";
+import { shouldSkipGraphInference } from "./error-normalizer";
 
 interface DebateStore {
     session: SessionDetailDTO | null;
@@ -141,9 +143,11 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 // Still running — hydrate what we have, live events will animate
                 useGraphStore.getState().hydrateFromSession(session);
                 useModeratorStore.getState().updateFromSession(session, currentRound);
-                debateWs.connect(turn!.id);
-                debateWs.subscribe(get().handleWsEvent);
-                set({ wsConnected: true });
+                if (!get().wsConnected) {
+                    debateWs.connect(turn!.id);
+                    debateWs.subscribe(get().handleWsEvent);
+                    set({ wsConnected: true });
+                }
             }
         } catch (err) {
             const msg =
@@ -169,10 +173,14 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
 
             case "turn_completed":
                 set({ turnStatus: "completed" });
-                // Reload full session for final state  
+                // Reload full session and re-hydrate graph with complete content
                 if (state.debateId) {
                     getDebateDetail(state.debateId).then((session) => {
                         set({ session, agents: session.agents ?? [] });
+                        // After animation finishes, re-hydrate graph so all content is present
+                        setTimeout(() => {
+                            useGraphStore.getState().hydrateFromSession(session);
+                        }, 3000);
                     });
                 }
                 break;
@@ -197,6 +205,75 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             const anim = useAnimationStore.getState();
             anim.enqueueSteps(animSteps);
             if (!anim.isPlaying) anim.play();
+        }
+
+        // ── Live content hydration ──────────────────────────────
+        // Animation steps handle visual state (enter/activate/complete),
+        // but node content (summary, text) must be applied directly.
+        if (event.type === "message_created" && event.agent_id) {
+            const payload = event.payload ?? {};
+            if (!shouldSkipGraphInference(payload)) {
+                const rn = event.round_number ?? 1;
+                const rawContent =
+                    typeof payload["content"] === "string"
+                        ? (payload["content"] as string)
+                        : "";
+                const agentObj = state.agents.find(
+                    (a) => a.id === event.agent_id,
+                );
+                const role = agentObj?.role;
+
+                if (rn === 1) {
+                    // Round 1: update agent node with initial stance
+                    const nodeId = `agent-${event.agent_id}`;
+                    useGraphStore.getState().updateNodeData(nodeId, {
+                        summary: formatRound1Summary(rawContent),
+                        content: rawContent,
+                    });
+                } else if (rn === 2) {
+                    // Round 2: update intermediate node with critique content
+                    const nodeId = `agent-${event.agent_id}-r2`;
+                    const targetNodeId = inferLiveTarget(
+                        payload,
+                        state.agents,
+                        `agent-${event.agent_id}`,
+                    );
+                    const targetAgent = state.agents.find(
+                        (a) => `agent-${a.id}` === targetNodeId,
+                    );
+                    useGraphStore.getState().updateNodeData(nodeId, {
+                        summary: formatRound2Summary(
+                            rawContent,
+                            role,
+                            targetAgent?.role,
+                        ),
+                        content: rawContent,
+                    });
+                } else if (rn === 3) {
+                    // Round 3: update agent node with final contribution
+                    const nodeId = `agent-${event.agent_id}`;
+                    useGraphStore.getState().updateNodeData(nodeId, {
+                        content: rawContent,
+                    });
+                }
+            }
+        }
+
+        // If turn_completed provides a final summary, hydrate the synthesis node
+        if (event.type === "turn_completed") {
+            const payload = event.payload ?? {};
+            const summaryText =
+                typeof payload["summary"] === "string"
+                    ? (payload["summary"] as string)
+                    : typeof payload["text"] === "string"
+                        ? (payload["text"] as string)
+                        : null;
+            if (summaryText) {
+                useGraphStore.getState().updateNodeData("synthesis-node", {
+                    summary: summaryText.slice(0, 200),
+                    content: summaryText,
+                });
+            }
         }
 
         // Safety: ensure question node is visible for live debates
@@ -229,3 +306,31 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         useAnimationStore.getState().reset();
     },
 }));
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/** Infer the target agent node for a round-2 message from WS event payload */
+function inferLiveTarget(
+    payload: Record<string, unknown>,
+    agents: AgentDTO[],
+    sourceNodeId: string,
+): string {
+    if (typeof payload["target_agent"] === "string") {
+        const target = agents.find(
+            (a) =>
+                a.id === payload["target_agent"] ||
+                a.role === payload["target_agent"],
+        );
+        if (target) return `agent-${target.id}`;
+    }
+    if (Array.isArray(payload["references"])) {
+        const refs = payload["references"] as string[];
+        const refAgent = agents.find(
+            (a) => refs.includes(a.id) || refs.includes(a.role),
+        );
+        if (refAgent) return `agent-${refAgent.id}`;
+    }
+    const others = agents.filter((a) => `agent-${a.id}` !== sourceNodeId);
+    if (others.length > 0) return `agent-${others[0].id}`;
+    return "question-node";
+}

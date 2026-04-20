@@ -34,6 +34,17 @@ export interface AnimationStep {
     };
     /** Arbitrary metadata (e.g. agent role, round number) */
     meta?: Record<string, unknown>;
+    /** Full node data for node_enter steps — ensures the node exists in graph */
+    nodeData?: {
+        id: string;
+        kind: string;
+        label: string;
+        round: number;
+        agentId?: string;
+        agentRole?: string;
+        summary?: string;
+        content?: string;
+    };
 }
 
 export type GraphNodeAnimState =

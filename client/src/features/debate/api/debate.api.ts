@@ -7,6 +7,17 @@ import type {
     SessionDetailDTO,
 } from "./debate.types";
 
+export interface CreateSessionResponse {
+    id: string;
+    title: string;
+    created_at: string;
+}
+
+export async function createSession(): Promise<CreateSessionResponse> {
+    const res = await apiClient.post<CreateSessionResponse>("/sessions");
+    return res.data;
+}
+
 export async function startDebate(
     data: DebateStartRequest,
 ): Promise<DebateStartResponse> {

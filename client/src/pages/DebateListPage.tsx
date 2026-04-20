@@ -1,9 +1,15 @@
 import { useEffect, useState, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
-import { listDebates, startDebate } from "@/features/debate/api/debate.api";
-import type { DebateListItem } from "@/features/debate/api/debate.types";
-import { useAuthStore } from "@/features/auth/model/auth.store";
+import {
+    listDebates,
+    startDebate,
+    createSession,
+    uploadDocument,
+    listDocuments,
+    deleteDocument,
+} from "@/features/debate/api/debate.api";
+import type { DebateListItem, DocumentDTO } from "@/features/debate/api/debate.types";
 import { cn } from "@/shared/lib/cn";
 import { formatRelativeTime } from "@/shared/lib/dates";
 import {
@@ -16,8 +22,7 @@ import AgentConfigDrawer from "@/features/debate/ui/AgentConfigDrawer";
 
 export default function DebateListPage() {
     const navigate = useNavigate();
-    const logout = useAuthStore((s) => s.logout);
-    const user = useAuthStore((s) => s.user);
+    const location = useLocation();
     const [debates, setDebates] = useState<DebateListItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [creating, setCreating] = useState(false);
@@ -27,6 +32,11 @@ export default function DebateListPage() {
     const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>(
         () => [...DEFAULT_AGENT_CONFIGS],
     );
+
+    // Document management state
+    const [draftSessionId, setDraftSessionId] = useState<string | null>(null);
+    const [documents, setDocuments] = useState<DocumentDTO[]>([]);
+    const [uploading, setUploading] = useState(false);
 
     const enabledCount = agentConfigs.filter((a) => a.enabled).length;
 
@@ -45,6 +55,15 @@ export default function DebateListPage() {
         fetchDebates();
     }, [fetchDebates]);
 
+    // Handle "New Debate" from sidebar
+    useEffect(() => {
+        if ((location.state as { openNew?: boolean })?.openNew) {
+            setShowNew(true);
+            // Clear the state so it doesn't re-trigger
+            window.history.replaceState({}, "");
+        }
+    }, [location.state]);
+
     const handleCreate = async () => {
         if (!question.trim() || enabledCount === 0) return;
         setCreating(true);
@@ -52,7 +71,11 @@ export default function DebateListPage() {
             const res = await startDebate({
                 question: question.trim(),
                 agents: agentConfigsToPayload(agentConfigs),
+                ...(draftSessionId ? { session_id: draftSessionId } : {}),
             });
+            // Reset draft state after successful creation
+            setDraftSessionId(null);
+            setDocuments([]);
             navigate(`/debates/${res.debate_id}`);
         } catch {
             /* error shown inline */
@@ -61,9 +84,53 @@ export default function DebateListPage() {
         }
     };
 
-    const handleLogout = () => {
-        logout();
-        navigate("/login");
+    /** Ensure a draft session exists for document uploads. */
+    const ensureDraftSession = async (): Promise<string> => {
+        if (draftSessionId) return draftSessionId;
+        const sess = await createSession();
+        setDraftSessionId(sess.id);
+        return sess.id;
+    };
+
+    const handleUploadDocument = async (file: File) => {
+        setUploading(true);
+        try {
+            const sessionId = await ensureDraftSession();
+            const doc = await uploadDocument(sessionId, file);
+            setDocuments((prev) => [doc, ...prev]);
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    const handleDeleteDocument = async (documentId: string) => {
+        if (!draftSessionId) return;
+        try {
+            await deleteDocument(documentId, draftSessionId);
+            setDocuments((prev) => prev.filter((d) => d.id !== documentId));
+            // Clear documentIds from all agent configs
+            setAgentConfigs((prev) =>
+                prev.map((a) => ({
+                    ...a,
+                    documentIds: a.documentIds.filter((id) => id !== documentId),
+                })),
+            );
+        } catch {
+            /* ignore */
+        }
+    };
+
+    // Refresh documents when drawer opens (in case status changed)
+    const handleOpenDrawer = async () => {
+        setDrawerOpen(true);
+        if (draftSessionId) {
+            try {
+                const docs = await listDocuments(draftSessionId);
+                setDocuments(docs);
+            } catch {
+                /* ignore */
+            }
+        }
     };
 
     const handleUpdateAgent = (id: string, updates: Partial<AgentConfig>) => {
@@ -110,35 +177,12 @@ export default function DebateListPage() {
                 onRemove={handleRemoveAgent}
                 onAdd={handleAddAgent}
                 onMove={handleMoveAgent}
+                documents={documents.map((d) => ({ id: d.id, filename: d.filename, status: d.status }))}
+                rawDocuments={documents}
+                uploading={uploading}
+                onUploadDocument={handleUploadDocument}
+                onDeleteDocument={handleDeleteDocument}
             />
-
-            {/* Header */}
-            <header className="border-b border-agora-border bg-agora-surface/80 backdrop-blur-sm">
-                <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold">
-                            A
-                        </div>
-                        <div>
-                            <h1 className="text-base font-semibold text-white">AGORA</h1>
-                            <p className="text-[11px] text-agora-text-muted">
-                                AI Debate Workspace
-                            </p>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-4">
-                        <span className="text-xs text-agora-text-muted">
-                            {user?.email}
-                        </span>
-                        <button
-                            onClick={handleLogout}
-                            className="text-xs text-agora-text-muted hover:text-white transition-colors"
-                        >
-                            Sign out
-                        </button>
-                    </div>
-                </div>
-            </header>
 
             <main className="max-w-5xl mx-auto px-6 py-8">
                 {/* New debate block */}
@@ -218,7 +262,7 @@ export default function DebateListPage() {
                             <div className="px-6 py-4 border-t border-agora-border bg-agora-surface-light/20 flex items-center justify-between">
                                 <div className="flex items-center gap-3">
                                     <button
-                                        onClick={() => setDrawerOpen(true)}
+                                        onClick={handleOpenDrawer}
                                         className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-agora-surface-light/50 border border-agora-border text-agora-text hover:text-white hover:border-indigo-500/40 transition-all"
                                     >
                                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -247,6 +291,11 @@ export default function DebateListPage() {
                                                     </div>
                                                 ))}
                                         </div>
+                                    )}
+                                    {documents.length > 0 && (
+                                        <span className="text-[10px] text-indigo-400/80 flex items-center gap-1">
+                                            📄 {documents.length} doc{documents.length !== 1 ? "s" : ""}
+                                        </span>
                                     )}
                                 </div>
 

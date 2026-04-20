@@ -165,6 +165,19 @@ export const useAnimationStore = create<AnimationStore>((set, get) => ({
                 case "node_enter":
                     if (step.targetId) {
                         // Ensure the node exists in graph before setting status
+                        if (step.nodeData) {
+                            graphStore.ensureNode({
+                                id: step.nodeData.id,
+                                kind: step.nodeData.kind as import("../graph.types").GraphNodeKind,
+                                label: step.nodeData.label,
+                                round: step.nodeData.round,
+                                status: "hidden",
+                                agentId: step.nodeData.agentId,
+                                agentRole: step.nodeData.agentRole,
+                                summary: step.nodeData.summary,
+                                content: step.nodeData.content,
+                            });
+                        }
                         graphStore.setNodeStatus(step.targetId, "entering");
                         set((s) => ({
                             nodeStates: {

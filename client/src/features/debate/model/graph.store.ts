@@ -103,7 +103,31 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     ensureNode: (node) => {
         set((s) => {
             const exists = s.graph.nodes.find((n) => n.id === node.id);
-            if (exists) return s;
+            if (exists) {
+                // Node exists — merge content fields if they were previously empty
+                if (
+                    (node.summary && !exists.summary) ||
+                    (node.content && !exists.content) ||
+                    (node.label && exists.label !== node.label)
+                ) {
+                    return {
+                        graph: {
+                            ...s.graph,
+                            nodes: s.graph.nodes.map((n) =>
+                                n.id === node.id
+                                    ? {
+                                          ...n,
+                                          summary: n.summary || node.summary,
+                                          content: n.content || node.content,
+                                          label: node.label || n.label,
+                                      }
+                                    : n,
+                            ),
+                        },
+                    };
+                }
+                return s;
+            }
             return {
                 graph: { ...s.graph, nodes: [...s.graph.nodes, node] },
             };
