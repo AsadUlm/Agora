@@ -41,6 +41,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 def get_session_factory() -> Any:
     """
     FastAPI dependency that returns the async session factory.
-    Background tasks use this to create their own DB sessions safely.
+
+    Background tasks and services that need their own DB sessions use this
+    to create sessions safely outside the request scope.
+
+    Override in tests to inject the test SQLite factory:
+        app.dependency_overrides[get_session_factory] = lambda: test_factory
     """
     return AsyncSessionLocal

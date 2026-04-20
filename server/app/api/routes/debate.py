@@ -1,9 +1,10 @@
 """
 Debate API routes.
 
-POST /debates/start      — Start a new debate session (async, returns immediately).
-GET  /debates/{id}       — Retrieve full debate result by session ID.
-GET  /debates            — List all debates for the current user.
+POST /debates/start          — Start a new debate session (async, returns immediately).
+GET  /debates/{id}           — Full session detail (agents + latest turn + rounds + messages).
+GET  /debates/{id}/turns/{turn_id} — Single turn detail (rounds + messages).
+GET  /debates                — List all debates for the current user.
 
 Async execution model (Step 4)
 -------------------------------
@@ -18,11 +19,15 @@ The frontend should:
   - Subscribe to WS /ws/chat-turns/{turn_id} immediately after receiving the response
   - Receive real-time events (turn_started, message_created, turn_completed, …)
   - Call GET /debates/{debate_id} once turn_completed is received for the final snapshot
+
+Step 6 — DTO shaping:
+  GET /debates/{id} now returns SessionDetailDTO (nested, frontend-ready).
+  GET /debates/{id}/turns/{turn_id} returns TurnDTO.
+  serialize_session() / serialize_turn() handle the ORM → DTO translation.
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -32,26 +37,44 @@ from sqlalchemy.orm import selectinload
 
 from app.core.auth import get_current_user
 from app.core.config import settings
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.models.chat_agent import ChatAgent
 from app.models.chat_session import ChatSession
 from app.models.chat_turn import ChatTurn, ChatTurnStatus
 from app.models.message import Message, MessageType, MessageVisibility, SenderType
 from app.models.round import Round
 from app.models.user import User
+from app.models.agent_document_binding import AgentDocumentBinding
 from app.schemas.agent_config import AgentConfig
 from app.schemas.debate import (
     DebateListItem,
-    DebateResponse,
     DebateStartRequest,
     DebateStartResponse,
+    SessionDetailDTO,
+    TurnDTO,
 )
+from app.schemas.dto import serialize_session, serialize_turn, _agents_index
 from app.services.execution_runner import run_turn_background
 from app.services.ws_manager import ws_manager
-from app.db.session import get_session_factory
 
 router = APIRouter()
 
+
+# ── Shared eager-load option set ──────────────────────────────────────────────
+
+def _session_load_opts():
+    """SQLAlchemy options that fully populate a ChatSession for serialization."""
+    return [
+        selectinload(ChatSession.chat_agents),
+        selectinload(ChatSession.chat_turns)
+        .selectinload(ChatTurn.rounds)
+        .selectinload(Round.messages),
+        selectinload(ChatSession.chat_turns)
+        .selectinload(ChatTurn.messages),
+    ]
+
+
+# ── POST /debates/start ───────────────────────────────────────────────────────
 
 @router.post("/start", response_model=DebateStartResponse, status_code=status.HTTP_201_CREATED)
 async def start_debate(
@@ -84,6 +107,7 @@ async def start_debate(
     await db.flush()
 
     # ── 2. Create ChatAgents ─────────────────────────────────────────────────
+    agent_records: list[ChatAgent] = []
     for i, agent_req in enumerate(request.agents):
         cfg = AgentConfig.from_raw(agent_req.config)
         agent = ChatAgent(
@@ -98,11 +122,23 @@ async def start_debate(
                 else settings.LLM_TEMPERATURE
             ),
             reasoning_style=cfg.reasoning.style,
-            system_prompt=cfg.system_prompt or None,
             position_order=i,
             is_active=True,
+            knowledge_mode=cfg.knowledge.mode,
+            knowledge_strict=cfg.knowledge.strict,
         )
         db.add(agent)
+        agent_records.append((agent, agent_req.document_ids))
+    await db.flush()
+
+    # ── 2b. Create AgentDocumentBindings ──────────────────────────────────────
+    for agent, doc_ids in agent_records:
+        for doc_id in doc_ids:
+            binding = AgentDocumentBinding(
+                chat_agent_id=agent.id,
+                document_id=doc_id,
+            )
+            db.add(binding)
     await db.flush()
 
     # ── 3. Create ChatTurn (queued — background task transitions it to running)
@@ -129,11 +165,6 @@ async def start_debate(
     db.add(user_message)
 
     # ── 5. Commit NOW so the background task can open its own session safely ─
-    #
-    # We commit explicitly here rather than relying on get_db's cleanup commit.
-    # This guarantees the data is in the DB before any background task starts,
-    # regardless of the exact ordering of FastAPI BackgroundTasks vs dependency
-    # cleanup. get_db will find nothing left to commit and exits cleanly.
     await db.commit()
 
     # ── 6. Schedule background debate execution ───────────────────────────────
@@ -155,14 +186,36 @@ async def start_debate(
     )
 
 
-@router.get("/{debate_id}", response_model=DebateResponse)
+# ── GET /debates/{id} ─────────────────────────────────────────────────────────
+
+@router.get("/{debate_id}", response_model=SessionDetailDTO)
 async def get_debate(
     debate_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> DebateResponse:
+) -> SessionDetailDTO:
     """
-    Return full debate detail including all rounds and agent messages.
+    Return full session detail including agents and latest turn.
+
+    Response shape (Step 6):
+        {
+          "id", "title", "question", "status", "created_at", "updated_at",
+          "agents": [{id, role, provider, model, temperature, reasoning_style, position_order}],
+          "latest_turn": {
+            "id", "turn_index", "status", "started_at", "ended_at",
+            "user_message": {"content", "created_at"},
+            "rounds": [
+              {
+                "id", "round_number", "round_type", "status", "started_at", "ended_at",
+                "messages": [
+                  {id, agent_id, agent_role, message_type, sender_type, payload, text,
+                   sequence_no, created_at}
+                ]
+              }
+            ],
+            "final_summary": {...} | null
+          }
+        }
 
     Only the session owner can view their debate.
     """
@@ -170,14 +223,7 @@ async def get_debate(
         select(ChatSession)
         .where(ChatSession.id == debate_id)
         .where(ChatSession.user_id == current_user.id)
-        .options(
-            selectinload(ChatSession.chat_agents),
-            selectinload(ChatSession.chat_turns)
-            .selectinload(ChatTurn.rounds)
-            .selectinload(Round.messages),
-            selectinload(ChatSession.chat_turns)
-            .selectinload(ChatTurn.messages),
-        )
+        .options(*_session_load_opts())
     )
     row = await db.execute(stmt)
     session = row.scalar_one_or_none()
@@ -188,58 +234,68 @@ async def get_debate(
             detail=f"Debate {debate_id} not found.",
         )
 
-    # Recover the original question from the user_input message
-    question = session.title or ""
-    for turn in session.chat_turns:
-        for msg in turn.messages:
-            if msg.message_type == MessageType.user_input:
-                question = msg.content
-                break
+    return serialize_session(session)
 
-    rounds_out = []
-    for turn in session.chat_turns:
-        for round_obj in sorted(turn.rounds, key=lambda r: r.round_number):
-            agent_outputs = []
-            for msg in sorted(round_obj.messages, key=lambda m: m.sequence_no):
-                if msg.sender_type != SenderType.agent:
-                    continue
-                try:
-                    structured = json.loads(msg.content)
-                except (json.JSONDecodeError, TypeError):
-                    structured = {"raw_content": msg.content}
-                agent_outputs.append({
-                    "agent_id": str(msg.chat_agent_id),
-                    "message_type": msg.message_type.value,
-                    "data": structured,
-                })
-            rounds_out.append({
-                "id": str(round_obj.id),
-                "round_number": round_obj.round_number,
-                "round_type": round_obj.round_type.value,
-                "status": round_obj.status.value,
-                "data": agent_outputs,
-            })
 
-    turn_status = "unknown"
-    if session.chat_turns:
-        turn_status = session.chat_turns[0].status.value
+# ── GET /debates/{id}/turns/{turn_id} ─────────────────────────────────────────
 
-    return DebateResponse(
-        id=session.id,
-        question=question,
-        status=turn_status,
-        created_at=session.created_at,
-        agents=[
-            {"id": str(a.id), "role": a.role, "config": {}}
-            for a in session.chat_agents
-        ],
-        rounds=rounds_out,
+@router.get("/{debate_id}/turns/{turn_id}", response_model=TurnDTO)
+async def get_turn(
+    debate_id: uuid.UUID,
+    turn_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TurnDTO:
+    """
+    Return detailed turn data: user question + all rounds + messages.
+
+    Ownership is verified via the parent session (session.user_id == current_user.id).
+
+    Response shape:
+        {
+          "id", "turn_index", "status", "started_at", "ended_at",
+          "user_message": {"content", "created_at"},
+          "rounds": [
+            {"id", "round_number", "round_type", "status", "messages": [...]}
+          ],
+          "final_summary": {...} | null
+        }
+    """
+    # Verify ownership via the parent session in one query
+    session_check = await db.execute(
+        select(ChatSession.id)
+        .where(ChatSession.id == debate_id)
+        .where(ChatSession.user_id == current_user.id)
     )
+    if session_check.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debate not found.")
+
+    stmt = (
+        select(ChatTurn)
+        .where(ChatTurn.id == turn_id)
+        .where(ChatTurn.chat_session_id == debate_id)
+        .options(
+            selectinload(ChatTurn.rounds).selectinload(Round.messages),
+            selectinload(ChatTurn.messages),
+        )
+    )
+    row = await db.execute(stmt)
+    turn = row.scalar_one_or_none()
+
+    if turn is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Turn not found.")
+
+    # Load agents for role denormalization
+    agents_result = await db.execute(
+        select(ChatAgent).where(ChatAgent.chat_session_id == debate_id)
+    )
+    agents = agents_result.scalars().all()
+    agents_by_id = _agents_index(list(agents))
+
+    return serialize_turn(turn, agents_by_id)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /debates
-# ─────────────────────────────────────────────────────────────────────────────
+# ── GET /debates ──────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[DebateListItem])
 async def list_debates(
@@ -265,6 +321,7 @@ async def list_debates(
             DebateListItem(
                 id=s.id,
                 title=s.title or "",
+                question=s.title or "",
                 status=turn_status,
                 created_at=s.created_at,
             )

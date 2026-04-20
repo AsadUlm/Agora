@@ -40,6 +40,22 @@ class Settings(BaseSettings):
     # ── LLM API keys (optional — falls back to mock if not set) ──────────
     GROQ_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
+    OPENROUTER_API_KEY: str | None = None
+
+    # ── OpenRouter defaults ───────────────────────────────────────────────
+    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
+
+    # ── Embeddings ────────────────────────────────────────────────────────
+    # Provider: "openai" (uses text-embedding-3-small, dim=1536)
+    #           "mock"   (all-zeros vector, for tests / offline dev)
+    EMBEDDING_PROVIDER: str = "mock"
+    EMBEDDING_MODEL: str = "text-embedding-3-small"   # used when EMBEDDING_PROVIDER=openai
+    EMBEDDING_DIM: int = 1536                          # must match DocumentChunk.embedding Vector dim
+
+    # ── File upload storage ───────────────────────────────────────────────
+    # Local filesystem path for uploaded documents.
+    # Swap this for an S3/GCS path prefix in production environments.
+    UPLOAD_DIR: str = "uploads"
 
     def cors_origins_list(self) -> list[str]:
         """Split comma-separated CORS_ORIGINS into a list."""

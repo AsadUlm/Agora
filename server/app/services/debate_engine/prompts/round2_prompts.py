@@ -3,6 +3,30 @@
 from __future__ import annotations
 
 
+def _format_context_block(chunks: list[dict]) -> str:
+    if not chunks:
+        return ""
+    lines = ["\nRelevant document context (reference when critiquing):\n"]
+    for i, c in enumerate(chunks, start=1):
+        lines.append(f"[Source {i}]\n{c['content']}\n")
+    return "\n".join(lines)
+
+
+def _knowledge_instruction(
+    knowledge_mode: str,
+    knowledge_strict: bool,
+    has_chunks: bool,
+) -> str:
+    if knowledge_mode == "no_docs":
+        return "\nYou do not have access to any documents. Rely on reasoning to critique.\n"
+    if not has_chunks:
+        return ""
+    instruction = "\nUse the following documents as your primary source of truth when challenging opponents. If unsure, explicitly say so.\n"
+    if knowledge_strict:
+        instruction += "IMPORTANT: Only base your critiques on the provided documents. Do not rely on general knowledge.\n"
+    return instruction
+
+
 def build_critique_prompt(
     role: str,
     question: str,
@@ -10,6 +34,9 @@ def build_critique_prompt(
     other_agents: list[dict],  # [{"role": str, "stance": str, "key_points": list[str]}]
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
+    retrieved_chunks: list[dict] | None = None,
+    knowledge_mode: str = "shared_session_docs",
+    knowledge_strict: bool = False,
 ) -> str:
     """
     Build the Round 2 prompt for an agent critiquing all other agents.
@@ -50,7 +77,7 @@ def build_critique_prompt(
 The debate question is: {question}
 
 Your own opening stance was: {own_stance}
-
+{_knowledge_instruction(knowledge_mode, knowledge_strict, bool(retrieved_chunks or []))}{_format_context_block(retrieved_chunks or [])}
 Your task: Critique the following opponents' arguments in Round 2 Cross-Examination.
 
 {opponents_block}

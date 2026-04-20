@@ -9,8 +9,8 @@ from app.db.base import Base
 
 
 class LLMCallStatus(str, enum.Enum):
-    running = "running"
-    completed = "completed"
+    running = "running"      # was "started"
+    completed = "completed"  # was "success"
     failed = "failed"
 
 

@@ -26,6 +26,8 @@ class ChatAgent(Base):
     system_prompt: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     position_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    knowledge_mode: Mapped[str | None] = mapped_column(String(50), nullable=True, default="shared_session_docs")
+    knowledge_strict: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -42,3 +44,4 @@ class ChatAgent(Base):
     chat_session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="chat_agents")
     messages: Mapped[list["Message"]] = relationship("Message", back_populates="chat_agent", cascade="all, delete-orphan")
     llm_calls: Mapped[list["LLMCall"]] = relationship("LLMCall", back_populates="chat_agent", cascade="all, delete-orphan")
+    document_bindings: Mapped[list["AgentDocumentBinding"]] = relationship("AgentDocumentBinding", back_populates="chat_agent", cascade="all, delete-orphan")

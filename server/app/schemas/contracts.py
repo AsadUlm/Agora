@@ -72,7 +72,9 @@ class AgentContext(BaseModel):
     temperature: float
     reasoning_style: str = "balanced"
     reasoning_depth: str = "normal"
-    system_prompt: str = ""
+    knowledge_mode: str = "shared_session_docs"   # no_docs | shared_session_docs | assigned_docs_only
+    knowledge_strict: bool = False
+    assigned_document_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class AgentRoundResult(BaseModel):

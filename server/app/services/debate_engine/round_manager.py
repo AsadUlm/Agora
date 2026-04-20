@@ -98,16 +98,19 @@ class RoundManager:
           • confidence (0.0–1.0)
         """
         round_record = await self._create_round(ctx, round_number=1, round_type=RoundType.initial)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         for agent_ctx in ctx.agents:
+            chunks = await self._retrieve_for_agent(ctx, agent_ctx)
+            chunk_dicts = [c.model_dump() for c in chunks]
             prompt = build_opening_statement_prompt(
                 role=agent_ctx.role,
                 question=ctx.question,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
-                system_prompt=agent_ctx.system_prompt,
+                retrieved_chunks=chunk_dicts,
+                knowledge_mode=agent_ctx.knowledge_mode,
+                knowledge_strict=agent_ctx.knowledge_strict,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -134,7 +137,6 @@ class RoundManager:
         Agents that had zero opponents are passed through with an empty critique list.
         """
         round_record = await self._create_round(ctx, round_number=2, round_type=RoundType.critique)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         # Build a lookup: agent_id → round1 result for prompt construction
@@ -203,6 +205,9 @@ class RoundManager:
                 other_agents=other_agents,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                retrieved_chunks=[c.model_dump() for c in await self._retrieve_for_agent(ctx, agent_ctx)],
+                knowledge_mode=agent_ctx.knowledge_mode,
+                knowledge_strict=agent_ctx.knowledge_strict,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -229,7 +234,6 @@ class RoundManager:
         Each agent reflects on the full debate and produces a final verdict.
         """
         round_record = await self._create_round(ctx, round_number=3, round_type=RoundType.final)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         r1_by_id: dict[str, AgentRoundResult] = {
@@ -250,6 +254,9 @@ class RoundManager:
                 debate_summary=debate_summary,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                retrieved_chunks=[c.model_dump() for c in await self._retrieve_for_agent(ctx, agent_ctx)],
+                knowledge_mode=agent_ctx.knowledge_mode,
+                knowledge_strict=agent_ctx.knowledge_strict,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -392,10 +399,22 @@ class RoundManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _retrieve(self, ctx: TurnContext) -> list[RetrievedChunk]:
-        """Call RetrievalService. Step 5 will return real chunks."""
+        """Call RetrievalService with the real DB session (session-wide, legacy)."""
         return await self._retrieval.retrieve(
             query=ctx.question,
             session_id=ctx.session_id,
+            db=self.db,
+        )
+
+    async def _retrieve_for_agent(self, ctx: TurnContext, agent_ctx: AgentContext) -> list[RetrievedChunk]:
+        """Agent-aware retrieval — respects agent's knowledge configuration."""
+        return await self._retrieval.retrieve_for_agent(
+            agent_id=agent_ctx.agent_id,
+            session_id=ctx.session_id,
+            query=ctx.question,
+            db=self.db,
+            knowledge_mode=agent_ctx.knowledge_mode,
+            assigned_document_ids=agent_ctx.assigned_document_ids,
         )
 
     async def _call_llm(

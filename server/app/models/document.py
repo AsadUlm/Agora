@@ -26,6 +26,7 @@ class Document(Base):
         Uuid(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[DocumentStatus] = mapped_column(
         SQLEnum(DocumentStatus, name="document_status"), nullable=False, default=DocumentStatus.uploaded
@@ -44,3 +45,4 @@ class Document(Base):
 
     # Relationships
     document_chunks: Mapped[list["DocumentChunk"]] = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+    agent_bindings: Mapped[list["AgentDocumentBinding"]] = relationship("AgentDocumentBinding", back_populates="document", cascade="all, delete-orphan")

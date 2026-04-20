@@ -222,7 +222,7 @@ async def test_debate_start_minimal_payload_still_works(client: AsyncClient):
     resp = await client.post("/debates/start", json=payload)
     assert resp.status_code == 201
     body = resp.json()
-    assert body["status"] == "completed"
+    assert body["status"] == "queued"
 
 
 async def test_debate_start_rich_config_payload(client: AsyncClient):
@@ -248,8 +248,9 @@ async def test_debate_start_rich_config_payload(client: AsyncClient):
     resp = await client.post("/debates/start", json=payload)
     assert resp.status_code == 201
     body = resp.json()
-    assert body["status"] == "completed"
-    assert "result" in body
+    assert body["status"] == "queued"
+    assert "ws_session_url" in body
+    assert "ws_turn_url" in body
 
 
 async def test_debate_start_rich_config_stored_in_db(client: AsyncClient):

@@ -28,45 +28,44 @@ def _get_service_instance() -> LLMService:
 
 def _make_service() -> LLMService:
     from app.core.config import settings  # deferred to avoid circular import
+    from app.services.llm.providers.mock_provider import MockProvider
 
     provider = settings.LLM_PROVIDER.lower()
 
     if provider == "mock":
-        from app.services.llm.providers.mock_provider import MockProvider
         logger.info("LLM provider: Mock (testing mode)")
         return MockProvider()
 
-    if provider == "groq":
-        if settings.GROQ_API_KEY:
-            from app.services.llm.providers.groq_provider import GroqProvider
-            logger.info(
-                "LLM provider: Groq (model=%s, temperature=%.2f)",
-                settings.LLM_MODEL,
-                settings.LLM_TEMPERATURE,
-            )
-            return GroqProvider(
-                api_key=settings.GROQ_API_KEY,
-                default_model=settings.LLM_MODEL,
-                default_temperature=settings.LLM_TEMPERATURE,
-            )
-        else:
-            logger.warning(
-                "LLM_PROVIDER=groq but GROQ_API_KEY is not set. "
-                "Falling back to MockProvider. Set GROQ_API_KEY in .env to use real LLM."
-            )
+    # Build a multi-provider router so agents can specify their own provider
+    providers: dict[str, LLMService] = {}
 
-    if provider == "openai":
-        if settings.OPENAI_API_KEY:
-            # Step 2+: OpenAI provider (same interface as Groq)
-            logger.warning("OpenAI provider not yet implemented. Falling back to Mock.")
-        else:
-            logger.warning(
-                "LLM_PROVIDER=openai but OPENAI_API_KEY is not set. Falling back to Mock."
-            )
+    if settings.GROQ_API_KEY:
+        from app.services.llm.providers.groq_provider import GroqProvider
+        providers["groq"] = GroqProvider(
+            api_key=settings.GROQ_API_KEY,
+            default_model=settings.LLM_MODEL,
+            default_temperature=settings.LLM_TEMPERATURE,
+        )
+        logger.info("Registered provider: groq")
 
-    from app.services.llm.providers.mock_provider import MockProvider
-    logger.info("LLM provider: Mock (fallback)")
-    return MockProvider()
+    if getattr(settings, "OPENROUTER_API_KEY", None):
+        from app.services.llm.providers.openrouter_provider import OpenRouterProvider
+        providers["openrouter"] = OpenRouterProvider(
+            api_key=settings.OPENROUTER_API_KEY,
+            default_model=getattr(settings, "OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"),
+            default_temperature=settings.LLM_TEMPERATURE,
+        )
+        logger.info("Registered provider: openrouter")
+
+    if not providers:
+        logger.warning("No API keys configured. Falling back to MockProvider.")
+        return MockProvider()
+
+    # Use router so per-agent provider field is respected
+    from app.services.llm.providers.router import ProviderRouter
+    default = provider if provider in providers else next(iter(providers))
+    logger.info("LLM router active (default=%s, available=%s)", default, list(providers.keys()))
+    return ProviderRouter(providers=providers, default_provider=default)
 
 
 def set_service(instance: LLMService) -> None:
