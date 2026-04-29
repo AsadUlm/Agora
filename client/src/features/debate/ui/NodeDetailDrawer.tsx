@@ -16,6 +16,35 @@ const roundLabels: Record<number, string> = {
     3: "Round 3 — Synthesis",
 };
 
+interface RetrievalChunkPreview {
+    text: string;
+    score: number;
+}
+
+interface RetrievalDocumentGroup {
+    document_id: string;
+    document_name: string;
+    chunks: RetrievalChunkPreview[];
+}
+
+interface RetrievalSummary {
+    documents: RetrievalDocumentGroup[];
+    total_chunks: number;
+}
+
+function parseRetrieval(meta: unknown): RetrievalSummary | null {
+    if (!meta || typeof meta !== "object") return null;
+    const r = (meta as Record<string, unknown>)["retrieval"];
+    if (!r || typeof r !== "object") return null;
+    const obj = r as Record<string, unknown>;
+    const docs = obj["documents"];
+    if (!Array.isArray(docs)) return null;
+    return {
+        documents: docs as RetrievalDocumentGroup[],
+        total_chunks: typeof obj["total_chunks"] === "number" ? (obj["total_chunks"] as number) : 0,
+    };
+}
+
 export default function NodeDetailDrawer() {
     const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
     const graph = useGraphStore((s) => s.graph);
@@ -49,6 +78,8 @@ export default function NodeDetailDrawer() {
     }, [node]);
 
     const rawOutput = (node?.content || node?.summary || "").trim();
+
+    const retrieval = useMemo(() => parseRetrieval(node?.metadata), [node]);
 
     return (
         <AnimatePresence>
@@ -149,6 +180,49 @@ export default function NodeDetailDrawer() {
                                         </div>
                                     ))}
                                 </div>
+                            </div>
+                        )}
+
+                        {/* Sources — knowledge chunks used for this turn */}
+                        {!isLoading && retrieval && retrieval.documents.length > 0 && (
+                            <div>
+                                <Label>Sources used ({retrieval.total_chunks})</Label>
+                                <details className="rounded-lg border border-indigo-500/30 bg-indigo-500/5" open>
+                                    <summary className="px-3 py-2 text-[11px] text-indigo-300 cursor-pointer select-none">
+                                        Used private knowledge ({retrieval.documents.length} {retrieval.documents.length === 1 ? "document" : "documents"})
+                                    </summary>
+                                    <div className="px-3 pb-3 space-y-3">
+                                        {retrieval.documents.map((doc) => (
+                                            <div key={doc.document_id} className="space-y-1.5">
+                                                <div className="flex items-center justify-between">
+                                                    <div className="text-[11px] font-medium text-white truncate" title={doc.document_name}>
+                                                        {doc.document_name}
+                                                    </div>
+                                                    <div className="text-[10px] text-agora-text-muted ml-2 flex-shrink-0">
+                                                        {doc.chunks.length} {doc.chunks.length === 1 ? "chunk" : "chunks"}
+                                                    </div>
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                    {doc.chunks.map((chunk, ci) => (
+                                                        <div
+                                                            key={ci}
+                                                            className="rounded-md bg-agora-surface-light/40 px-2.5 py-1.5"
+                                                        >
+                                                            <div className="flex items-start gap-2">
+                                                                <p className="text-[11px] text-agora-text leading-relaxed flex-1 whitespace-pre-line break-words">
+                                                                    {chunk.text}
+                                                                </p>
+                                                                <span className="text-[10px] font-mono text-indigo-300 bg-indigo-500/15 rounded px-1.5 py-0.5 flex-shrink-0">
+                                                                    {chunk.score.toFixed(2)}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </details>
                             </div>
                         )}
 

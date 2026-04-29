@@ -65,7 +65,9 @@ router = APIRouter()
 def _session_load_opts():
     """SQLAlchemy options that fully populate a ChatSession for serialization."""
     return [
-        selectinload(ChatSession.chat_agents),
+        selectinload(ChatSession.chat_agents).selectinload(
+            ChatAgent.document_bindings
+        ),
         selectinload(ChatSession.chat_turns)
         .selectinload(ChatTurn.rounds)
         .selectinload(Round.messages),

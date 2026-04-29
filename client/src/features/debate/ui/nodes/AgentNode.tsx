@@ -113,6 +113,22 @@ export default function AgentNode({
                             R2
                         </span>
                     )}
+                    {data.knowledge && data.knowledge.docCount > 0 && data.knowledge.mode !== "no_docs" && (
+                        <span
+                            className="ml-auto inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-indigo-500/25 text-indigo-100 font-medium"
+                            title={
+                                data.knowledge.mode === "assigned_docs_only"
+                                    ? `Private knowledge: ${data.knowledge.docCount} doc${data.knowledge.docCount === 1 ? "" : "s"}`
+                                    : `Session knowledge: ${data.knowledge.docCount} doc${data.knowledge.docCount === 1 ? "" : "s"}`
+                            }
+                        >
+                            <svg width="9" height="9" viewBox="0 0 14 14" fill="none" aria-hidden>
+                                <rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+                                <path d="M5 6h4M5 8h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+                            </svg>
+                            {data.knowledge.docCount}
+                        </span>
+                    )}
                 </div>
 
                 <div className="text-xs font-medium text-white/90 leading-snug line-clamp-3">

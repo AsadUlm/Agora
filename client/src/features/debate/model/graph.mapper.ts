@@ -76,7 +76,16 @@ export function mapSessionToGraph(session: SessionDetailDTO): DebateGraph {
 
     // Agent nodes
     const agents = session.agents ?? [];
+    // Count session-shared documents (used for the "shared_session_docs" badge).
+    const sessionDocCount = (session as unknown as { documents?: unknown[] }).documents?.length ?? 0;
     agents.forEach((agent) => {
+        const mode = agent.knowledge_mode ?? "shared_session_docs";
+        let docCount = 0;
+        if (mode === "assigned_docs_only") {
+            docCount = agent.document_ids?.length ?? 0;
+        } else if (mode === "shared_session_docs") {
+            docCount = sessionDocCount;
+        }
         nodes.push({
             id: `agent-${agent.id}`,
             kind: "agent",
@@ -85,6 +94,7 @@ export function mapSessionToGraph(session: SessionDetailDTO): DebateGraph {
             status: "hidden",
             agentId: agent.id,
             agentRole: agent.role,
+            knowledge: { mode, docCount },
         });
     });
 
@@ -493,6 +503,9 @@ export function applyWsEventToGraph(
                         node.content = raw;
                     }
                     node.round = rn;
+                    if (payload["retrieval"] && typeof payload["retrieval"] === "object") {
+                        node.metadata = { ...(node.metadata ?? {}), retrieval: payload["retrieval"] };
+                    }
                 }
 
                 if (rn === 1) {
@@ -517,6 +530,9 @@ export function applyWsEventToGraph(
                             const raw = payload["content"] as string;
                             intermNode.summary = formatRound2Summary(raw, intermNode.agentRole);
                             intermNode.content = raw;
+                        }
+                        if (payload["retrieval"] && typeof payload["retrieval"] === "object") {
+                            intermNode.metadata = { ...(intermNode.metadata ?? {}), retrieval: payload["retrieval"] };
                         }
                     }
 

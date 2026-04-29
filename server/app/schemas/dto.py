@@ -64,6 +64,13 @@ def _agents_index(agents: list[ChatAgent]) -> dict[uuid.UUID, ChatAgent]:
 
 def serialize_agent(agent: ChatAgent) -> AgentDTO:
     """Serialize a ChatAgent ORM object to AgentOut."""
+    # `document_bindings` is populated only when the caller eager-loads it
+    # (see _session_load_opts in routes/debate.py). Fallback to empty list
+    # so callers that don't eager-load don't trigger an async lazy-load.
+    bindings = agent.__dict__.get("document_bindings")
+    document_ids = (
+        [b.document_id for b in bindings] if isinstance(bindings, list) else []
+    )
     return AgentDTO(
         id=agent.id,
         role=agent.role,
@@ -74,6 +81,7 @@ def serialize_agent(agent: ChatAgent) -> AgentDTO:
         position_order=agent.position_order,
         knowledge_mode=agent.knowledge_mode,
         knowledge_strict=agent.knowledge_strict if agent.knowledge_strict is not None else False,
+        document_ids=document_ids,
     )
 
 

@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+# Hard safety ceiling. Mirrors `MAX_ALLOWED_TOKENS` in the round manager so
+# even ad-hoc callers cannot blow the OpenRouter credit budget.
+MAX_ALLOWED_TOKENS = 2000
+DEFAULT_MAX_TOKENS = 1000
+
 
 class OpenRouterProvider(LLMService):
     """
@@ -56,10 +61,24 @@ class OpenRouterProvider(LLMService):
             else self._default_temperature
         )
 
+        # Clamp max_tokens to the hard safety ceiling. None → DEFAULT_MAX_TOKENS
+        # so the OpenAI client never sends a null value (which OpenRouter
+        # interprets as the model's full completion window and reserves
+        # credits accordingly, causing 402 errors).
+        requested_max = request.max_tokens if request.max_tokens is not None else DEFAULT_MAX_TOKENS
+        max_tokens = min(requested_max, MAX_ALLOWED_TOKENS)
+        if request.max_tokens is not None and request.max_tokens > MAX_ALLOWED_TOKENS:
+            logger.warning(
+                "OpenRouterProvider: requested max_tokens=%d exceeds ceiling, clamped to %d",
+                request.max_tokens,
+                MAX_ALLOWED_TOKENS,
+            )
+
         logger.debug(
-            "OpenRouterProvider.generate: model=%s temperature=%.2f prompt_len=%d",
+            "OpenRouterProvider.generate: model=%s temperature=%.2f max_tokens=%d prompt_len=%d",
             model,
             temperature,
+            max_tokens,
             len(request.prompt),
         )
 
@@ -69,7 +88,7 @@ class OpenRouterProvider(LLMService):
                 model=model,
                 messages=[{"role": "user", "content": request.prompt}],
                 temperature=temperature,
-                max_tokens=request.max_tokens,
+                max_tokens=max_tokens,
             )
         except APITimeoutError as exc:
             raise LLMGenerationError(f"OpenRouter API timeout: {exc}") from exc

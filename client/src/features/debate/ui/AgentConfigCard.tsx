@@ -359,6 +359,11 @@ export default function AgentConfigCard({
                                 {/* Document assignment (only for assigned_docs_only) */}
                                 {agent.knowledgeMode === "assigned_docs_only" && (
                                     <div className="mb-3">
+                                        {agent.documentIds.length === 0 && (
+                                            <div className="mb-2 px-2.5 py-2 rounded-md border border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-200 leading-snug">
+                                                This agent has no assigned documents. Pick at least one document or switch knowledge mode.
+                                            </div>
+                                        )}
                                         <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1 block">
                                             Assigned Documents
                                             {agent.documentIds.length > 0 && (

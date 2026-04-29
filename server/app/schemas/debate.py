@@ -31,6 +31,7 @@ class AgentDTO(BaseModel):
     position_order: int | None
     knowledge_mode: str | None
     knowledge_strict: bool | None
+    document_ids: list[uuid.UUID] = []
 
 
 class MessageDTO(BaseModel):

@@ -144,6 +144,133 @@ class TestMockEmbeddingService:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# OpenRouterEmbeddingService tests (httpx mocked — no real network)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from app.services.embeddings.embedding_service import (
+    EmbeddingProviderError,
+    OpenRouterEmbeddingService,
+)
+
+
+def _mock_httpx_response(status_code: int, json_body):
+    """Build a fake httpx.Response-like object."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json = MagicMock(return_value=json_body)
+    resp.text = str(json_body)
+    return resp
+
+
+def _patch_async_client(post_side_effect):
+    """Patch httpx.AsyncClient so .post(...) returns / raises as configured.
+
+    If `post_side_effect` is a plain function it is used as side_effect;
+    otherwise it is the value returned from `await client.post(...)`.
+    (MagicMock is itself callable so we explicitly check for FunctionType.)
+    """
+    import types
+
+    if isinstance(post_side_effect, types.FunctionType):
+        fake_post = AsyncMock(side_effect=post_side_effect)
+    else:
+        fake_post = AsyncMock(return_value=post_side_effect)
+
+    fake_client = MagicMock()
+    fake_client.post = fake_post
+
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=fake_client)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return patch("httpx.AsyncClient", return_value=cm)
+
+
+class TestOpenRouterEmbeddingService:
+    def _make(self) -> OpenRouterEmbeddingService:
+        return OpenRouterEmbeddingService(
+            api_key="test-key",
+            model="openai/text-embedding-3-small",
+            dimension=EMBEDDING_DIM,
+            base_url="https://openrouter.ai/api/v1",
+            site_url="http://localhost:5173",
+            app_name="AGORA",
+        )
+
+    def test_missing_api_key_raises(self):
+        with pytest.raises(EmbeddingProviderError):
+            OpenRouterEmbeddingService(
+                api_key="",
+                model="openai/text-embedding-3-small",
+                dimension=EMBEDDING_DIM,
+            )
+
+    @pytest.mark.asyncio
+    async def test_successful_batch_preserves_order(self):
+        body = {
+            "data": [
+                {"index": 1, "embedding": [0.2] * EMBEDDING_DIM},
+                {"index": 0, "embedding": [0.1] * EMBEDDING_DIM},
+            ]
+        }
+        svc = self._make()
+        with _patch_async_client(_mock_httpx_response(200, body)):
+            out = await svc.embed_batch(["first", "second"])
+        assert len(out) == 2
+        assert out[0][0] == 0.1  # index 0 came first after sorting
+        assert out[1][0] == 0.2
+        assert all(len(v) == EMBEDDING_DIM for v in out)
+
+    @pytest.mark.asyncio
+    async def test_non_2xx_raises(self):
+        svc = self._make()
+        with _patch_async_client(_mock_httpx_response(500, {"error": "boom"})):
+            with pytest.raises(EmbeddingProviderError):
+                await svc.embed_batch(["x"])
+
+    @pytest.mark.asyncio
+    async def test_malformed_response_raises(self):
+        svc = self._make()
+        with _patch_async_client(_mock_httpx_response(200, {"unexpected": True})):
+            with pytest.raises(EmbeddingProviderError):
+                await svc.embed_batch(["x"])
+
+    @pytest.mark.asyncio
+    async def test_count_mismatch_raises(self):
+        svc = self._make()
+        body = {"data": [{"index": 0, "embedding": [0.1] * EMBEDDING_DIM}]}
+        with _patch_async_client(_mock_httpx_response(200, body)):
+            with pytest.raises(EmbeddingProviderError):
+                await svc.embed_batch(["a", "b"])
+
+    @pytest.mark.asyncio
+    async def test_wrong_dimension_raises(self):
+        svc = self._make()
+        body = {"data": [{"index": 0, "embedding": [0.1] * 8}]}
+        with _patch_async_client(_mock_httpx_response(200, body)):
+            with pytest.raises(EmbeddingProviderError):
+                await svc.embed_batch(["a"])
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises(self):
+        import httpx
+
+        svc = self._make()
+
+        def _raise(*_args, **_kwargs):
+            raise httpx.TimeoutException("slow")
+
+        with _patch_async_client(_raise):
+            with pytest.raises(EmbeddingProviderError):
+                await svc.embed_batch(["a"])
+
+    @pytest.mark.asyncio
+    async def test_empty_input_no_call(self):
+        svc = self._make()
+        out = await svc.embed_batch([])
+        assert out == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DocumentIngestionService integration test (SQLite, mock embeddings)
 # ─────────────────────────────────────────────────────────────────────────────
 

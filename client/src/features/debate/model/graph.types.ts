@@ -36,6 +36,11 @@ export interface DebateGraphNode {
     agentRole?: string;
     content?: string;
     metadata?: Record<string, unknown>;
+    /** Optional knowledge attachment summary used by AgentNode to render a badge. */
+    knowledge?: {
+        mode: "no_docs" | "shared_session_docs" | "assigned_docs_only" | string;
+        docCount: number;
+    };
 }
 
 export interface DebateGraphEdge {

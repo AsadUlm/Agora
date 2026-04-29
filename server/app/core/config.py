@@ -44,12 +44,20 @@ class Settings(BaseSettings):
 
     # ── OpenRouter defaults ───────────────────────────────────────────────
     OPENROUTER_MODEL: str = "anthropic/claude-sonnet-4.5"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    # Optional attribution headers for OpenRouter (HTTP-Referer / X-Title)
+    OPENROUTER_SITE_URL: str | None = None
+    OPENROUTER_APP_NAME: str | None = "AGORA"
 
     # ── Embeddings ────────────────────────────────────────────────────────
-    # Provider: "openai" (uses text-embedding-3-small, dim=1536)
-    #           "mock"   (all-zeros vector, for tests / offline dev)
+    # Provider:
+    #   "openrouter" — POST {OPENROUTER_BASE_URL}/embeddings (recommended)
+    #   "openai"     — direct OpenAI text-embedding-3-small (needs OPENAI_API_KEY)
+    #   "mock"       — all-zeros vector, for tests / offline dev
+    # NOTE: leaving the default at "mock" keeps local startup safe; flip to
+    # "openrouter" via .env for real RAG quality.
     EMBEDDING_PROVIDER: str = "mock"
-    EMBEDDING_MODEL: str = "text-embedding-3-small"   # used when EMBEDDING_PROVIDER=openai
+    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
     EMBEDDING_DIM: int = 1536                          # must match DocumentChunk.embedding Vector dim
 
     # ── File upload storage ───────────────────────────────────────────────

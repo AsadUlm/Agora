@@ -10,6 +10,8 @@ export interface AgentDTO {
     position_order: number | null;
     knowledge_mode: string | null;
     knowledge_strict: boolean | null;
+    /** Document UUIDs explicitly bound to this agent (assigned_docs_only). */
+    document_ids?: string[];
 }
 
 export interface MessageDTO {
