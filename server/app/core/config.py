@@ -33,13 +33,37 @@ class Settings(BaseSettings):
     DEFAULT_USER_NAME: str = "Admin"
 
     # ── LLM provider defaults ─────────────────────────────────────────────
-    LLM_PROVIDER: str = "groq"
-    LLM_MODEL: str = "llama-3.3-70b-versatile"
+    LLM_PROVIDER: str = "openrouter"
+    LLM_MODEL: str = "anthropic/claude-sonnet-4.5"
     LLM_TEMPERATURE: float = 0.7
 
     # ── LLM API keys (optional — falls back to mock if not set) ──────────
     GROQ_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
+    OPENROUTER_API_KEY: str | None = None
+
+    # ── OpenRouter defaults ───────────────────────────────────────────────
+    OPENROUTER_MODEL: str = "anthropic/claude-sonnet-4.5"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    # Optional attribution headers for OpenRouter (HTTP-Referer / X-Title)
+    OPENROUTER_SITE_URL: str | None = None
+    OPENROUTER_APP_NAME: str | None = "AGORA"
+
+    # ── Embeddings ────────────────────────────────────────────────────────
+    # Provider:
+    #   "openrouter" — POST {OPENROUTER_BASE_URL}/embeddings (recommended)
+    #   "openai"     — direct OpenAI text-embedding-3-small (needs OPENAI_API_KEY)
+    #   "mock"       — all-zeros vector, for tests / offline dev
+    # NOTE: leaving the default at "mock" keeps local startup safe; flip to
+    # "openrouter" via .env for real RAG quality.
+    EMBEDDING_PROVIDER: str = "mock"
+    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
+    EMBEDDING_DIM: int = 1536                          # must match DocumentChunk.embedding Vector dim
+
+    # ── File upload storage ───────────────────────────────────────────────
+    # Local filesystem path for uploaded documents.
+    # Swap this for an S3/GCS path prefix in production environments.
+    UPLOAD_DIR: str = "uploads"
 
     def cors_origins_list(self) -> list[str]:
         """Split comma-separated CORS_ORIGINS into a list."""

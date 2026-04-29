@@ -45,6 +45,7 @@ from app.models.chat_agent import ChatAgent
 from app.models.chat_session import ChatSession
 from app.models.chat_turn import ChatTurn, ChatTurnStatus
 from app.models.message import MessageType
+from app.models.agent_document_binding import AgentDocumentBinding
 from app.schemas.contracts import AgentContext, AgentRoundResult, ExecutionEvent, ExecutionEventType, OnEventCallback, TurnContext
 from app.services.debate_engine.round_manager import RoundManager
 
@@ -187,6 +188,17 @@ class ChatEngine:
                 f"ChatSession {session.id} has no active agents. Cannot execute turn."
             )
 
+        # Load document bindings for all agents in one query
+        from sqlalchemy import select  # noqa: PLC0415
+        agent_ids = [a.id for a in active_agents]
+        bindings_result = await self.db.execute(
+            select(AgentDocumentBinding.chat_agent_id, AgentDocumentBinding.document_id)
+            .where(AgentDocumentBinding.chat_agent_id.in_(agent_ids))
+        )
+        bindings_by_agent: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for row in bindings_result.all():
+            bindings_by_agent.setdefault(row.chat_agent_id, []).append(row.document_id)
+
         # The user question lives in a Message with message_type=user_input
         question = ""
         for msg in turn.messages:
@@ -204,7 +216,10 @@ class ChatEngine:
             session_id=session.id,
             user_id=session.user_id,
             question=question,
-            agents=[_agent_to_ctx(a) for a in active_agents],
+            agents=[
+                _agent_to_ctx(a, bindings_by_agent.get(a.id, []))
+                for a in active_agents
+            ],
             turn_index=turn.turn_index,
         )
 
@@ -226,7 +241,7 @@ class ChatEngine:
 # Module-level helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _agent_to_ctx(agent: ChatAgent) -> AgentContext:
+def _agent_to_ctx(agent: ChatAgent, assigned_doc_ids: list[uuid.UUID] | None = None) -> AgentContext:
     return AgentContext(
         agent_id=agent.id,
         role=agent.role,
@@ -234,6 +249,9 @@ def _agent_to_ctx(agent: ChatAgent) -> AgentContext:
         model=agent.model,
         temperature=float(agent.temperature) if agent.temperature is not None else 0.7,
         reasoning_style=agent.reasoning_style or "balanced",
+        knowledge_mode=agent.knowledge_mode or "shared_session_docs",
+        knowledge_strict=agent.knowledge_strict if agent.knowledge_strict is not None else False,
+        assigned_document_ids=assigned_doc_ids or [],
     )
 
 

@@ -2,7 +2,8 @@ import type { ReactElement } from "react";
 import { Chip, type ChipProps } from "@mui/material";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
-import type { GenerationStatus } from "../../types/debate";
+
+type GenerationStatus = "success" | "failed";
 
 const config: Record<
     GenerationStatus,

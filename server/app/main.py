@@ -6,6 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.debate import router as debate_router
+from app.api.routes.documents import router as documents_router
+from app.api.routes.llm import router as llm_router
+from app.api.routes.sessions import router as sessions_router
 from app.api.routes.users import router as users_router
 from app.api.routes.ws import router as ws_router
 from app.core.config import settings
@@ -43,6 +46,9 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(users_router)
     app.include_router(debate_router, prefix="/debates", tags=["Debates"])
+    app.include_router(documents_router, prefix="/documents", tags=["Documents"])
+    app.include_router(sessions_router, prefix="/sessions", tags=["Sessions"])
+    app.include_router(llm_router)
     app.include_router(ws_router, prefix="/ws", tags=["WebSocket"])
 
     return app

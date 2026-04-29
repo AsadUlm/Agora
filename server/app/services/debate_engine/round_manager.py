@@ -56,6 +56,31 @@ from app.services.retrieval.retrieval_service import RetrievalService
 
 logger = logging.getLogger(__name__)
 
+# ── LLM output budget ────────────────────────────────────────────────────────
+# Hard ceiling for any single LLM call. OpenRouter (and other paid providers)
+# reserve credits up-front based on max_tokens; without an explicit cap, the
+# OpenAI client passes None and the upstream defaults to the model's full
+# completion window (e.g. 65 536 tokens), which triggers 402 "insufficient
+# credits" errors. Keep this conservative.
+MAX_ALLOWED_TOKENS = 2000
+
+# Per-round output budget. Round 1 is a tight opening statement; Rounds 2 and 3
+# need extra headroom for critiques and synthesis.
+ROUND_MAX_TOKENS: dict[int, int] = {
+    1: 700,
+    2: 1000,
+    3: 1000,
+}
+DEFAULT_MAX_TOKENS = 1000
+
+
+def _resolve_max_tokens(round_number: int) -> int:
+    """Return the clamped max_tokens budget for a given round."""
+    budget = ROUND_MAX_TOKENS.get(round_number, DEFAULT_MAX_TOKENS)
+    return min(budget, MAX_ALLOWED_TOKENS)
+
+logger = logging.getLogger(__name__)
+
 
 class RoundManager:
     """
@@ -98,15 +123,19 @@ class RoundManager:
           • confidence (0.0–1.0)
         """
         round_record = await self._create_round(ctx, round_number=1, round_type=RoundType.initial)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         for agent_ctx in ctx.agents:
+            chunks = await self._retrieve_for_agent(ctx, agent_ctx)
+            chunk_dicts = [c.model_dump() for c in chunks]
             prompt = build_opening_statement_prompt(
                 role=agent_ctx.role,
                 question=ctx.question,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                retrieved_chunks=chunk_dicts,
+                knowledge_mode=agent_ctx.knowledge_mode,
+                knowledge_strict=agent_ctx.knowledge_strict,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -115,6 +144,7 @@ class RoundManager:
                 turn_id=ctx.turn_id,
                 session_id=ctx.session_id,
                 message_type=MessageType.agent_response,
+                retrieved_chunks=chunks,
             )
             results.append(result)
 
@@ -133,7 +163,6 @@ class RoundManager:
         Agents that had zero opponents are passed through with an empty critique list.
         """
         round_record = await self._create_round(ctx, round_number=2, round_type=RoundType.critique)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         # Build a lookup: agent_id → round1 result for prompt construction
@@ -195,6 +224,7 @@ class RoundManager:
                 results.append(empty_result)
                 continue
 
+            chunks_r2 = await self._retrieve_for_agent(ctx, agent_ctx)
             prompt = build_critique_prompt(
                 role=agent_ctx.role,
                 question=ctx.question,
@@ -202,6 +232,9 @@ class RoundManager:
                 other_agents=other_agents,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                retrieved_chunks=[c.model_dump() for c in chunks_r2],
+                knowledge_mode=agent_ctx.knowledge_mode,
+                knowledge_strict=agent_ctx.knowledge_strict,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -210,6 +243,7 @@ class RoundManager:
                 turn_id=ctx.turn_id,
                 session_id=ctx.session_id,
                 message_type=MessageType.critique,
+                retrieved_chunks=chunks_r2,
             )
             results.append(result)
 
@@ -228,7 +262,6 @@ class RoundManager:
         Each agent reflects on the full debate and produces a final verdict.
         """
         round_record = await self._create_round(ctx, round_number=3, round_type=RoundType.final)
-        _chunks = await self._retrieve(ctx)  # Step 5: pass into prompt builders
         results: list[AgentRoundResult] = []
 
         r1_by_id: dict[str, AgentRoundResult] = {
@@ -242,6 +275,7 @@ class RoundManager:
             own_r1 = r1_by_id.get(str(agent_ctx.agent_id))
             original_stance = own_r1.structured.get("stance", "") if own_r1 else ""
 
+            chunks_r3 = await self._retrieve_for_agent(ctx, agent_ctx)
             prompt = build_final_synthesis_prompt(
                 role=agent_ctx.role,
                 question=ctx.question,
@@ -249,6 +283,9 @@ class RoundManager:
                 debate_summary=debate_summary,
                 reasoning_style=agent_ctx.reasoning_style,
                 reasoning_depth=agent_ctx.reasoning_depth,
+                retrieved_chunks=[c.model_dump() for c in chunks_r3],
+                knowledge_mode=agent_ctx.knowledge_mode,
+                knowledge_strict=agent_ctx.knowledge_strict,
             )
             result = await self._call_llm(
                 agent_ctx=agent_ctx,
@@ -257,6 +294,7 @@ class RoundManager:
                 turn_id=ctx.turn_id,
                 session_id=ctx.session_id,
                 message_type=MessageType.final_summary,
+                retrieved_chunks=chunks_r3,
             )
             results.append(result)
 
@@ -391,11 +429,82 @@ class RoundManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _retrieve(self, ctx: TurnContext) -> list[RetrievedChunk]:
-        """Call RetrievalService. Step 5 will return real chunks."""
+        """Call RetrievalService with the real DB session (session-wide, legacy)."""
         return await self._retrieval.retrieve(
             query=ctx.question,
             session_id=ctx.session_id,
+            db=self.db,
         )
+
+    async def _retrieve_for_agent(self, ctx: TurnContext, agent_ctx: AgentContext) -> list[RetrievedChunk]:
+        """Agent-aware retrieval — respects agent's knowledge configuration."""
+        return await self._retrieval.retrieve_for_agent(
+            agent_id=agent_ctx.agent_id,
+            session_id=ctx.session_id,
+            query=ctx.question,
+            db=self.db,
+            knowledge_mode=agent_ctx.knowledge_mode,
+            assigned_document_ids=agent_ctx.assigned_document_ids,
+        )
+
+    async def _build_retrieval_summary(
+        self,
+        chunks: list[RetrievedChunk],
+        max_chunks: int = 5,
+        text_chars: int = 280,
+    ) -> dict[str, Any] | None:
+        """
+        Build a UI-facing summary of retrieved chunks for the WS event payload.
+
+        Groups chunks by document, looks up document filenames in one query,
+        truncates chunk text. Stays runtime-only (not persisted).
+        Returns None on any DB lookup failure to avoid blocking the debate.
+        """
+        if not chunks:
+            return None
+
+        from sqlalchemy import select  # local import to keep top-level minimal
+        from app.models.document import Document
+
+        # Cap to top N chunks (already ordered by similarity descending).
+        capped = chunks[:max_chunks]
+
+        # Resolve unique document IDs → filenames in one query.
+        doc_ids = list({c.document_id for c in capped})
+        names: dict[uuid.UUID, str] = {}
+        try:
+            rows = (
+                await self.db.execute(
+                    select(Document.id, Document.filename).where(Document.id.in_(doc_ids))
+                )
+            ).all()
+            names = {row[0]: row[1] for row in rows}
+        except Exception:  # pragma: no cover — defensive
+            logger.warning("retrieval summary: failed to resolve document filenames", exc_info=True)
+
+        # Group chunks by document, preserving overall ordering.
+        grouped: dict[uuid.UUID, list[dict[str, Any]]] = {}
+        order: list[uuid.UUID] = []
+        for c in capped:
+            text = (c.content or "").strip().replace("\n", " ")
+            if len(text) > text_chars:
+                text = text[: text_chars - 1].rstrip() + "…"
+            if c.document_id not in grouped:
+                grouped[c.document_id] = []
+                order.append(c.document_id)
+            grouped[c.document_id].append(
+                {"text": text, "score": round(float(c.similarity_score), 3)}
+            )
+
+        documents = [
+            {
+                "document_id": str(doc_id),
+                "document_name": names.get(doc_id, "Untitled document"),
+                "chunks": grouped[doc_id],
+            }
+            for doc_id in order
+        ]
+        return {"documents": documents, "total_chunks": len(capped)}
 
     async def _call_llm(
         self,
@@ -405,6 +514,7 @@ class RoundManager:
         turn_id: uuid.UUID,
         session_id: uuid.UUID,
         message_type: MessageType,
+        retrieved_chunks: list[RetrievedChunk] | None = None,
     ) -> AgentRoundResult:
         """
         Call the LLM for one agent in one round.
@@ -434,6 +544,16 @@ class RoundManager:
             model=agent_ctx.model,
             prompt=prompt,
             temperature=agent_ctx.temperature,
+            max_tokens=_resolve_max_tokens(round_record.round_number),
+        )
+
+        logger.info(
+            "LLM call: provider=%s model=%s round=%d max_tokens=%d temperature=%.2f",
+            agent_ctx.provider,
+            agent_ctx.model,
+            round_record.round_number,
+            request.max_tokens,
+            request.temperature or 0.0,
         )
 
         content = ""
@@ -489,6 +609,19 @@ class RoundManager:
         )
 
         if self._on_event is not None:
+            event_payload: dict[str, Any] = {
+                "message_id": str(msg.id),
+                "round_id": str(round_record.id),
+                "sender_type": msg.sender_type.value,
+                "message_type": msg.message_type.value,
+                "content": msg.content,
+                "sequence_no": msg.sequence_no,
+                "generation_status": generation_status,
+            }
+            if retrieved_chunks:
+                retrieval_summary = await self._build_retrieval_summary(retrieved_chunks)
+                if retrieval_summary is not None:
+                    event_payload["retrieval"] = retrieval_summary
             await self._on_event(ExecutionEvent(
                 event_type=ExecutionEventType.message_created,
                 session_id=session_id,
@@ -496,15 +629,7 @@ class RoundManager:
                 round_id=round_record.id,
                 round_number=round_record.round_number,
                 agent_id=agent_ctx.agent_id,
-                payload={
-                    "message_id": str(msg.id),
-                    "round_id": str(round_record.id),
-                    "sender_type": msg.sender_type.value,
-                    "message_type": msg.message_type.value,
-                    "content": msg.content,
-                    "sequence_no": msg.sequence_no,
-                    "generation_status": generation_status,
-                },
+                payload=event_payload,
             ))
 
         return AgentRoundResult(

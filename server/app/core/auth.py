@@ -59,12 +59,27 @@ async def get_ws_current_user(
     token: str = Query(default=""),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """WebSocket auth dependency — reads JWT from ?token= query param."""
+    """
+    FastAPI dependency for WebSocket authentication.
+
+    Reads the JWT access token from the `token` query parameter.
+    Raises WebSocketException (4008) if authentication fails, which causes
+    FastAPI to close the WebSocket with the appropriate close code.
+
+    Usage in a WebSocket endpoint:
+        @router.websocket("/ws/foo")
+        async def ws_foo(ws: WebSocket, user: User = Depends(get_ws_current_user)):
+            ...
+
+    In tests, override this dependency via app.dependency_overrides:
+        app.dependency_overrides[get_ws_current_user] = lambda: fake_user
+    """
     if not token:
         raise WebSocketException(
             code=status.WS_1008_POLICY_VIOLATION,
             reason="Not authenticated",
         )
+
     try:
         payload = decode_token(token)
     except JWTError:
@@ -72,11 +87,13 @@ async def get_ws_current_user(
             code=status.WS_1008_POLICY_VIOLATION,
             reason="Invalid or expired token",
         )
+
     if payload.get("type") != "access":
         raise WebSocketException(
             code=status.WS_1008_POLICY_VIOLATION,
             reason="Invalid token type",
         )
+
     try:
         user_id = uuid.UUID(payload["sub"])
     except (KeyError, ValueError):
@@ -84,6 +101,7 @@ async def get_ws_current_user(
             code=status.WS_1008_POLICY_VIOLATION,
             reason="Invalid token payload",
         )
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:

@@ -24,6 +24,10 @@ from app.services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
+# Hard safety ceiling. Mirrors `MAX_ALLOWED_TOKENS` in the round manager.
+MAX_ALLOWED_TOKENS = 2000
+DEFAULT_MAX_TOKENS = 1000
+
 
 class GroqProvider(LLMService):
     """
@@ -52,10 +56,20 @@ class GroqProvider(LLMService):
         model = request.model or self._default_model
         temperature = request.temperature if request.temperature is not None else self._default_temperature
 
+        requested_max = request.max_tokens if request.max_tokens is not None else DEFAULT_MAX_TOKENS
+        max_tokens = min(requested_max, MAX_ALLOWED_TOKENS)
+        if request.max_tokens is not None and request.max_tokens > MAX_ALLOWED_TOKENS:
+            logger.warning(
+                "GroqProvider: requested max_tokens=%d exceeds ceiling, clamped to %d",
+                request.max_tokens,
+                MAX_ALLOWED_TOKENS,
+            )
+
         logger.debug(
-            "GroqProvider.generate: model=%s temperature=%.2f prompt_len=%d",
+            "GroqProvider.generate: model=%s temperature=%.2f max_tokens=%d prompt_len=%d",
             model,
             temperature,
+            max_tokens,
             len(request.prompt),
         )
 
@@ -65,7 +79,7 @@ class GroqProvider(LLMService):
                 model=model,
                 messages=[{"role": "user", "content": request.prompt}],
                 temperature=temperature,
-                max_tokens=request.max_tokens,
+                max_tokens=max_tokens,
             )
         except APITimeoutError as exc:
             raise LLMGenerationError(f"Groq API timeout: {exc}") from exc
