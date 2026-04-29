@@ -49,7 +49,6 @@ export async function uploadDocument(
     const res = await apiClient.post<DocumentDTO>(
         `/documents/upload?session_id=${sessionId}`,
         form,
-        { headers: { "Content-Type": "multipart/form-data" } },
     );
     return res.data;
 }
