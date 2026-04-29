@@ -45,8 +45,13 @@ class ProviderRegistry:
                 name="Groq",
                 status="configured",
                 models=[
-                    ModelInfo(id="llama-3.3-70b-versatile", name="LLaMA 3.3 70B", context_length=131072),
-                    ModelInfo(id="mixtral-8x7b-32768", name="Mixtral 8x7B", context_length=32768),
+                    ModelInfo(id="llama-3.3-70b-versatile", name="LLaMA 3.3 70B Versatile", context_length=131072),
+                    ModelInfo(id="meta-llama/llama-4-scout-17b-16e-instruct", name="LLaMA 4 Scout 17B", context_length=131072),
+                    ModelInfo(id="meta-llama/llama-4-maverick-17b-128e-instruct", name="LLaMA 4 Maverick 17B", context_length=131072),
+                    ModelInfo(id="deepseek-r1-distill-llama-70b", name="DeepSeek R1 Distill 70B", context_length=131072),
+                    ModelInfo(id="qwen/qwen3-32b", name="Qwen 3 32B", context_length=131072),
+                    ModelInfo(id="moonshotai/kimi-k2-instruct", name="Kimi K2", context_length=131072),
+                    ModelInfo(id="gemma2-9b-it", name="Gemma 2 9B", context_length=8192),
                 ],
             ),
             "openrouter": ProviderInfo(
@@ -54,32 +59,19 @@ class ProviderRegistry:
                 name="OpenRouter",
                 status="configured",
                 models=[
-                    ModelInfo(id="meta-llama/llama-3.3-70b-instruct:free", name="LLaMA 3.3 70B (free)", context_length=131072),
-                    ModelInfo(id="qwen/qwen-2.5-72b-instruct:free", name="Qwen 2.5 72B (free)", context_length=131072),
-                    ModelInfo(id="google/gemma-2-9b-it:free", name="Gemma 2 9B (free)", context_length=8192),
-                    ModelInfo(id="mistralai/mistral-7b-instruct:free", name="Mistral 7B (free)", context_length=32768),
-                    ModelInfo(id="deepseek/deepseek-r1-0528:free", name="DeepSeek R1 (free)", context_length=163840),
+                    # Curated agent models
+                    ModelInfo(id="openai/gpt-5", name="GPT-5", context_length=400000),
+                    ModelInfo(id="openai/gpt-4.1-mini", name="GPT-4.1 Mini", context_length=1047576),
+                    ModelInfo(id="google/gemini-2.5-flash", name="Gemini 2.5 Flash", context_length=1048576),
+                    ModelInfo(id="anthropic/claude-haiku-4.5", name="Claude Haiku 4.5", context_length=200000),
+                    ModelInfo(id="deepseek/deepseek-v3.2-exp", name="DeepSeek V3.2", context_length=163840),
+                    ModelInfo(id="moonshotai/kimi-k2-thinking", name="Kimi K2.5", context_length=262144),
+                    ModelInfo(id="x-ai/grok-4-fast", name="Grok 4.1 Fast", context_length=2000000),
+                    ModelInfo(id="x-ai/grok-4", name="Grok 4 (Thinking)", context_length=256000),
+                    # Moderator (fixed)
+                    ModelInfo(id="anthropic/claude-sonnet-4.5", name="Claude Sonnet 4.5 (Moderator)", context_length=200000),
                 ],
             ),
-            "openai": ProviderInfo(
-                id="openai",
-                name="OpenAI",
-                status="configured",
-                models=[
-                    ModelInfo(id="gpt-4o", name="GPT-4o", context_length=128000),
-                    ModelInfo(id="gpt-4o-mini", name="GPT-4o Mini", context_length=128000),
-                ],
-            ),
-            "anthropic": ProviderInfo(id="anthropic", name="Anthropic", status="placeholder",
-                                       models=[ModelInfo(id="claude-3-5-sonnet", name="Claude 3.5 Sonnet")]),
-            "google": ProviderInfo(id="google", name="Google", status="placeholder",
-                                    models=[ModelInfo(id="gemini-pro", name="Gemini Pro")]),
-            "mistral": ProviderInfo(id="mistral", name="Mistral", status="placeholder",
-                                     models=[ModelInfo(id="mistral-large", name="Mistral Large")]),
-            "cohere": ProviderInfo(id="cohere", name="Cohere", status="placeholder",
-                                    models=[ModelInfo(id="command-r-plus", name="Command R+")]),
-            "deepseek": ProviderInfo(id="deepseek", name="DeepSeek", status="placeholder",
-                                      models=[ModelInfo(id="deepseek-chat", name="DeepSeek Chat")]),
         }
 
     def get_provider(self, provider_id: str) -> ProviderInfo | None:

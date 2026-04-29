@@ -10,6 +10,7 @@ import {
     KNOWLEDGE_MODES,
     AGENT_PRESETS,
 } from "../model/agent-config.types";
+import { useLLMCatalog } from "../model/useLLMCatalog";
 
 export interface DocumentItem {
     id: string;
@@ -39,7 +40,23 @@ export default function AgentConfigCard({
     onMoveDown,
 }: AgentConfigCardProps) {
     const [expanded, setExpanded] = useState(false);
-    const models = MODEL_OPTIONS[agent.provider] ?? MODEL_OPTIONS.openai;
+    const { providers: catalog } = useLLMCatalog();
+
+    // Build provider/model lookups from the live catalog with a static fallback.
+    const providerIds: string[] = catalog.length
+        ? catalog.filter((p) => p.status !== "placeholder").map((p) => p.id)
+        : [...PROVIDER_OPTIONS];
+    const modelMap: Record<string, { id: string; name: string }[]> = catalog.length
+        ? Object.fromEntries(
+            catalog.map((p) => [p.id, p.models.map((m) => ({ id: m.id, name: m.name }))]),
+        )
+        : Object.fromEntries(
+            Object.entries(MODEL_OPTIONS).map(([k, ids]) => [
+                k,
+                ids.map((id) => ({ id, name: id })),
+            ]),
+        );
+    const models = modelMap[agent.provider] ?? modelMap.openrouter ?? [];
 
     return (
         <motion.div
@@ -247,15 +264,15 @@ export default function AgentConfigCard({
                                         value={agent.provider}
                                         onChange={(e) => {
                                             const provider = e.target.value;
-                                            const newModels = MODEL_OPTIONS[provider] ?? [];
+                                            const newModels = modelMap[provider] ?? [];
                                             onUpdate({
                                                 provider,
-                                                model: newModels[0] ?? agent.model,
+                                                model: newModels[0]?.id ?? agent.model,
                                             });
                                         }}
                                         className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                                     >
-                                        {PROVIDER_OPTIONS.map((p) => (
+                                        {providerIds.map((p) => (
                                             <option key={p} value={p}>
                                                 {p}
                                             </option>
@@ -274,8 +291,8 @@ export default function AgentConfigCard({
                                         className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                                     >
                                         {models.map((m) => (
-                                            <option key={m} value={m}>
-                                                {m}
+                                            <option key={m.id} value={m.id}>
+                                                {m.name}
                                             </option>
                                         ))}
                                     </select>

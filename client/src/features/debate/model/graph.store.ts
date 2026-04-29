@@ -6,7 +6,6 @@ import type {
     DebateGraphEdge,
     GraphNodeStatus,
     GraphEdgeStatus,
-    GraphEdgeKind,
 } from "./graph.types";
 import { applyWsEventToGraph, mapSessionToGraph } from "./graph.mapper";
 
@@ -18,6 +17,8 @@ interface GraphStore {
     hydrateFromSession: (session: SessionDetailDTO) => void;
     /** Hydrate but keep all nodes hidden (for animated replay) */
     hydrateHidden: (session: SessionDetailDTO) => void;
+    /** Merge server snapshot without resetting animation-visible statuses. */
+    mergeFromSession: (session: SessionDetailDTO) => void;
     applyEvent: (event: WsEvent, agents: AgentDTO[]) => void;
     selectNode: (nodeId: string | null) => void;
     getNode: (nodeId: string) => DebateGraphNode | undefined;
@@ -37,11 +38,43 @@ interface GraphStore {
     updateNodeData: (nodeId: string, data: Partial<DebateGraphNode>) => void;
     /** Force all hidden nodes/edges to visible (recovery path) */
     forceRevealAll: () => void;
+    /** Mark currently active nodes as failed when turn fails. */
+    markRunningNodesFailed: () => void;
 
     reset: () => void;
 }
 
 const emptyGraph: DebateGraph = { nodes: [], edges: [] };
+
+const NODE_STATUS_RANK: Record<string, number> = {
+    hidden: 0,
+    entering: 1,
+    visible: 2,
+    active: 3,
+    completed: 4,
+    failed: 5,
+};
+
+const EDGE_STATUS_RANK: Record<string, number> = {
+    hidden: 0,
+    drawing: 1,
+    visible: 2,
+    active: 3,
+    completed: 4,
+    failed: 5,
+};
+
+function preferNodeStatus(previous: string, next: string): string {
+    return (NODE_STATUS_RANK[previous] ?? 0) > (NODE_STATUS_RANK[next] ?? 0)
+        ? previous
+        : next;
+}
+
+function preferEdgeStatus(previous: string, next: string): string {
+    return (EDGE_STATUS_RANK[previous] ?? 0) > (EDGE_STATUS_RANK[next] ?? 0)
+        ? previous
+        : next;
+}
 
 export const useGraphStore = create<GraphStore>((set, get) => ({
     graph: emptyGraph,
@@ -50,7 +83,15 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
     hydrateFromSession: (session) => {
         const graph = mapSessionToGraph(session);
-        set({ graph });
+        set((s) => ({
+            graph,
+            selectedNodeId: s.selectedNodeId && graph.nodes.some((n) => n.id === s.selectedNodeId)
+                ? s.selectedNodeId
+                : null,
+            focusedNodeId: s.focusedNodeId && graph.nodes.some((n) => n.id === s.focusedNodeId)
+                ? s.focusedNodeId
+                : null,
+        }));
     },
 
     hydrateHidden: (session) => {
@@ -58,7 +99,71 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
         // Override all statuses to hidden
         const nodes = graph.nodes.map((n) => ({ ...n, status: "hidden" as const }));
         const edges = graph.edges.map((e) => ({ ...e, status: "hidden" as const }));
-        set({ graph: { nodes, edges } });
+        set((s) => ({
+            graph: { nodes, edges },
+            selectedNodeId: s.selectedNodeId && nodes.some((n) => n.id === s.selectedNodeId)
+                ? s.selectedNodeId
+                : null,
+            focusedNodeId: s.focusedNodeId && nodes.some((n) => n.id === s.focusedNodeId)
+                ? s.focusedNodeId
+                : null,
+        }));
+    },
+
+    mergeFromSession: (session) => {
+        const nextGraph = mapSessionToGraph(session);
+        set((s) => {
+            const prevNodes = new Map(s.graph.nodes.map((n) => [n.id, n]));
+            const prevEdges = new Map(s.graph.edges.map((e) => [e.id, e]));
+
+            const mergedNodes = nextGraph.nodes.map((node) => {
+                const prev = prevNodes.get(node.id);
+                if (!prev) return node;
+                const metadata = { ...(prev.metadata ?? {}), ...(node.metadata ?? {}) };
+                if (node.content || node.summary) {
+                    metadata["loading"] = false;
+                }
+                return {
+                    ...node,
+                    status: preferNodeStatus(String(prev.status), String(node.status)) as GraphNodeStatus,
+                    summary: node.summary || prev.summary,
+                    content: node.content || prev.content,
+                    metadata,
+                };
+            });
+
+            // Preserve any synthetic/loading nodes that are not yet in the server snapshot.
+            for (const prev of s.graph.nodes) {
+                if (!mergedNodes.some((n) => n.id === prev.id) && prev.status !== "hidden") {
+                    mergedNodes.push(prev);
+                }
+            }
+
+            const mergedEdges = nextGraph.edges.map((edge) => {
+                const prev = prevEdges.get(edge.id);
+                if (!prev) return edge;
+                return {
+                    ...edge,
+                    status: preferEdgeStatus(String(prev.status), String(edge.status)) as GraphEdgeStatus,
+                };
+            });
+
+            for (const prev of s.graph.edges) {
+                if (!mergedEdges.some((e) => e.id === prev.id) && prev.status !== "hidden") {
+                    mergedEdges.push(prev);
+                }
+            }
+
+            return {
+                graph: { nodes: mergedNodes, edges: mergedEdges },
+                selectedNodeId: s.selectedNodeId && mergedNodes.some((n) => n.id === s.selectedNodeId)
+                    ? s.selectedNodeId
+                    : null,
+                focusedNodeId: s.focusedNodeId && mergedNodes.some((n) => n.id === s.focusedNodeId)
+                    ? s.focusedNodeId
+                    : null,
+            };
+        });
     },
 
     applyEvent: (event, agents) => {
@@ -164,6 +269,19 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
                 ),
                 edges: s.graph.edges.map((e) =>
                     e.status === "hidden" ? { ...e, status: "visible" as const } : e,
+                ),
+            },
+        }));
+    },
+
+    markRunningNodesFailed: () => {
+        set((s) => ({
+            graph: {
+                ...s.graph,
+                nodes: s.graph.nodes.map((n) =>
+                    n.status === "active" || n.status === "entering"
+                        ? { ...n, status: "failed" as GraphNodeStatus }
+                        : n,
                 ),
             },
         }));

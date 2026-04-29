@@ -116,8 +116,8 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         roleDescription: "",
         reasoningStyle: "analytical",
         reasoningDepth: "normal",
-        provider: "groq",
-        model: "llama-3.3-70b-versatile",
+        provider: "openrouter",
+        model: "openai/gpt-5",
         temperature: 0.7,
         enabled: true,
         knowledgeMode: "shared_session_docs",
@@ -132,8 +132,8 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         roleDescription: "",
         reasoningStyle: "critical",
         reasoningDepth: "normal",
-        provider: "groq",
-        model: "llama-3.3-70b-versatile",
+        provider: "openrouter",
+        model: "anthropic/claude-haiku-4.5",
         temperature: 0.8,
         enabled: true,
         knowledgeMode: "shared_session_docs",
@@ -148,8 +148,8 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         roleDescription: "",
         reasoningStyle: "creative",
         reasoningDepth: "normal",
-        provider: "groq",
-        model: "llama-3.3-70b-versatile",
+        provider: "openrouter",
+        model: "x-ai/grok-4-fast",
         temperature: 0.9,
         enabled: true,
         knowledgeMode: "no_docs",
@@ -162,14 +162,31 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
 
 export const PROVIDER_OPTIONS = ["groq", "openrouter"] as const;
 
+/**
+ * Static fallback catalog. The authoritative source is the backend
+ * `/llm/providers` endpoint (see `llmCatalogService`); these lists keep
+ * the UI usable even if the catalog hasn't loaded yet.
+ */
 export const MODEL_OPTIONS: Record<string, string[]> = {
-    groq: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"],
+    groq: [
+        "llama-3.3-70b-versatile",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "meta-llama/llama-4-maverick-17b-128e-instruct",
+        "deepseek-r1-distill-llama-70b",
+        "qwen/qwen3-32b",
+        "moonshotai/kimi-k2-instruct",
+        "gemma2-9b-it",
+    ],
     openrouter: [
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "qwen/qwen-2.5-72b-instruct:free",
-        "google/gemma-2-9b-it:free",
-        "mistralai/mistral-7b-instruct:free",
-        "deepseek/deepseek-r1-0528:free",
+        "openai/gpt-5",
+        "openai/gpt-4.1-mini",
+        "google/gemini-2.5-flash",
+        "anthropic/claude-haiku-4.5",
+        "deepseek/deepseek-v3.2-exp",
+        "moonshotai/kimi-k2-thinking",
+        "x-ai/grok-4-fast",
+        "x-ai/grok-4",
+        "anthropic/claude-sonnet-4.5",
     ],
 };
 
@@ -231,8 +248,8 @@ export function createAgentConfig(partial?: Partial<AgentConfig>): AgentConfig {
         roleDescription: "",
         reasoningStyle: "balanced",
         reasoningDepth: "normal",
-        provider: "groq",
-        model: "llama-3.3-70b-versatile",
+        provider: "openrouter",
+        model: "openai/gpt-5",
         temperature: 0.7,
         enabled: true,
         knowledgeMode: "shared_session_docs",

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { useDebateStore } from "@/features/debate/model/debate.store";
@@ -9,6 +9,7 @@ export default function DebateWorkspacePage() {
     const navigate = useNavigate();
     const loading = useDebateStore((s) => s.loading);
     const error = useDebateStore((s) => s.error);
+    const turnStatus = useDebateStore((s) => s.turnStatus);
     const loadDebate = useDebateStore((s) => s.loadDebate);
     const reset = useDebateStore((s) => s.reset);
 
@@ -20,6 +21,19 @@ export default function DebateWorkspacePage() {
             reset();
         };
     }, [debateId, loadDebate, reset]);
+
+    useEffect(() => {
+        if (!debateId) return;
+        if (turnStatus !== "queued" && turnStatus !== "running") return;
+
+        const tick = () => {
+            void loadDebate(debateId, { silent: true });
+        };
+
+        tick();
+        const intervalId = setInterval(tick, 1800);
+        return () => clearInterval(intervalId);
+    }, [debateId, turnStatus, loadDebate]);
 
     if (loading) {
         return <LoadingScreen />;

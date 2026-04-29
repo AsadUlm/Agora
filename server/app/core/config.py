@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     DEFAULT_USER_NAME: str = "Admin"
 
     # ── LLM provider defaults ─────────────────────────────────────────────
-    LLM_PROVIDER: str = "groq"
-    LLM_MODEL: str = "llama-3.3-70b-versatile"
+    LLM_PROVIDER: str = "openrouter"
+    LLM_MODEL: str = "anthropic/claude-sonnet-4.5"
     LLM_TEMPERATURE: float = 0.7
 
     # ── LLM API keys (optional — server starts without them, falls back to mock)
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str | None = None
 
     # ── OpenRouter defaults ───────────────────────────────────────────────
-    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
+    OPENROUTER_MODEL: str = "anthropic/claude-sonnet-4.5"
 
     # ── Embeddings ────────────────────────────────────────────────────────
     # Provider: "openai" (uses text-embedding-3-small, dim=1536)

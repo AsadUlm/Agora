@@ -1,6 +1,7 @@
+import { useMemo, type ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useGraphStore } from "../model/graph.store";
-import { extractStructuredContent, formatRound1Summary, formatRound2Summary, formatFinalSummary } from "../model/formatters";
+import { extractStructuredContent, getTurnSummary } from "../model/formatters";
 
 const kindLabels: Record<string, string> = {
     question: "Question",
@@ -14,15 +15,6 @@ const roundLabels: Record<number, string> = {
     2: "Round 2 — Debate & Critique",
     3: "Round 3 — Synthesis",
 };
-
-function getNodeSummary(node: { kind: string; round: number; summary?: string; content?: string; agentRole?: string }): string {
-    const raw = node.summary || node.content;
-    if (!raw) return "";
-    if (node.round === 1) return formatRound1Summary(raw);
-    if (node.round === 2 || node.kind === "intermediate") return formatRound2Summary(raw, node.agentRole);
-    if (node.round === 3 || node.kind === "synthesis") return formatFinalSummary(raw);
-    return raw;
-}
 
 export default function NodeDetailDrawer() {
     const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
@@ -39,8 +31,24 @@ export default function NodeDetailDrawer() {
         )
         : [];
 
-    const summary = node ? getNodeSummary(node) : "";
-    const contentSections = node ? extractStructuredContent(node.content) : [];
+    const isLoading = Boolean(node?.metadata?.["loading"] && !node?.content);
+
+    const summary = useMemo(() => {
+        if (!node) return "";
+        return getTurnSummary({
+            raw: node.summary || node.content,
+            round: node.round,
+            kind: node.kind,
+            sourceRole: node.agentRole,
+        });
+    }, [node]);
+
+    const contentSections = useMemo(() => {
+        if (!node) return [];
+        return extractStructuredContent(node.content || node.summary, node.round, node.kind);
+    }, [node]);
+
+    const rawOutput = (node?.content || node?.summary || "").trim();
 
     return (
         <AnimatePresence>
@@ -93,6 +101,28 @@ export default function NodeDetailDrawer() {
                             </div>
                         )}
 
+                        {isLoading && (
+                            <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 p-3">
+                                <div className="text-[10px] uppercase tracking-widest text-indigo-300 font-semibold mb-1">
+                                    Generating
+                                </div>
+                                <p className="text-xs text-indigo-100 leading-relaxed">
+                                    This agent is currently generating a response. Details will appear once content is ready.
+                                </p>
+                            </div>
+                        )}
+
+                        {node.status === "failed" && (
+                            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
+                                <div className="text-[10px] uppercase tracking-widest text-red-300 font-semibold mb-1">
+                                    Generation Failed
+                                </div>
+                                <p className="text-xs text-red-100 leading-relaxed">
+                                    This agent response failed to generate.
+                                </p>
+                            </div>
+                        )}
+
                         {/* Summary — formatted per round */}
                         {summary && (
                             <div>
@@ -104,7 +134,7 @@ export default function NodeDetailDrawer() {
                         )}
 
                         {/* Structured content sections */}
-                        {contentSections.length > 0 && (
+                        {!isLoading && contentSections.length > 0 && (
                             <div>
                                 <Label>Details</Label>
                                 <div className="bg-agora-surface-light/30 rounded-lg p-3 max-h-72 overflow-y-auto space-y-3">
@@ -120,6 +150,20 @@ export default function NodeDetailDrawer() {
                                     ))}
                                 </div>
                             </div>
+                        )}
+
+                        {/* Debug raw output */}
+                        {!isLoading && rawOutput && (
+                            <details className="rounded-lg border border-agora-border bg-agora-surface-light/20">
+                                <summary className="px-3 py-2 text-[11px] text-agora-text-muted cursor-pointer select-none">
+                                    Raw model output
+                                </summary>
+                                <div className="px-3 pb-3">
+                                    <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words text-agora-text-muted max-h-56 overflow-y-auto">
+                                        {rawOutput}
+                                    </pre>
+                                </div>
+                            </details>
                         )}
 
                         {/* Connections */}
@@ -169,7 +213,7 @@ export default function NodeDetailDrawer() {
     );
 }
 
-function Label({ children }: { children: React.ReactNode }) {
+function Label({ children }: { children: ReactNode }) {
     return (
         <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1">
             {children}
@@ -181,6 +225,7 @@ function StatusBadge({ status }: { status: string }) {
     const colors: Record<string, string> = {
         active: "bg-indigo-500/20 text-indigo-400",
         completed: "bg-emerald-500/20 text-emerald-400",
+        failed: "bg-red-500/20 text-red-300",
         visible: "bg-gray-500/20 text-gray-400",
         hidden: "bg-gray-700/20 text-gray-600",
     };

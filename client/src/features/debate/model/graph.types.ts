@@ -14,9 +14,16 @@ export type GraphNodeStatus =
     | "entering"
     | "visible"
     | "active"
-    | "completed";
+    | "completed"
+    | "failed";
 
-export type GraphEdgeStatus = "hidden" | "drawing" | "visible";
+export type GraphEdgeStatus =
+    | "hidden"
+    | "drawing"
+    | "visible"
+    | "active"
+    | "completed"
+    | "failed";
 
 export interface DebateGraphNode {
     id: string;
@@ -37,7 +44,7 @@ export interface DebateGraphEdge {
     target: string;
     kind: GraphEdgeKind;
     round: number;
-    status: GraphNodeStatus | GraphEdgeStatus;
+    status: GraphEdgeStatus;
     label?: string;
 }
 

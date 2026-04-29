@@ -18,7 +18,7 @@ import {
     sessionToAnimationSteps,
     wsEventToAnimationSteps,
 } from "./animation/animation.converter";
-import { formatRound1Summary, formatRound2Summary } from "./formatters";
+import { formatRound1Summary, formatRound2Summary, getTurnSummary } from "./formatters";
 import { shouldSkipGraphInference } from "./error-normalizer";
 
 interface DebateStore {
@@ -36,7 +36,7 @@ interface DebateStore {
         question: string,
         agents: { role: string; config: Record<string, unknown> }[],
     ) => Promise<DebateStartResponse>;
-    loadDebate: (debateId: string) => Promise<void>;
+    loadDebate: (debateId: string, options?: { silent?: boolean }) => Promise<void>;
     handleWsEvent: (event: WsEvent) => void;
     reset: () => void;
 }
@@ -78,16 +78,22 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         }
     },
 
-    loadDebate: async (debateId) => {
-        set({ loading: true, error: null });
+    loadDebate: async (debateId, options) => {
+        const silent = Boolean(options?.silent);
+        if (!silent) {
+            set({ loading: true, error: null });
+        }
+
         try {
             const session = await getDebateDetail(debateId);
             const agents = session.agents ?? [];
             const turn = session.latest_turn;
+            const runningRound = turn?.rounds?.find((r) => r.status === "running")?.round_number;
             const currentRound =
-                turn?.rounds?.length
-                    ? Math.max(...turn.rounds.map((r) => r.round_number))
-                    : 0;
+                runningRound
+                    ?? (turn?.rounds?.length
+                        ? Math.max(...turn.rounds.map((r) => r.round_number))
+                        : (turn?.status === "queued" || turn?.status === "running" ? 1 : 0));
 
             set({
                 session,
@@ -96,7 +102,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 turnId: turn?.id ?? null,
                 turnStatus: turn?.status ?? null,
                 currentRound,
-                loading: false,
+                loading: silent ? get().loading : false,
             });
 
             // Hydrate playback
@@ -104,10 +110,19 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
 
             const isFinished =
                 !turn || (turn.status !== "queued" && turn.status !== "running");
+            const hasExistingGraph = useGraphStore.getState().graph.nodes.length > 0;
 
             if (isFinished) {
-                // Cinematic replay: load graph hidden, then animate
+                const fromLiveFlow = silent || hasExistingGraph;
+
                 useModeratorStore.getState().updateFromSession(session, currentRound);
+
+                if (fromLiveFlow) {
+                    // Keep final state stable for live debates instead of replay-resetting.
+                    useGraphStore.getState().mergeFromSession(session);
+                    useAnimationStore.getState().reset();
+                    return;
+                }
 
                 let steps: ReturnType<typeof sessionToAnimationSteps> = [];
                 try {
@@ -141,7 +156,11 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 }
             } else {
                 // Still running — hydrate what we have, live events will animate
-                useGraphStore.getState().hydrateFromSession(session);
+                if (silent && hasExistingGraph) {
+                    useGraphStore.getState().mergeFromSession(session);
+                } else {
+                    useGraphStore.getState().hydrateFromSession(session);
+                }
                 useModeratorStore.getState().updateFromSession(session, currentRound);
                 if (!get().wsConnected) {
                     debateWs.connect(turn!.id);
@@ -152,7 +171,11 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         } catch (err) {
             const msg =
                 err instanceof Error ? err.message : "Failed to load debate";
-            set({ error: msg, loading: false });
+            if (!silent) {
+                set({ error: msg, loading: false });
+            } else {
+                console.warn("[Agora] Silent debate refresh failed:", msg);
+            }
         }
     },
 
@@ -173,14 +196,18 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
 
             case "turn_completed":
                 set({ turnStatus: "completed" });
-                // Reload full session and re-hydrate graph with complete content
+                // Reload full session once to capture final summary/synthesis.
                 if (state.debateId) {
                     getDebateDetail(state.debateId).then((session) => {
-                        set({ session, agents: session.agents ?? [] });
-                        // After animation finishes, re-hydrate graph so all content is present
-                        setTimeout(() => {
-                            useGraphStore.getState().hydrateFromSession(session);
-                        }, 3000);
+                        const turn = session.latest_turn;
+                        set({
+                            session,
+                            agents: session.agents ?? [],
+                            turnStatus: turn?.status ?? "completed",
+                            currentRound: 3,
+                        });
+                        useGraphStore.getState().mergeFromSession(session);
+                        useModeratorStore.getState().updateFromSession(session, 3);
                     });
                 }
                 break;
@@ -193,6 +220,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                             ? (event.payload["error"] as string)
                             : "Debate execution failed",
                 });
+                useGraphStore.getState().markRunningNodesFailed();
                 break;
 
             default:
@@ -212,49 +240,78 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         // but node content (summary, text) must be applied directly.
         if (event.type === "message_created" && event.agent_id) {
             const payload = event.payload ?? {};
-            if (!shouldSkipGraphInference(payload)) {
-                const rn = event.round_number ?? 1;
-                const rawContent =
-                    typeof payload["content"] === "string"
-                        ? (payload["content"] as string)
-                        : "";
-                const agentObj = state.agents.find(
-                    (a) => a.id === event.agent_id,
-                );
-                const role = agentObj?.role;
+            const skipGraphInference = shouldSkipGraphInference(payload);
+            const rn = event.round_number ?? 1;
+            const rawContent =
+                typeof payload["content"] === "string"
+                    ? (payload["content"] as string)
+                    : "";
+            const generationStatus =
+                typeof payload["generation_status"] === "string"
+                    ? String(payload["generation_status"]).toLowerCase()
+                    : "success";
+            const failed = generationStatus === "failed" || skipGraphInference;
+            const agentObj = state.agents.find(
+                (a) => a.id === event.agent_id,
+            );
+            const role = agentObj?.role;
 
-                if (rn === 1) {
-                    // Round 1: update agent node with initial stance
-                    const nodeId = `agent-${event.agent_id}`;
-                    useGraphStore.getState().updateNodeData(nodeId, {
-                        summary: formatRound1Summary(rawContent),
-                        content: rawContent,
-                    });
-                } else if (rn === 2) {
-                    // Round 2: update intermediate node with critique content
-                    const nodeId = `agent-${event.agent_id}-r2`;
-                    const targetNodeId = inferLiveTarget(
+            if (rn === 1) {
+                // Round 1: update agent node with initial stance
+                const nodeId = `agent-${event.agent_id}`;
+                useGraphStore.getState().updateNodeData(nodeId, {
+                    summary: failed
+                        ? "This agent response failed to generate."
+                        : formatRound1Summary(rawContent),
+                    content: rawContent,
+                    metadata: { loading: false, failed },
+                });
+                if (failed) {
+                    useGraphStore.getState().setNodeStatus(nodeId, "failed");
+                }
+            } else if (rn === 2) {
+                // Round 2: update intermediate node with critique content
+                const nodeId = `agent-${event.agent_id}-r2`;
+                const targetNodeId = skipGraphInference
+                    ? null
+                    : inferLiveTarget(
                         payload,
                         state.agents,
                         `agent-${event.agent_id}`,
                     );
-                    const targetAgent = state.agents.find(
-                        (a) => `agent-${a.id}` === targetNodeId,
-                    );
-                    useGraphStore.getState().updateNodeData(nodeId, {
-                        summary: formatRound2Summary(
+                const targetAgent = targetNodeId
+                    ? state.agents.find((a) => `agent-${a.id}` === targetNodeId)
+                    : undefined;
+                useGraphStore.getState().updateNodeData(nodeId, {
+                    summary: failed
+                        ? "This agent response failed to generate."
+                        : formatRound2Summary(
                             rawContent,
                             role,
                             targetAgent?.role,
                         ),
-                        content: rawContent,
-                    });
-                } else if (rn === 3) {
-                    // Round 3: update agent node with final contribution
-                    const nodeId = `agent-${event.agent_id}`;
-                    useGraphStore.getState().updateNodeData(nodeId, {
-                        content: rawContent,
-                    });
+                    content: rawContent,
+                    metadata: { loading: false, failed },
+                });
+                if (failed) {
+                    useGraphStore.getState().setNodeStatus(nodeId, "failed");
+                }
+            } else if (rn === 3) {
+                // Round 3: update agent node with final contribution
+                const nodeId = `agent-${event.agent_id}`;
+                useGraphStore.getState().updateNodeData(nodeId, {
+                    summary: failed
+                        ? "This agent response failed to generate."
+                        : getTurnSummary({
+                            raw: rawContent,
+                            round: 3,
+                            sourceRole: role,
+                        }),
+                    content: rawContent,
+                    metadata: { loading: false, failed },
+                });
+                if (failed) {
+                    useGraphStore.getState().setNodeStatus(nodeId, "failed");
                 }
             }
         }
@@ -270,8 +327,14 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                         : null;
             if (summaryText) {
                 useGraphStore.getState().updateNodeData("synthesis-node", {
-                    summary: summaryText.slice(0, 200),
+                    summary: getTurnSummary({
+                        raw: summaryText,
+                        round: 3,
+                        kind: "synthesis",
+                        maxLen: 200,
+                    }),
                     content: summaryText,
+                    metadata: { loading: false, failed: false },
                 });
             }
         }

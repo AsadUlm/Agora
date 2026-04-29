@@ -1,8 +1,8 @@
 import { cn } from "@/shared/lib/cn";
 import { motion } from "motion/react";
-import { useDebateStore } from "../model/debate.store";
-import { buildTimelineFromSession } from "../model/graph.mapper";
+import { useEffect } from "react";
 import { usePlaybackStore } from "../model/playback.store";
+import { useDebateExecutionState } from "../model/useDebateExecutionState";
 
 const phaseIcons: Record<string, string> = {
     initial: "💬",
@@ -11,27 +11,45 @@ const phaseIcons: Record<string, string> = {
 };
 
 const statusDotColors: Record<string, string> = {
-    pending: "bg-gray-600",
-    active: "bg-indigo-400 animate-pulse",
+    locked: "bg-gray-700",
+    waiting: "bg-gray-500",
+    running: "bg-indigo-400 animate-pulse",
     completed: "bg-emerald-500",
     failed: "bg-red-500",
 };
 
 export default function DebateTimeline() {
-    const session = useDebateStore((s) => s.session);
-    const currentRound = useDebateStore((s) => s.currentRound);
+    const execution = useDebateExecutionState();
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
     const setSelectedRound = usePlaybackStore((s) => s.setSelectedRound);
 
-    const rounds = session
-        ? buildTimelineFromSession(session)
-        : [
-            { roundNumber: 1, roundType: "initial" as const, status: "pending" as const, label: "Initial Proposals", agentCount: 0 },
-            { roundNumber: 2, roundType: "critique" as const, status: "pending" as const, label: "Debate & Critique", agentCount: 0 },
-            { roundNumber: 3, roundType: "final" as const, status: "pending" as const, label: "Synthesis", agentCount: 0 },
-        ];
+    const rounds = execution.rounds.map((round) => ({
+        ...round,
+        roundType:
+            round.roundNumber === 1
+                ? "initial"
+                : round.roundNumber === 2
+                    ? "critique"
+                    : "final",
+    }));
+
+    useEffect(() => {
+        if (selectedRound === null) return;
+        const selected = rounds.find((r) => r.roundNumber === selectedRound);
+        if (!selected || selected.status === "locked") {
+            setSelectedRound(null);
+        }
+    }, [rounds, selectedRound, setSelectedRound]);
 
     const handleRoundClick = (roundNumber: number) => {
+        const round = rounds.find((r) => r.roundNumber === roundNumber);
+        if (!round) return;
+        const clickable =
+            round.status === "running" ||
+            round.status === "completed" ||
+            round.status === "failed";
+        if (!clickable) return;
+
         // Toggle: if already selected, deselect (show all)
         if (selectedRound === roundNumber) {
             setSelectedRound(null);
@@ -51,9 +69,26 @@ export default function DebateTimeline() {
             <div className="flex-1 p-4 space-y-2 overflow-y-auto">
                 {rounds.map((round, idx) => {
                     const isSelected = round.roundNumber === selectedRound;
-                    const isActive = round.roundNumber === currentRound && selectedRound === null;
+                    const isActive = round.roundNumber === execution.activeRound && selectedRound === null;
                     const isCompleted = round.status === "completed";
-                    const isPending = round.status === "pending";
+                    const isLocked = round.status === "locked";
+                    const isWaiting = round.status === "waiting";
+                    const isRunning = round.status === "running";
+                    const isFailed = round.status === "failed";
+
+                    const subtitle = isLocked
+                        ? round.lockedReason ?? "Locked"
+                        : isRunning
+                            ? `Generating${round.generatingAgentRole ? `: ${round.generatingAgentRole}` : "..."}`
+                            : isCompleted
+                                ? round.roundNumber === 3
+                                    ? "Synthesis ready"
+                                    : `${round.completedCount}/${round.totalCount} completed`
+                                : isFailed
+                                    ? "Generation failed"
+                                    : isWaiting
+                                        ? "Waiting"
+                                        : round.label;
 
                     return (
                         <motion.button
@@ -62,15 +97,20 @@ export default function DebateTimeline() {
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: idx * 0.1 }}
                             onClick={() => handleRoundClick(round.roundNumber)}
+                            disabled={isLocked || isWaiting}
                             className={cn(
                                 "w-full text-left p-3 rounded-xl transition-all duration-200",
                                 "border",
                                 isSelected
                                     ? "bg-indigo-500/15 border-indigo-400/50 shadow-lg shadow-indigo-500/20 ring-1 ring-indigo-400/30"
-                                    : isActive
+                                    : isRunning || isActive
                                         ? "bg-indigo-500/10 border-indigo-500/30 shadow-md shadow-indigo-500/10"
                                         : isCompleted
                                             ? "bg-agora-surface-light/50 border-emerald-500/20 hover:bg-agora-surface-light"
+                                    : isFailed
+                                        ? "bg-red-500/10 border-red-500/30"
+                                        : isLocked
+                                            ? "bg-agora-surface-light/20 border-transparent opacity-55 cursor-not-allowed"
                                             : "bg-agora-surface-light/30 border-transparent hover:bg-agora-surface-light/50",
                             )}
                         >
@@ -81,14 +121,16 @@ export default function DebateTimeline() {
                                             "w-8 h-8 rounded-lg flex items-center justify-center text-sm",
                                             isSelected
                                                 ? "bg-indigo-500/30"
-                                                : isActive
+                                                : isRunning || isActive
                                                     ? "bg-indigo-500/20"
                                                     : isCompleted
                                                         ? "bg-emerald-500/20"
+                                                        : isFailed
+                                                            ? "bg-red-500/20"
                                                         : "bg-gray-700/50",
                                         )}
                                     >
-                                        {phaseIcons[round.roundType] ?? "📌"}
+                                        {isLocked ? "🔒" : (phaseIcons[round.roundType] ?? "📌")}
                                     </div>
                                     <div
                                         className={cn(
@@ -104,10 +146,12 @@ export default function DebateTimeline() {
                                             "text-xs font-semibold",
                                             isSelected
                                                 ? "text-indigo-200"
-                                                : isActive
+                                                : isRunning || isActive
                                                     ? "text-indigo-300"
                                                     : isCompleted
                                                         ? "text-emerald-300"
+                                                        : isFailed
+                                                            ? "text-red-300"
                                                         : "text-agora-text-muted",
                                         )}
                                     >
@@ -116,15 +160,16 @@ export default function DebateTimeline() {
                                     <div
                                         className={cn(
                                             "text-[11px] truncate",
-                                            isPending ? "text-gray-500" : "text-agora-text-muted",
+                                            isLocked ? "text-gray-500" : "text-agora-text-muted",
                                         )}
+                                        title={subtitle}
                                     >
-                                        {round.label}
+                                        {subtitle}
                                     </div>
                                 </div>
                             </div>
 
-                            {(isSelected || isActive) && (
+                            {(isSelected || isRunning || isActive) && (
                                 <motion.div
                                     className={cn(
                                         "mt-2 h-0.5 rounded-full",

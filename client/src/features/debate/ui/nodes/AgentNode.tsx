@@ -5,7 +5,13 @@ import type { DebateGraphNode } from "../../model/graph.types";
 import { useGraphStore } from "../../model/graph.store";
 import { truncateNodeText } from "../../model/formatters";
 
-type AgentNodeData = DebateGraphNode & { label: string; dimmedByRound?: boolean; dimmedBySelection?: boolean };
+type AgentNodeData = DebateGraphNode & {
+    label: string;
+    dimmedByRound?: boolean;
+    dimmedBySelection?: boolean;
+    dimmedByGeneration?: boolean;
+    isGeneratingFocus?: boolean;
+};
 
 const statusStyles: Record<string, string> = {
     hidden: "opacity-0 scale-0",
@@ -14,6 +20,7 @@ const statusStyles: Record<string, string> = {
     active:
         "opacity-100 border-indigo-400 shadow-md shadow-indigo-500/30 ring-2 ring-indigo-500/20",
     completed: "opacity-100 border-emerald-500/60",
+    failed: "opacity-100 border-red-500/60 ring-1 ring-red-500/20",
 };
 
 const roleColors: Record<string, string> = {
@@ -53,33 +60,41 @@ export default function AgentNode({
     const gradient = getRoleGradient(data.agentRole);
     const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
     const dimmedByFocus = focusedNodeId != null && focusedNodeId !== id;
-    const dimmed = dimmedByFocus || data.dimmedByRound || data.dimmedBySelection;
+    const dimmed = dimmedByFocus || data.dimmedByRound || data.dimmedBySelection || data.dimmedByGeneration;
+    const isLoading = Boolean(data.metadata?.["loading"] && !data.content);
+    const loadingLabel =
+        typeof data.metadata?.["loadingLabel"] === "string"
+            ? String(data.metadata["loadingLabel"])
+            : "Generating response";
+    const isGeneratingFocus = Boolean(data.isGeneratingFocus);
 
     const maxLen = data.kind === "intermediate" ? 120 : 90;
-    const displayText = truncateNodeText(data.summary, maxLen) || data.label;
+    const displayText = isLoading
+        ? `${loadingLabel}...`
+        : truncateNodeText(data.summary, maxLen) || data.label;
 
     return (
         <AnimatePresence>
             <motion.div
-                initial={{ scale: 0, opacity: 0 }}
+                initial={{ opacity: 0, scale: 0.95, y: 8 }}
                 animate={{
-                    scale: nodeStatus === "hidden" ? 0 : 1,
-                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.3 : 1,
+                    scale: nodeStatus === "hidden" ? 0.95 : isGeneratingFocus ? 1.045 : selected ? 1.02 : 1,
+                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.26 : 1,
+                    y: nodeStatus === "hidden" ? 8 : 0,
                 }}
                 transition={{
-                    type: "spring",
-                    stiffness: 180,
-                    damping: 18,
-                    delay: 0.1,
+                    duration: 0.2,
+                    ease: "easeOut",
                 }}
                 className={`
           relative px-5 py-4 rounded-xl
           bg-gradient-to-br ${gradient}
           border-2 
           min-w-[180px] max-w-[240px]
-          cursor-pointer transition-all duration-300
+          cursor-pointer transition-all duration-150
           ${statusStyles[nodeStatus] ?? ""}
           ${selected ? "ring-2 ring-white/30 scale-105" : "hover:scale-[1.03]"}
+          ${isGeneratingFocus ? "border-cyan-300 shadow-xl shadow-cyan-500/35 ring-2 ring-cyan-300/45" : ""}
         `}
             >
                 <Handle
@@ -100,15 +115,36 @@ export default function AgentNode({
                     )}
                 </div>
 
-                <div className="text-xs font-medium text-white/90 leading-snug line-clamp-4">
+                <div className="text-xs font-medium text-white/90 leading-snug line-clamp-3">
                     {displayText}
                 </div>
 
-                {nodeStatus === "active" && (
+                {isLoading && (
+                    <div className="mt-2 text-[10px] text-cyan-100/90 flex items-center gap-1.5 rounded-md bg-white/10 px-2 py-1">
+                        <span>{loadingLabel}</span>
+                        <TypingDots />
+                    </div>
+                )}
+
+                {nodeStatus === "failed" && (
+                    <div className="mt-2 text-[10px] text-red-200/90">
+                        This response failed to generate.
+                    </div>
+                )}
+
+                {(nodeStatus === "active" || isLoading) && (
                     <motion.div
                         className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-indigo-400"
                         animate={{ scale: [1, 1.4, 1], opacity: [1, 0.5, 1] }}
                         transition={{ repeat: Infinity, duration: 1.5 }}
+                    />
+                )}
+
+                {isGeneratingFocus && (
+                    <motion.div
+                        className="absolute inset-0 rounded-xl border-2 border-cyan-200/70"
+                        animate={{ opacity: [0.25, 0.7, 0.25], scale: [1, 1.02, 1] }}
+                        transition={{ repeat: Infinity, duration: 1.1, ease: "easeOut" }}
                     />
                 )}
 
@@ -131,5 +167,20 @@ export default function AgentNode({
                 />
             </motion.div>
         </AnimatePresence>
+    );
+}
+
+function TypingDots() {
+    return (
+        <span className="inline-flex items-center gap-1">
+            {[0, 1, 2].map((idx) => (
+                <motion.span
+                    key={idx}
+                    className="h-1 w-1 rounded-full bg-cyan-200"
+                    animate={{ opacity: [0.25, 1, 0.25], y: [0, -1, 0] }}
+                    transition={{ duration: 0.9, ease: "easeOut", repeat: Infinity, delay: idx * 0.14 }}
+                />
+            ))}
+        </span>
     );
 }

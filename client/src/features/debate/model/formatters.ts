@@ -22,14 +22,11 @@ export function formatAgentMessage(raw: string | undefined | null): FormattedMes
     const str = String(raw).trim();
     if (!str) return { text: "", fields: [] };
 
-    // Try JSON parse
-    try {
-        const obj = JSON.parse(str) as Record<string, unknown>;
-        return formatPayloadObject(obj);
-    } catch {
-        // Not JSON — return cleaned text
-        return { text: cleanText(str), fields: [] };
-    }
+    const parsed = safeParse(str);
+    if (parsed) return formatPayloadObject(parsed);
+
+    // Not JSON — return cleaned text
+    return { text: cleanText(str), fields: [] };
 }
 
 /**
@@ -117,14 +114,7 @@ export function formatModeratorEvent(
     const role = capitalizeRole(agentRole);
 
     // Parse content to understand the nature of the message
-    let parsed: Record<string, unknown> | null = null;
-    try {
-        if (messageContent) {
-            parsed = JSON.parse(messageContent) as Record<string, unknown>;
-        }
-    } catch {
-        // not JSON
-    }
+    const parsed = messageContent ? safeParse(messageContent) : null;
 
     // Round 1: initial proposals
     if (round === 1) {
@@ -194,7 +184,7 @@ export function formatRound1Summary(raw: string | undefined | null): string {
  */
 export function formatRound2Summary(
     raw: string | undefined | null,
-    sourceRole?: string | null,
+    _sourceRole?: string | null,
     targetRole?: string | null,
 ): string {
     if (!raw) return "";
@@ -255,6 +245,33 @@ export function formatFinalSummary(raw: string | undefined | null): string {
 }
 
 /**
+ * Readable summary for node cards and compact side summaries.
+ */
+export function getTurnSummary(args: {
+    raw: string | undefined | null;
+    round: number;
+    kind?: string;
+    sourceRole?: string | null;
+    targetRole?: string | null;
+    maxLen?: number;
+}): string {
+    const { raw, round, kind, sourceRole, targetRole, maxLen = 140 } = args;
+    let summary = "";
+
+    if (round === 1) {
+        summary = formatRound1Summary(raw);
+    } else if (round === 2 || kind === "intermediate") {
+        summary = formatRound2Summary(raw, sourceRole, targetRole);
+    } else if (round === 3 || kind === "synthesis") {
+        summary = formatFinalSummary(raw);
+    } else {
+        summary = truncate(cleanText(String(raw ?? "")), maxLen);
+    }
+
+    return truncate(summary, maxLen);
+}
+
+/**
  * Extract the full content in a structured, readable manner for the detail panel.
  * Returns sections instead of dumping raw JSON.
  */
@@ -263,7 +280,11 @@ export interface ContentSection {
     body: string;
 }
 
-export function extractStructuredContent(raw: string | undefined | null): ContentSection[] {
+export function extractStructuredContent(
+    raw: string | undefined | null,
+    round?: number,
+    kind?: string,
+): ContentSection[] {
     if (!raw) return [];
     const parsed = safeParse(raw);
     if (!parsed) {
@@ -272,27 +293,66 @@ export function extractStructuredContent(raw: string | undefined | null): Conten
     }
 
     const sections: ContentSection[] = [];
-    const sectionMap: Record<string, string> = {
-        stance: "Position",
-        final_stance: "Final Stance",
-        summary: "Summary",
-        position: "Position",
-        reasoning: "Reasoning",
-        argument: "Argument",
-        conclusion: "Conclusion",
-        recommendations: "Recommendations",
-        key_points: "Key Points",
-        critique: "Critique",
-        challenge: "Challenge",
-        response: "Response",
-        text: "Content",
-    };
+    const isRound1 = round === 1;
+    const isRound2 = round === 2 || kind === "intermediate";
+    const isRound3 = round === 3 || kind === "synthesis";
+
+    const sectionMap = isRound1
+        ? {
+            stance: "Stance",
+            position: "Stance",
+            key_points: "Key Points",
+            evidence: "Evidence & Arguments",
+            arguments: "Evidence & Arguments",
+            risks: "Risks",
+            summary: "Short Summary",
+            text: "Content",
+        }
+        : isRound2
+            ? {
+                target_role: "Target",
+                target_agent: "Target",
+                challenge: "Challenge",
+                critique: "Challenge",
+                weakness: "Weakness",
+                counterargument: "Counterargument",
+                support: "Support",
+                inquiry: "Inquiry",
+                summary: "Short Summary",
+                text: "Content",
+            }
+            : isRound3
+                ? {
+                    final_stance: "Final Position",
+                    stance: "Final Position",
+                    refined_reasoning: "Refined Reasoning",
+                    reasoning: "Refined Reasoning",
+                    remaining_concerns: "Remaining Concerns",
+                    conclusion: "Conclusion",
+                    summary: "Short Summary",
+                    text: "Content",
+                }
+                : {
+                    stance: "Position",
+                    final_stance: "Final Stance",
+                    summary: "Summary",
+                    position: "Position",
+                    reasoning: "Reasoning",
+                    argument: "Argument",
+                    conclusion: "Conclusion",
+                    recommendations: "Recommendations",
+                    key_points: "Key Points",
+                    critique: "Critique",
+                    challenge: "Challenge",
+                    response: "Response",
+                    text: "Content",
+                };
 
     for (const [key, heading] of Object.entries(sectionMap)) {
         const val = parsed[key];
         if (val === undefined || val === null) continue;
         if (typeof val === "string" && val.trim()) {
-            sections.push({ heading, body: val.trim() });
+            sections.push({ heading, body: cleanText(val) });
         } else if (Array.isArray(val)) {
             const items = val
                 .map((v) => {
@@ -309,7 +369,7 @@ export function extractStructuredContent(raw: string | undefined | null): Conten
                 })
                 .filter(Boolean);
             if (items.length > 0) {
-                sections.push({ heading, body: items.join("\n• ") });
+                sections.push({ heading, body: `• ${items.join("\n• ")}` });
             }
         }
     }
@@ -333,18 +393,45 @@ export function extractStructuredContent(raw: string | undefined | null): Conten
         if (first) sections.push({ heading: "Content", body: first });
     }
 
-    return sections;
+    // Deduplicate headings while preserving order.
+    const seen = new Set<string>();
+    const deduped: ContentSection[] = [];
+    for (const section of sections) {
+        if (seen.has(section.heading)) continue;
+        seen.add(section.heading);
+        deduped.push(section);
+    }
+
+    return deduped;
 }
 
 function safeParse(raw: string): Record<string, unknown> | null {
-    const str = String(raw).trim();
+    const normalized = stripCodeFences(String(raw)).trim();
+    const str = normalized;
     if (!str) return null;
+
+    // Some providers wrap JSON twice as a string.
     try {
-        const obj = JSON.parse(str);
-        if (typeof obj === "object" && obj !== null && !Array.isArray(obj)) return obj;
+        const parsed = JSON.parse(str);
+
+        if (typeof parsed === "string") {
+            const nested = safeParse(parsed);
+            if (nested) return nested;
+            return null;
+        }
+
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+            const obj = parsed as Record<string, unknown>;
+            if (typeof obj["text"] === "string") {
+                const nested = safeParse(obj["text"] as string);
+                if (nested) return nested;
+            }
+            return obj;
+        }
     } catch {
         // not JSON
     }
+
     return null;
 }
 
@@ -360,23 +447,27 @@ export function truncateNodeText(text: string | undefined, maxLen = 80): string 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function cleanText(str: string): string {
-    let s = str.trim();
+    let s = stripCodeFences(str).trim();
     // Remove wrapping braces/brackets that look like raw JSON
     if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
-        try {
-            const parsed = JSON.parse(s);
-            // If parseable, extract the best string
-            if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-                const best = extractFirstMeaningful(parsed as Record<string, unknown>);
-                if (best) return best;
-            }
-        } catch {
-            // not valid JSON despite looking like it
+        const parsed = safeParse(s);
+        if (parsed) {
+            const best = extractFirstMeaningful(parsed);
+            if (best) return best;
         }
     }
     // Remove leading/trailing quotes
     if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
     return s;
+}
+
+function stripCodeFences(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed.startsWith("```")) return value;
+    return trimmed
+        .replace(/^```[a-zA-Z0-9_-]*\s*/m, "")
+        .replace(/\s*```$/m, "")
+        .trim();
 }
 
 function extractFirstString(obj: Record<string, unknown>): string {

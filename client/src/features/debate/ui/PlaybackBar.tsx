@@ -1,146 +1,89 @@
-import { cn } from "@/shared/lib/cn";
-import { useAnimationStore } from "../model/animation/animation.store";
+import { useMemo } from "react";
+import { useDebateExecutionState } from "../model/useDebateExecutionState";
+import { useDebateStore } from "../model/debate.store";
 import { useGraphStore } from "../model/graph.store";
-
-const speeds = [0.5, 1, 1.5, 2];
+import { deriveActiveNarration } from "../model/execution-ux";
 
 export default function PlaybackBar() {
-    const isPlaying = useAnimationStore((s) => s.isPlaying);
-    const isPaused = useAnimationStore((s) => s.isPaused);
-    const currentStep = useAnimationStore((s) => s.currentStepIndex);
-    const totalSteps = useAnimationStore((s) => s.queue.length);
-    const speed = useAnimationStore((s) => s.speed);
-    const setSpeed = useAnimationStore((s) => s.setSpeed);
-    const play = useAnimationStore((s) => s.play);
-    const pause = useAnimationStore((s) => s.pause);
-    const resume = useAnimationStore((s) => s.resume);
-    const next = useAnimationStore((s) => s.next);
-    const currentStepDescription = useAnimationStore((s) => s.currentStepDescription);
-    const forceRevealAll = useGraphStore((s) => s.forceRevealAll);
+    const execution = useDebateExecutionState();
+    const agents = useDebateStore((s) => s.agents);
     const graph = useGraphStore((s) => s.graph);
 
-    // Fix: currentStepIndex is 0-based, so finished when index >= length - 1
-    const progress = totalSteps > 0 ? ((currentStep + 1) / totalSteps) * 100 : 0;
-    const finished = totalSteps > 0 && currentStep >= totalSteps - 1;
+    const isRunning = execution.debateStatus === "running";
+    const isQueued = execution.debateStatus === "queued";
+    const isFailed = execution.debateStatus === "failed";
+    const currentRound = execution.rounds.find((round) => round.roundNumber === execution.activeRound);
 
-    // Detect blank graph (nodes exist but all hidden)
-    const hasNodes = graph.nodes.length > 0;
-    const allHidden = hasNodes && graph.nodes.every((n) => n.status === "hidden");
-    const noVisibleNodes = hasNodes && !graph.nodes.some((n) => n.status !== "hidden");
+    const narration = useMemo(
+        () => deriveActiveNarration({
+            execution,
+            agents,
+            nodes: graph.nodes,
+            edges: graph.edges,
+        }),
+        [execution, agents, graph.nodes, graph.edges],
+    );
 
-    const handleSkipToStatic = () => {
-        useAnimationStore.getState().reset();
-        forceRevealAll();
-    };
-
-    const statusLabel = finished
+    const stageLabel = execution.debateStatus === "completed"
         ? "Debate Complete"
-        : isPaused
-            ? `Paused — Step ${currentStep + 1} / ${totalSteps}`
-            : isPlaying
-                ? `Step ${currentStep + 1} / ${totalSteps}`
-                : totalSteps === 0
-                    ? "Waiting for events…"
-                    : currentStep < 0
-                        ? `Ready — ${totalSteps} steps`
-                        : `Step ${currentStep + 1} / ${totalSteps}`;
+        : execution.debateStatus === "failed"
+            ? "Debate Failed"
+            : `Round ${execution.activeRound}: ${currentRound?.label ?? "In Progress"}`;
+
+    const barColor = isFailed
+        ? "from-red-500 to-rose-500"
+        : execution.debateStatus === "completed"
+            ? "from-emerald-500 to-teal-500"
+            : "from-indigo-500 to-purple-500";
 
     return (
-        <div className="h-14 px-6 flex items-center gap-4 border-t border-agora-border bg-agora-surface/80 backdrop-blur-sm">
-            {/* Status label + step description */}
-            <div className="min-w-[180px]">
-                <div className="text-xs font-medium text-agora-text-muted">
-                    {statusLabel}
+        <div className="h-16 px-6 border-t border-agora-border bg-agora-surface/80 backdrop-blur-sm flex items-center gap-5">
+            <div className="min-w-[310px]">
+                <div className="text-xs font-semibold text-white truncate">
+                    {stageLabel}
                 </div>
-                {currentStepDescription && (
-                    <div className="text-[10px] text-indigo-400 truncate max-w-[180px]">
-                        {currentStepDescription}
-                    </div>
-                )}
+                <div className="text-[11px] text-agora-text-muted truncate">
+                    {narration.sublabel}
+                </div>
             </div>
 
-            {/* Progress bar */}
-            <div className="flex-1 max-w-md">
-                <div className="h-1.5 bg-agora-surface-light rounded-full overflow-hidden">
+            <div className="flex-1">
+                <div className="h-2 bg-agora-surface-light rounded-full overflow-hidden">
                     <div
-                        className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-300"
-                        style={{ width: `${progress}%` }}
+                        className={`h-full bg-gradient-to-r ${barColor} rounded-full transition-all duration-400`}
+                        style={{ width: `${execution.progress.percentage}%` }}
                     />
                 </div>
             </div>
 
-            {/* Controls — Next Step is primary */}
-            <div className="flex items-center gap-2">
-                {/* Next Step — primary action */}
-                <button
-                    onClick={next}
-                    disabled={finished || totalSteps === 0}
-                    className={cn(
-                        "px-4 py-1.5 rounded-lg text-xs font-semibold transition-all",
-                        finished || totalSteps === 0
-                            ? "bg-gray-700/50 text-gray-500 cursor-not-allowed"
-                            : "bg-indigo-600 text-white hover:bg-indigo-500 shadow-md shadow-indigo-500/20",
-                    )}
-                >
-                    Next Step ▸
-                </button>
-
-                {/* Play/Pause/Resume — secondary */}
-                {isPlaying && !isPaused ? (
-                    <button
-                        onClick={pause}
-                        className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-amber-600/80 text-white hover:bg-amber-500"
-                    >
-                        ⏸ Pause
-                    </button>
-                ) : isPaused ? (
-                    <button
-                        onClick={resume}
-                        className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all text-agora-text-muted hover:bg-agora-surface-light hover:text-white"
-                    >
-                        ▶ Resume
-                    </button>
-                ) : !finished && totalSteps > 0 ? (
-                    <button
-                        onClick={play}
-                        className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all text-agora-text-muted hover:bg-agora-surface-light hover:text-white"
-                        title="Auto-play all steps"
-                    >
-                        ▶ Auto
-                    </button>
-                ) : null}
-
-                {/* Skip to static — recovery for blank graph */}
-                {(noVisibleNodes || (isPaused && allHidden)) && hasNodes && (
-                    <button
-                        onClick={handleSkipToStatic}
-                        className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all bg-amber-600/80 text-white hover:bg-amber-500 shadow-sm"
-                        title="Skip animation and show the static graph"
-                    >
-                        ⏭ Show Graph
-                    </button>
+            <div className="min-w-[230px] text-right">
+                {(isQueued || isRunning) && narration.relation && (
+                    <div className="text-[11px] text-indigo-300/95 truncate">
+                        {narration.relation}
+                    </div>
                 )}
-            </div>
 
-            <div className="h-5 w-px bg-agora-border" />
+                {(isQueued || isRunning) && !narration.relation && execution.currentAgentRole && (
+                    <div className="text-[11px] text-indigo-300/90 truncate">
+                        {isRunning ? "Generating" : "Next"}: {execution.currentAgentRole}
+                    </div>
+                )}
 
-            {/* Speed controls */}
-            <div className="flex items-center gap-1">
-                <span className="text-[10px] text-gray-500 mr-1">Speed</span>
-                {speeds.map((s) => (
-                    <button
-                        key={s}
-                        onClick={() => setSpeed(s)}
-                        className={cn(
-                            "px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors",
-                            speed === s
-                                ? "bg-indigo-500/20 text-indigo-400"
-                                : "text-gray-500 hover:text-gray-300",
-                        )}
-                    >
-                        {s}x
-                    </button>
-                ))}
+                {execution.debateStatus === "completed" && (
+                    <div className="text-[11px] text-emerald-300 truncate">
+                        Final synthesis stabilized
+                    </div>
+                )}
+
+                <div className="text-[10px] text-agora-text-muted mt-0.5">
+                    {execution.progress.completedSteps} / {execution.progress.totalSteps} steps ({execution.progress.percentage}%)
+                </div>
+
+                {isFailed && (
+                    <div className="text-[11px] text-red-300 truncate mt-0.5">
+                        {execution.failureMessage || "Execution failed"}
+                    </div>
+                )}
             </div>
         </div>
     );

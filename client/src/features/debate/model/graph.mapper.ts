@@ -19,7 +19,7 @@ import type {
     WsEvent,
 } from "../api/debate.types";
 import { isErrorPayload, isErrorText, shouldSkipGraphInference, normalizeAgentError, formatModeratorError } from "./error-normalizer";
-import { formatModeratorEvent, formatRound1Summary, formatRound2Summary, formatFinalSummary } from "./formatters";
+import { formatModeratorEvent, formatRound1Summary, formatRound2Summary, formatFinalSummary, getTurnSummary } from "./formatters";
 import type {
     ActivityItem,
     DebateGraph,
@@ -45,34 +45,6 @@ function safePayload(msg: MessageDTO): Record<string, unknown> {
     } catch {
         return {};
     }
-}
-
-function extractSummary(msg: MessageDTO): string {
-    const p = safePayload(msg);
-    // Check structured LLM output fields in priority order
-    if (typeof p["stance"] === "string") return p["stance"];
-    if (typeof p["final_stance"] === "string") return p["final_stance"];
-    if (typeof p["summary"] === "string") return p["summary"];
-    if (typeof p["position"] === "string") return p["position"];
-    if (typeof p["text"] === "string")
-        return (p["text"] as string).slice(0, 200);
-    // msg.text is the raw LLM output — might be JSON, try to parse it
-    const rawText = msg.text ?? "";
-    if (!rawText) return "";
-    try {
-        const parsed = JSON.parse(rawText) as Record<string, unknown>;
-        const candidates = ["stance", "final_stance", "summary", "position", "text", "response", "argument"] as const;
-        for (const key of candidates) {
-            if (typeof parsed[key] === "string") return (parsed[key] as string).slice(0, 200);
-        }
-        // Fallback: get the first meaningful string from the parsed object
-        for (const val of Object.values(parsed)) {
-            if (typeof val === "string" && val.trim().length > 10) return (val as string).slice(0, 200);
-        }
-    } catch {
-        // not JSON
-    }
-    return rawText.slice(0, 200);
 }
 
 function extractContent(msg: MessageDTO): string {
@@ -165,7 +137,12 @@ function applyRoundToGraph(
                 agentNode.summary = formatRound1Summary(msg.text);
             } else if (rn !== 2) {
                 // Round 2 is handled by intermediate nodes; round 3 by synthesis
-                agentNode.summary = extractSummary(msg);
+                agentNode.summary = getTurnSummary({
+                    raw: msg.text,
+                    round: rn,
+                    kind: agentNode.kind,
+                    sourceRole: agentNode.agentRole,
+                });
             }
             agentNode.content = extractContent(msg);
             agentNode.round = rn;
@@ -506,8 +483,14 @@ export function applyWsEventToGraph(
                 if (node) {
                     node.status = "active";
                     if (typeof payload["content"] === "string") {
-                        node.summary = (payload["content"] as string).slice(0, 200);
-                        node.content = payload["content"] as string;
+                        const raw = payload["content"] as string;
+                        node.summary = getTurnSummary({
+                            raw,
+                            round: rn,
+                            kind: node.kind,
+                            sourceRole: node.agentRole,
+                        });
+                        node.content = raw;
                     }
                     node.round = rn;
                 }
@@ -531,8 +514,9 @@ export function applyWsEventToGraph(
                     if (intermNode) {
                         intermNode.status = "active";
                         if (typeof payload["content"] === "string") {
-                            intermNode.summary = (payload["content"] as string).slice(0, 200);
-                            intermNode.content = payload["content"] as string;
+                            const raw = payload["content"] as string;
+                            intermNode.summary = formatRound2Summary(raw, intermNode.agentRole);
+                            intermNode.content = raw;
                         }
                     }
 

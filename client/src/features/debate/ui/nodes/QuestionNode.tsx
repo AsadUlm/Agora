@@ -4,7 +4,12 @@ import { AnimatePresence, motion } from "motion/react";
 import type { DebateGraphNode } from "../../model/graph.types";
 import { useGraphStore } from "../../model/graph.store";
 
-type QuestionNodeData = DebateGraphNode & { label: string; dimmedByRound?: boolean; dimmedBySelection?: boolean };
+type QuestionNodeData = DebateGraphNode & {
+    label: string;
+    dimmedByRound?: boolean;
+    dimmedBySelection?: boolean;
+    dimmedByGeneration?: boolean;
+};
 
 export default function QuestionNode({
     data,
@@ -14,17 +19,18 @@ export default function QuestionNode({
     const nodeStatus = data.status ?? "visible";
     const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
     const dimmedByFocus = focusedNodeId != null && focusedNodeId !== id;
-    const dimmed = dimmedByFocus || data.dimmedByRound || data.dimmedBySelection;
+    const dimmed = dimmedByFocus || data.dimmedByRound || data.dimmedBySelection || data.dimmedByGeneration;
 
     return (
         <AnimatePresence>
             <motion.div
-                initial={{ scale: 0, opacity: 0 }}
+                initial={{ opacity: 0, scale: 0.95, y: 8 }}
                 animate={{
-                    scale: nodeStatus === "hidden" ? 0 : 1,
-                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.35 : 1,
+                    scale: nodeStatus === "hidden" ? 0.95 : selected ? 1.02 : 1,
+                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.26 : 1,
+                    y: nodeStatus === "hidden" ? 8 : 0,
                 }}
-                transition={{ type: "spring", stiffness: 200, damping: 20 }}
+                transition={{ duration: 0.22, ease: "easeOut" }}
                 className={`
           relative px-6 py-4 rounded-2xl
           bg-gradient-to-br from-indigo-600/90 to-purple-700/90
@@ -32,7 +38,7 @@ export default function QuestionNode({
           shadow-lg shadow-indigo-500/20
           min-w-[200px] max-w-[300px]
           text-center cursor-pointer
-          transition-all duration-300
+                    transition-all duration-150
           ${selected ? "glow-accent border-indigo-300" : "hover:border-indigo-400/70"}
         `}
             >

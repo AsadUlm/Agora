@@ -25,8 +25,10 @@ export default function InquiryEdge(props: EdgeProps) {
         targetPosition,
     });
 
-    const edgeStatus = (data as Record<string, unknown>)?.status as string | undefined;
-    const isDrawing = edgeStatus === "drawing";
+    const edgeData = (data as Record<string, unknown> | undefined) ?? {};
+    const edgeStatus = edgeData.status as string | undefined;
+    const isDrawing = edgeStatus === "drawing" || Boolean(edgeData.draw);
+    const isDimmed = Boolean(edgeData.dimmed);
 
     const baseStyle = {
         stroke: "#818cf8",
@@ -45,8 +47,8 @@ export default function InquiryEdge(props: EdgeProps) {
                 markerEnd={markerEnd}
                 style={baseStyle}
                 initial={isDrawing ? { pathLength: 0, opacity: 0.5 } : false}
-                animate={{ pathLength: 1, opacity: 1 }}
-                transition={{ duration: 0.5, ease: "easeOut" }}
+                animate={{ pathLength: 1, opacity: isDimmed ? 0.16 : 1 }}
+                transition={{ duration: 0.42, ease: "easeOut" }}
             />
             {props.label && (
                 <text>
