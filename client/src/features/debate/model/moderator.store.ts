@@ -72,12 +72,14 @@ export const useModeratorStore = create<ModeratorStore>((set, get) => ({
                     ];
                 }
                 break;
-            case "round_completed":
-                updates.explanation = `Round ${event.round_number} complete. ${event.round_number < 3
+            case "round_completed": {
+                const rn = event.round_number ?? 0;
+                updates.explanation = `Round ${rn} complete. ${rn < 3
                     ? "Preparing next round..."
                     : "Finalizing synthesis..."
                     }`;
                 break;
+            }
             case "turn_completed":
                 updates.status = "Completed";
                 updates.explanation =

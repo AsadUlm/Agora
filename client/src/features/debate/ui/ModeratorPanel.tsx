@@ -53,7 +53,7 @@ function buildNodeInterpretation(
         const incomingAgents = relatedEdges
             .filter((e) => e.target === node.id)
             .map((e) => allNodes.find((n) => n.id === e.source)?.agentRole)
-            .filter(Boolean);
+            .filter((s): s is string => Boolean(s));
         return {
             meaning: "This is the final synthesis — the debate's conclusion that combines the strongest arguments from all rounds.",
             role: "Final convergence point",

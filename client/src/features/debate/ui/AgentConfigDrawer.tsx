@@ -147,7 +147,7 @@ export default function AgentConfigDrawer({
                                         {AGENT_PRESETS.map((p) => (
                                             <button
                                                 key={p.key}
-                                                onClick={() => onAdd(createAgentFromPreset(p.key))}
+                                                onClick={() => onAdd(createAgentFromPreset(p))}
                                                 className="w-full text-left px-3 py-2 text-xs text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 first:rounded-t-lg last:rounded-b-lg transition-colors"
                                             >
                                                 <span className="font-medium text-white">{p.label}</span>

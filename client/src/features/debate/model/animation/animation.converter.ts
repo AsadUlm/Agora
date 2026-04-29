@@ -405,7 +405,7 @@ function buildRound2Steps(
 function buildRound3Steps(
     messages: MessageDTO[],
     agents: AgentDTO[],
-    finalSummary: Record<string, unknown> | null,
+    _finalSummary: Record<string, unknown> | null,
 ): AnimationStep[] {
     const steps: AnimationStep[] = [];
 
