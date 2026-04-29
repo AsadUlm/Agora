@@ -107,11 +107,11 @@ export default function DebateTimeline() {
                                         ? "bg-indigo-500/10 border-indigo-500/30 shadow-md shadow-indigo-500/10"
                                         : isCompleted
                                             ? "bg-agora-surface-light/50 border-emerald-500/20 hover:bg-agora-surface-light"
-                                    : isFailed
-                                        ? "bg-red-500/10 border-red-500/30"
-                                        : isLocked
-                                            ? "bg-agora-surface-light/20 border-transparent opacity-55 cursor-not-allowed"
-                                            : "bg-agora-surface-light/30 border-transparent hover:bg-agora-surface-light/50",
+                                            : isFailed
+                                                ? "bg-red-500/10 border-red-500/30"
+                                                : isLocked
+                                                    ? "bg-agora-surface-light/20 border-transparent opacity-55 cursor-not-allowed"
+                                                    : "bg-agora-surface-light/30 border-transparent hover:bg-agora-surface-light/50",
                             )}
                         >
                             <div className="flex items-center gap-3">
@@ -127,7 +127,7 @@ export default function DebateTimeline() {
                                                         ? "bg-emerald-500/20"
                                                         : isFailed
                                                             ? "bg-red-500/20"
-                                                        : "bg-gray-700/50",
+                                                            : "bg-gray-700/50",
                                         )}
                                     >
                                         {isLocked ? "🔒" : (phaseIcons[round.roundType] ?? "📌")}
@@ -152,7 +152,7 @@ export default function DebateTimeline() {
                                                         ? "text-emerald-300"
                                                         : isFailed
                                                             ? "text-red-300"
-                                                        : "text-agora-text-muted",
+                                                            : "text-agora-text-muted",
                                         )}
                                     >
                                         Round {round.roundNumber}

@@ -91,9 +91,9 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             const runningRound = turn?.rounds?.find((r) => r.status === "running")?.round_number;
             const currentRound =
                 runningRound
-                    ?? (turn?.rounds?.length
-                        ? Math.max(...turn.rounds.map((r) => r.round_number))
-                        : (turn?.status === "queued" || turn?.status === "running" ? 1 : 0));
+                ?? (turn?.rounds?.length
+                    ? Math.max(...turn.rounds.map((r) => r.round_number))
+                    : (turn?.status === "queued" || turn?.status === "running" ? 1 : 0));
 
             set({
                 session,
