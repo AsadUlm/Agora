@@ -36,9 +36,25 @@ export class DebateWebSocket {
         const url = `${WS_BASE}/ws/chat-turns/${this._turnId}?token=${encodeURIComponent(token)}`;
         this.ws = new WebSocket(url);
 
+        if (import.meta.env.DEV) {
+            // eslint-disable-next-line no-console
+            console.log("[WS] connecting", this._turnId);
+        }
+
+        this.ws.onopen = () => {
+            if (import.meta.env.DEV) {
+                // eslint-disable-next-line no-console
+                console.log("[WS] connected", this._turnId);
+            }
+        };
+
         this.ws.onmessage = (e) => {
             try {
                 const event: WsEvent = JSON.parse(e.data);
+                if (import.meta.env.DEV) {
+                    // eslint-disable-next-line no-console
+                    console.log("[WS] event", event.type, event);
+                }
                 this.handlers.forEach((h) => {
                     try {
                         h(event);
@@ -52,11 +68,19 @@ export class DebateWebSocket {
         };
 
         this.ws.onclose = () => {
+            if (import.meta.env.DEV) {
+                // eslint-disable-next-line no-console
+                console.log("[WS] closed", { turnId: this._turnId, disposed: this._disposed });
+            }
             if (this._disposed) return;
             this._tryReconnect();
         };
 
         this.ws.onerror = () => {
+            if (import.meta.env.DEV) {
+                // eslint-disable-next-line no-console
+                console.log("[WS] error", { turnId: this._turnId });
+            }
             /* will trigger onclose */
         };
     }

@@ -4,6 +4,7 @@ import { useModeratorStore } from "../model/moderator.store";
 import { usePlaybackStore } from "../model/playback.store";
 import { useGraphStore } from "../model/graph.store";
 import { useAnimationStore } from "../model/animation/animation.store";
+import { useDebateStore } from "../model/debate.store";
 import { formatTime } from "@/shared/lib/dates";
 import type { DebateGraphNode, DebateGraphEdge } from "../model/graph.types";
 
@@ -122,6 +123,27 @@ export default function ModeratorPanel() {
     const selectNode = useGraphStore((s) => s.selectNode);
     const setFocus = useGraphStore((s) => s.setFocus);
     const currentStepDescription = useAnimationStore((s) => s.currentStepDescription);
+    const executionMode = useDebateStore((s) => s.executionMode);
+    const currentlyGenerating = useDebateStore((s) => s.currentlyGenerating);
+    const pendingStep = useDebateStore((s) => s.pendingStep);
+    const turnStatus = useDebateStore((s) => s.turnStatus);
+    const requestNextStep = useDebateStore((s) => s.requestNextStep);
+    const enableAutoRun = useDebateStore((s) => s.enableAutoRun);
+    const stepBusy = useDebateStore((s) => s.stepBusy);
+    const stepError = useDebateStore((s) => s.stepError);
+    const playbackMode = useDebateStore((s) => s.playbackMode);
+    const playbackQueue = useDebateStore((s) => s.playbackQueue);
+    const revealedNodeIds = useDebateStore((s) => s.revealedNodeIds);
+    const setPlaybackMode = useDebateStore((s) => s.setPlaybackMode);
+    const revealNextVisual = useDebateStore((s) => s.revealNextVisual);
+
+    const queuedForReveal = playbackQueue.length;
+    const revealedStepCount = revealedNodeIds.filter((id) => id !== "question-node").length;
+
+    const canClickNext =
+        !stepBusy
+        && currentlyGenerating === null
+        && (turnStatus === "queued" || turnStatus === "running");
 
     const roundInfo = selectedRound ? roundExplanations[selectedRound] : null;
     const displayExplanation = roundInfo?.description ?? explanation;
@@ -171,8 +193,171 @@ export default function ModeratorPanel() {
                 </div>
             </div>
 
+            {/* ── Guided Narrator ─────────────────────────────────── */}
+            {!isInterpretationMode && (turnStatus === "queued" || turnStatus === "running" || (turnStatus === "completed" && queuedForReveal > 0)) && (
+                <div className="px-4 py-3 border-b border-agora-border bg-indigo-500/5 space-y-2.5">
+                    {/* Current Step */}
+                    <div>
+                        <div className="text-[10px] uppercase tracking-widest text-indigo-400 font-semibold mb-1">
+                            Current Step
+                        </div>
+                        {(() => {
+                            // Backend-derived live state takes priority for UX text.
+                            if (currentlyGenerating) {
+                                return (
+                                    <p className="text-xs text-white leading-relaxed">
+                                        Round {currentlyGenerating.round_number} —{" "}
+                                        <span className="font-semibold capitalize">{currentlyGenerating.agent_role || "agent"}</span>{" "}
+                                        is generating a response…
+                                    </p>
+                                );
+                            }
+                            if (turnStatus === "completed" && queuedForReveal > 0) {
+                                return (
+                                    <p className="text-xs text-white leading-relaxed">
+                                        Debate generation is complete. Continue revealing the remaining responses.
+                                    </p>
+                                );
+                            }
+                            if (queuedForReveal > 0 && playbackMode === "paused") {
+                                return (
+                                    <p className="text-xs text-white leading-relaxed">
+                                        A new response is ready. Click <strong>Next Step</strong> to reveal it.
+                                        <span className="ml-1 text-agora-text-muted">({queuedForReveal} queued)</span>
+                                    </p>
+                                );
+                            }
+                            if (queuedForReveal > 0 && playbackMode === "auto") {
+                                return (
+                                    <p className="text-xs text-white leading-relaxed">
+                                        Auto Run is revealing responses as they arrive.
+                                    </p>
+                                );
+                            }
+                            if (revealedStepCount === 0) {
+                                return (
+                                    <p className="text-xs text-white leading-relaxed">
+                                        Waiting for the first agent response...
+                                    </p>
+                                );
+                            }
+                            return (
+                                <p className="text-xs text-agora-text-muted leading-relaxed">
+                                    {currentStepDescription || "Waiting for the next response..."}
+                                </p>
+                            );
+                        })()}
+                    </div>
+
+                    {/* Why this matters */}
+                    {roundInfo && (
+                        <div>
+                            <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1">
+                                Why this matters
+                            </div>
+                            <p className="text-[11px] text-agora-text-muted leading-relaxed">
+                                {roundInfo.description}
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Latest result */}
+                    {activityFeed.length > 0 && (
+                        <div>
+                            <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1">
+                                Latest result
+                            </div>
+                            <p className="text-[11px] text-agora-text leading-relaxed line-clamp-2">
+                                {activityFeed[activityFeed.length - 1]?.text ?? "—"}
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Playback controls (frontend-only) */}
+                    <div className="pt-1 flex flex-col gap-1.5">
+                        <div className="flex items-center gap-2">
+                            {playbackMode === "auto" ? (
+                                <button
+                                    type="button"
+                                    onClick={() => setPlaybackMode("paused")}
+                                    className="flex-1 px-3 py-1.5 rounded-md text-[11px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-400 transition-colors"
+                                    title="Pause visual reveal only (backend keeps generating)"
+                                >
+                                    ⏸ Pause
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={() => setPlaybackMode("auto")}
+                                    className="flex-1 px-3 py-1.5 rounded-md text-[11px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-400 transition-colors"
+                                    title="Enable Auto Run visual playback"
+                                >
+                                    ▶ Auto Run
+                                </button>
+                            )}
+                            <button
+                                type="button"
+                                onClick={() => revealNextVisual()}
+                                disabled={queuedForReveal === 0}
+                                className="flex-1 px-3 py-1.5 rounded-md text-[11px] font-semibold bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                title={queuedForReveal === 0
+                                    ? "No queued responses \u2014 waiting for backend"
+                                    : "Reveal the next queued response"}
+                            >
+                                Next Step ▶{queuedForReveal > 0 && (
+                                    <span className="ml-1 text-[10px] opacity-80">({queuedForReveal})</span>
+                                )}
+                            </button>
+                        </div>
+
+                        {/* Backend manual gate: dev/experimental only */}
+                        {import.meta.env.DEV && executionMode === "manual" && (
+                            <div className="flex items-center gap-1.5 mt-1 pt-1 border-t border-agora-border/40">
+                                <span className="text-[9px] uppercase tracking-wider text-amber-400/80">
+                                    dev:
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => void requestNextStep()}
+                                    disabled={!canClickNext || pendingStep === null}
+                                    className="flex-1 px-2 py-1 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-200 border border-amber-500/40 hover:bg-amber-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                    {currentlyGenerating
+                                        ? "Generating…"
+                                        : pendingStep
+                                            ? "Release backend gate"
+                                            : "No gate active"}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void enableAutoRun()}
+                                    className="px-2 py-1 rounded text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-white"
+                                >
+                                    Auto
+                                </button>
+                            </div>
+                        )}
+
+                        {stepError && (
+                            <p className="text-[10px] text-red-400 truncate" title={stepError}>
+                                {stepError}
+                            </p>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Completed-debate banner */}
+            {!isInterpretationMode && turnStatus === "completed" && (
+                <div className="px-4 py-3 border-b border-agora-border bg-emerald-500/5">
+                    <p className="text-xs text-emerald-200 leading-relaxed">
+                        Debate complete. Review the agents' arguments and final synthesis.
+                    </p>
+                </div>
+            )}
+
             {/* Current Step Description */}
-            {currentStepDescription && !isInterpretationMode && (
+            {currentStepDescription && !isInterpretationMode && (turnStatus !== "queued" && turnStatus !== "running") && (
                 <div className="px-4 py-3 border-b border-agora-border bg-indigo-500/5">
                     <div className="text-[10px] uppercase tracking-widest text-indigo-400 font-semibold mb-1">
                         Current Step

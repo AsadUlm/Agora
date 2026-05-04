@@ -32,6 +32,7 @@ Execution flow:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -69,9 +70,10 @@ class ChatEngine:
     When None (default), the engine runs silently — no change to synchronous behavior.
     """
 
-    def __init__(self, db: AsyncSession, on_event: OnEventCallback | None = None) -> None:
+    def __init__(self, db: AsyncSession, on_event: OnEventCallback | None = None, step_controller: Any = None) -> None:
         self.db = db
         self._on_event = on_event
+        self._step_controller = step_controller
 
     async def start_turn_execution(self, turn_id: uuid.UUID) -> dict[str, Any]:
         """
@@ -101,6 +103,7 @@ class ChatEngine:
         turn.current_round_no = 1
         await self.db.flush()
         logger.info("Turn %s started: question=%r agents=%d", turn_id, ctx.question[:60], len(ctx.agents))
+        logger.info("WS emit turn_started turn=%s", turn_id)
         await self._emit(ExecutionEvent(
             event_type=ExecutionEventType.turn_started,
             session_id=ctx.session_id,
@@ -108,7 +111,12 @@ class ChatEngine:
         ))
 
         # ── Execute rounds via RoundManager ────────────────────────────────────
-        round_manager = RoundManager(db=self.db, seq_start=1, on_event=self._on_event)
+        round_manager = RoundManager(
+            db=self.db,
+            seq_start=1,
+            on_event=self._on_event,
+            step_controller=self._step_controller,
+        )
 
         try:
             # Round 1
@@ -131,6 +139,7 @@ class ChatEngine:
             await self.db.flush()
 
             logger.info("Turn %s completed successfully.", turn_id)
+            logger.info("WS emit turn_completed turn=%s", turn_id)
             await self._emit(ExecutionEvent(
                 event_type=ExecutionEventType.turn_completed,
                 session_id=ctx.session_id,
@@ -234,7 +243,21 @@ class ChatEngine:
             engine = ChatEngine(db, on_event=ws_manager.broadcast)
         """
         if self._on_event is not None:
-            await self._on_event(event)
+            try:
+                # Event streaming must never block debate execution.
+                await asyncio.wait_for(self._on_event(event), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Event emit timed out for turn=%s type=%s",
+                    event.turn_id,
+                    event.event_type.value,
+                )
+            except Exception:
+                logger.exception(
+                    "Event emit failed for turn=%s type=%s",
+                    event.turn_id,
+                    event.event_type.value,
+                )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

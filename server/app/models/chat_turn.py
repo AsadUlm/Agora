@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, Uuid, ForeignKey, Enum as SQLEnum
+from sqlalchemy import DateTime, Integer, String, Uuid, ForeignKey, Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -31,6 +31,11 @@ class ChatTurn(Base):
         SQLEnum(ChatTurnStatus, name="chat_turn_status"), nullable=False, default=ChatTurnStatus.queued
     )
     current_round_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Step-by-step support: "auto" runs the whole turn through; "manual"
+    # gates each agent on the StepController and waits for /next-step.
+    execution_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="auto", server_default="auto"
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

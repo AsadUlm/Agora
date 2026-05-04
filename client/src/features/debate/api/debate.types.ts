@@ -50,6 +50,7 @@ export interface TurnDTO {
     user_message: UserMessageDTO | null;
     rounds: RoundDTO[];
     final_summary: Record<string, unknown> | null;
+    execution_mode?: "auto" | "manual";
 }
 
 export interface SessionDetailDTO {
@@ -67,6 +68,7 @@ export interface DebateStartRequest {
     question: string;
     agents: { role: string; config: Record<string, unknown>; document_ids?: string[] }[];
     session_id?: string;
+    execution_mode?: "auto" | "manual";
 }
 
 export interface DebateStartResponse {
