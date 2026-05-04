@@ -70,3 +70,64 @@ export async function deleteDocument(
         `/documents/${documentId}?session_id=${sessionId}`,
     );
 }
+
+// ── Step-by-step controls (Step 14) ──────────────────────────────────────────
+
+export interface NextStepResponse {
+    turn_id: string;
+    status: "queued" | "running" | "completed" | "failed" | "cancelled";
+    execution_mode: "auto" | "manual";
+    released: boolean;
+    pending_step: {
+        round_number: number;
+        agent_id: string;
+        agent_role: string;
+        message_type: string;
+    } | null;
+}
+
+export async function nextStep(debateId: string): Promise<NextStepResponse> {
+    const res = await apiClient.post<NextStepResponse>(
+        `/debates/${debateId}/next-step`,
+    );
+    return res.data;
+}
+
+export interface StepStateResponse {
+    turn_id: string;
+    status: "queued" | "running" | "completed" | "failed" | "cancelled";
+    execution_mode: "auto" | "manual";
+    is_running: boolean;
+    pending_step: {
+        round_number: number;
+        agent_id: string;
+        agent_role: string;
+        message_type: string;
+    } | null;
+    gate_set: boolean;
+}
+
+export async function getStepState(debateId: string): Promise<StepStateResponse> {
+    const res = await apiClient.get<StepStateResponse>(
+        `/debates/${debateId}/step-state`,
+    );
+    return res.data;
+}
+
+export async function resumeDebate(
+    debateId: string,
+): Promise<{ turn_id: string; status: string; resumed: boolean; reason?: string }> {
+    const res = await apiClient.post(
+        `/debates/${debateId}/resume`,
+    );
+    return res.data as { turn_id: string; status: string; resumed: boolean; reason?: string };
+}
+
+export async function switchToAutoRun(
+    debateId: string,
+): Promise<{ turn_id: string; status: string; execution_mode: string; switched: boolean }> {
+    const res = await apiClient.post(
+        `/debates/${debateId}/auto-run`,
+    );
+    return res.data as { turn_id: string; status: string; execution_mode: string; switched: boolean };
+}

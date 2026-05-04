@@ -29,8 +29,8 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # Hard safety ceiling. Mirrors `MAX_ALLOWED_TOKENS` in the round manager so
 # even ad-hoc callers cannot blow the OpenRouter credit budget.
-MAX_ALLOWED_TOKENS = 2000
-DEFAULT_MAX_TOKENS = 1000
+MAX_ALLOWED_TOKENS = 1200
+DEFAULT_MAX_TOKENS = 850
 
 
 class OpenRouterProvider(LLMService):
@@ -102,7 +102,19 @@ class OpenRouterProvider(LLMService):
             ) from exc
 
         latency_ms = int((time.monotonic() - t_start) * 1000)
-        content = response.choices[0].message.content or ""
+        choice = response.choices[0] if response.choices else None
+        message = choice.message if choice is not None else None
+        # Robust content extraction: GPT-5 / o-series models on OpenRouter
+        # sometimes return the answer in `reasoning` / `text` fields rather
+        # than `content`. Fall back through known alternatives before declaring
+        # the response empty.
+        content = ""
+        if message is not None:
+            for attr in ("content", "reasoning", "text", "output_text"):
+                value = getattr(message, attr, None)
+                if isinstance(value, str) and value.strip():
+                    content = value
+                    break
         usage = response.usage
 
         logger.debug(

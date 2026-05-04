@@ -68,10 +68,10 @@ export default function AgentNode({
             : "Generating response";
     const isGeneratingFocus = Boolean(data.isGeneratingFocus);
 
-    const maxLen = data.kind === "intermediate" ? 120 : 90;
+    const maxLen = data.kind === "intermediate" ? 110 : 96;
     const displayText = isLoading
         ? `${loadingLabel}...`
-        : truncateNodeText(data.summary, maxLen) || data.label;
+        : truncateNodeText(data.summary || data.content || data.label, maxLen) || data.label;
 
     return (
         <AnimatePresence>
@@ -131,7 +131,7 @@ export default function AgentNode({
                     )}
                 </div>
 
-                <div className="text-xs font-medium text-white/90 leading-snug line-clamp-3">
+                <div className="text-xs font-medium text-white/90 leading-snug line-clamp-2">
                     {displayText}
                 </div>
 

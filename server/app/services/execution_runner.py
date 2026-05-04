@@ -47,6 +47,7 @@ from app.db.session import AsyncSessionLocal
 from app.models.chat_turn import ChatTurn, ChatTurnStatus
 from app.schemas.contracts import ExecutionEvent, ExecutionEventType, OnEventCallback
 from app.services.chat_engine import ChatEngine
+from app.services.debate_engine.step_controller import step_controller
 
 logger = logging.getLogger(__name__)
 
@@ -73,18 +74,48 @@ async def run_turn_background(
     logger.info("Background execution starting for turn %s", turn_id)
 
     execution_failed = False
+    turn_obj: ChatTurn | None = None
 
     async with factory() as db:
         try:
-            engine = ChatEngine(db=db, on_event=on_event)
+            # Read execution_mode from the persisted turn so the StepController
+            # is registered with the right gate semantics (auto vs manual).
+            turn_row = await db.execute(
+                select(ChatTurn).where(ChatTurn.id == turn_id)
+            )
+            turn_obj = turn_row.scalar_one_or_none()
+            mode = (
+                turn_obj.execution_mode
+                if turn_obj is not None and turn_obj.execution_mode in ("auto", "manual")
+                else "auto"
+            )
+            await step_controller.register(turn_id, mode)  # type: ignore[arg-type]
+
+            engine = ChatEngine(db=db, on_event=on_event, step_controller=step_controller)
             await engine.start_turn_execution(turn_id)
 
         except Exception as exc:
-            # ChatEngine has already:
-            #   - set turn.status = failed + flushed
-            #   - emitted turn_failed via on_event
-            # We just need to persist that flushed state.
+            # If the engine fails before it can transition queued->failed,
+            # we force that transition here so the UI never hangs in queued.
             execution_failed = True
+            if turn_obj is not None and turn_obj.status in (
+                ChatTurnStatus.queued,
+                ChatTurnStatus.running,
+            ):
+                turn_obj.status = ChatTurnStatus.failed
+                turn_obj.ended_at = datetime.now(timezone.utc)
+                await db.flush()
+                try:
+                    await on_event(
+                        ExecutionEvent(
+                            event_type=ExecutionEventType.turn_failed,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            payload={"error": str(exc)},
+                        )
+                    )
+                except Exception:
+                    pass
             logger.exception(
                 "Turn %s execution raised (will commit failed state): %s",
                 turn_id,
@@ -114,6 +145,9 @@ async def run_turn_background(
                 # Completed execution but commit failed — surface as failure
                 await _force_fail_turn(turn_id, session_id, on_event, factory)
 
+    # Drop the in-memory step state regardless of success/failure.
+    await step_controller.cleanup(turn_id)
+
 
 async def _force_fail_turn(
     turn_id: uuid.UUID,
@@ -127,6 +161,8 @@ async def _force_fail_turn(
     Called only when the primary session's commit itself failed, meaning
     even the engine's failed-state flush was lost.
     """
+    marked_failed = False
+
     try:
         async with session_factory() as recovery_db:
             row = await recovery_db.execute(
@@ -140,6 +176,7 @@ async def _force_fail_turn(
                 turn.status = ChatTurnStatus.failed
                 turn.ended_at = datetime.now(timezone.utc)
                 await recovery_db.commit()
+                marked_failed = True
                 logger.warning(
                     "Force-failed turn %s via recovery session", turn_id
                 )
@@ -149,17 +186,18 @@ async def _force_fail_turn(
             turn_id,
         )
 
-    # Notify clients; wrap to survive dead connections
-    try:
-        await on_event(
-            ExecutionEvent(
-                event_type=ExecutionEventType.turn_failed,
-                session_id=session_id,
-                turn_id=turn_id,
-                payload={
-                    "error": "Execution state could not be persisted due to a database error."
-                },
+    if marked_failed:
+        # Notify clients only when we actually changed the DB state here.
+        try:
+            await on_event(
+                ExecutionEvent(
+                    event_type=ExecutionEventType.turn_failed,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    payload={
+                        "error": "Execution state could not be persisted due to a database error."
+                    },
+                )
             )
-        )
-    except Exception:
-        pass  # Clients may already be disconnected; that is expected
+        except Exception:
+            pass  # Clients may already be disconnected; that is expected

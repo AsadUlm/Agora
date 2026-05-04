@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -57,27 +58,30 @@ from app.services.retrieval.retrieval_service import RetrievalService
 logger = logging.getLogger(__name__)
 
 # ── LLM output budget ────────────────────────────────────────────────────────
-# Hard ceiling for any single LLM call. OpenRouter (and other paid providers)
-# reserve credits up-front based on max_tokens; without an explicit cap, the
-# OpenAI client passes None and the upstream defaults to the model's full
-# completion window (e.g. 65 536 tokens), which triggers 402 "insufficient
-# credits" errors. Keep this conservative.
-MAX_ALLOWED_TOKENS = 2000
+# Hard ceiling for any single LLM call. Keeping this lower reduces credit
+# reservation and median latency spikes for long completions.
+MAX_ALLOWED_TOKENS = 1200
 
 # Per-round output budget. Round 1 is a tight opening statement; Rounds 2 and 3
 # need extra headroom for critiques and synthesis.
 ROUND_MAX_TOKENS: dict[int, int] = {
-    1: 700,
-    2: 1000,
-    3: 1000,
+    1: 650,
+    2: 850,
+    3: 900,
 }
-DEFAULT_MAX_TOKENS = 1000
+DEFAULT_MAX_TOKENS = 850
+RETRIEVAL_TOP_K = 3
 
 
 def _resolve_max_tokens(round_number: int) -> int:
     """Return the clamped max_tokens budget for a given round."""
     budget = ROUND_MAX_TOKENS.get(round_number, DEFAULT_MAX_TOKENS)
     return min(budget, MAX_ALLOWED_TOKENS)
+
+
+def _estimate_tokens_from_chars(char_count: int) -> int:
+    """Quick token estimate for logging and perf diagnostics."""
+    return max(1, int(char_count / 4))
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +99,14 @@ class RoundManager:
         db: AsyncSession,
         seq_start: int = 0,
         on_event: OnEventCallback | None = None,
+        step_controller: Any = None,
     ) -> None:
         self.db = db
         self._seq = seq_start                     # monotonic message sequence counter
         self._retrieval = RetrievalService()
         self._llm: LLMService = get_llm_service()
         self._on_event = on_event
+        self._step_controller = step_controller   # optional StepController for manual mode
 
     @property
     def next_seq(self) -> int:
@@ -341,6 +347,7 @@ class RoundManager:
         )
 
         if self._on_event is not None:
+            logger.info("WS emit round_started round=%d turn=%s", round_number, ctx.turn_id)
             await self._on_event(ExecutionEvent(
                 event_type=ExecutionEventType.round_started,
                 session_id=ctx.session_id,
@@ -358,6 +365,11 @@ class RoundManager:
         logger.info("Round %d completed.", round_record.round_number)
 
         if self._on_event is not None:
+            logger.info(
+                "WS emit round_completed round=%d turn=%s",
+                round_record.round_number,
+                ctx.turn_id,
+            )
             await self._on_event(ExecutionEvent(
                 event_type=ExecutionEventType.round_completed,
                 session_id=ctx.session_id,
@@ -445,12 +457,13 @@ class RoundManager:
             db=self.db,
             knowledge_mode=agent_ctx.knowledge_mode,
             assigned_document_ids=agent_ctx.assigned_document_ids,
+            top_k=RETRIEVAL_TOP_K,
         )
 
     async def _build_retrieval_summary(
         self,
         chunks: list[RetrievedChunk],
-        max_chunks: int = 5,
+        max_chunks: int = RETRIEVAL_TOP_K,
         text_chars: int = 280,
     ) -> dict[str, Any] | None:
         """
@@ -530,6 +543,37 @@ class RoundManager:
         Always saves a Message even on failure (content = error description).
         Never raises — failed agents are surfaced via AgentRoundResult.generation_status.
         """
+        # ── Step gate (manual mode only) ─────────────────────────────────────
+        # Emit agent_started so the UI can describe what is about to happen,
+        # then wait on the step controller. In auto mode wait_for_step is a
+        # no-op.
+        step_meta = {
+            "round_number": round_record.round_number,
+            "agent_id": str(agent_ctx.agent_id),
+            "agent_role": agent_ctx.role,
+            "message_type": message_type.value,
+        }
+        logger.info(
+            "WS emit agent_started: turn=%s round=%d agent=%s role=%s type=%s",
+            turn_id,
+            round_record.round_number,
+            agent_ctx.agent_id,
+            agent_ctx.role,
+            message_type.value,
+        )
+        if self._on_event is not None:
+            await self._on_event(ExecutionEvent(
+                event_type=ExecutionEventType.agent_started,
+                session_id=session_id,
+                turn_id=turn_id,
+                round_id=round_record.id,
+                round_number=round_record.round_number,
+                agent_id=agent_ctx.agent_id,
+                payload=step_meta,
+            ))
+        if self._step_controller is not None:
+            await self._step_controller.wait_for_step(turn_id, step_meta)
+
         call_record = await self._log_llm_call(
             turn_id=turn_id,
             round_id=round_record.id,
@@ -547,23 +591,51 @@ class RoundManager:
             max_tokens=_resolve_max_tokens(round_record.round_number),
         )
 
+        retrieval_count = len(retrieved_chunks or [])
+        prompt_chars = len(prompt)
+        estimated_prompt_tokens = _estimate_tokens_from_chars(prompt_chars)
+        llm_started_at = datetime.now(timezone.utc)
+        llm_started_perf = time.perf_counter()
+
         logger.info(
-            "LLM call: provider=%s model=%s round=%d max_tokens=%d temperature=%.2f",
+            "LLM start: turn=%s round=%d agent=%s role=%s provider=%s model=%s prompt_chars=%d est_prompt_tokens=%d max_tokens=%d retrieval_chunks=%d started_at=%s",
+            turn_id,
+            round_record.round_number,
+            agent_ctx.agent_id,
+            agent_ctx.role,
             agent_ctx.provider,
             agent_ctx.model,
-            round_record.round_number,
-            request.max_tokens,
-            request.temperature or 0.0,
+            prompt_chars,
+            estimated_prompt_tokens,
+            request.max_tokens or 0,
+            retrieval_count,
+            llm_started_at.isoformat(),
         )
 
         content = ""
         structured: dict[str, Any] = {}
         generation_status = "success"
         error_msg: str | None = None
+        prompt_tokens = 0
+        completion_tokens = 0
+        provider_latency_ms = 0
 
         try:
             response = await self._llm.generate(request)
             content = response.content
+            prompt_tokens = response.prompt_tokens
+            completion_tokens = response.completion_tokens
+            provider_latency_ms = response.latency_ms
+
+            # Detect empty/whitespace-only responses (common with GPT-5 on
+            # OpenRouter when reasoning_effort silently swallows the answer,
+            # or when the provider returns a refusal in a non-content field).
+            if not content or not content.strip():
+                raise LLMError(
+                    "Model returned an empty response. "
+                    "Check model compatibility with current request parameters "
+                    "(max_tokens, response_format)."
+                )
 
             # Attempt JSON parse — fall back to raw text gracefully
             try:
@@ -577,9 +649,9 @@ class RoundManager:
                 structured = {"raw_content": content}
 
             call_record.status = LLMCallStatus.completed
-            call_record.prompt_tokens = response.prompt_tokens
-            call_record.completion_tokens = response.completion_tokens
-            call_record.latency_ms = response.latency_ms
+            call_record.prompt_tokens = prompt_tokens
+            call_record.completion_tokens = completion_tokens
+            call_record.latency_ms = provider_latency_ms
 
         except LLMError as exc:
             error_msg = str(exc)
@@ -594,7 +666,26 @@ class RoundManager:
                 exc,
             )
 
-        call_record.ended_at = datetime.now(timezone.utc)
+        llm_finished_at = datetime.now(timezone.utc)
+        measured_duration_ms = int((time.perf_counter() - llm_started_perf) * 1000)
+        call_record.ended_at = llm_finished_at
+        if call_record.latency_ms is None or call_record.latency_ms <= 0:
+            call_record.latency_ms = measured_duration_ms
+
+        logger.info(
+            "LLM done: turn=%s round=%d agent=%s status=%s duration_ms=%d provider_latency_ms=%d output_chars=%d prompt_tokens=%d completion_tokens=%d finished_at=%s",
+            turn_id,
+            round_record.round_number,
+            agent_ctx.agent_id,
+            generation_status,
+            measured_duration_ms,
+            provider_latency_ms,
+            len(content or ""),
+            prompt_tokens,
+            completion_tokens,
+            llm_finished_at.isoformat(),
+        )
+
         await self.db.flush()
 
         # Save the message regardless of success/failure
@@ -622,6 +713,14 @@ class RoundManager:
                 retrieval_summary = await self._build_retrieval_summary(retrieved_chunks)
                 if retrieval_summary is not None:
                     event_payload["retrieval"] = retrieval_summary
+            logger.info(
+                "WS emit message_created: turn=%s round=%d agent=%s status=%s content_len=%d",
+                turn_id,
+                round_record.round_number,
+                agent_ctx.agent_id,
+                generation_status,
+                len(content or ""),
+            )
             await self._on_event(ExecutionEvent(
                 event_type=ExecutionEventType.message_created,
                 session_id=session_id,
@@ -647,20 +746,40 @@ class RoundManager:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_debate_summary(round2_results: list[AgentRoundResult]) -> str:
-    """Render Round 2 results as a readable plain-text block for Round 3 prompts."""
+    """Render Round 2 results as a compact plain-text block for Round 3 prompts."""
     if not round2_results:
         return "No cross-examination occurred (single agent or Round 2 skipped)."
 
     lines: list[str] = []
+    max_lines = 24
     for result in round2_results:
         critiques = result.structured.get("critiques", [])
         if not critiques:
             continue
-        lines.append(f"{result.role} critique:")
-        for c in critiques:
+        lines.append(f"{result.role} critiques:")
+        for c in critiques[:2]:
+            target = _clip_text(c.get("target_role", "?"), 36)
+            challenge = _clip_text(c.get("challenge", ""), 180)
+            weakness = _clip_text(c.get("weakness", ""), 120)
             lines.append(
-                f"  → vs {c.get('target_role', '?')}: {c.get('challenge', '')} "
-                f"[weakness: {c.get('weakness', '')}]"
+                f"  - vs {target}: {challenge}"
+                f" [weakness: {weakness}]"
             )
+            if len(lines) >= max_lines:
+                lines.append("Additional critiques omitted for brevity.")
+                break
+
+        if len(critiques) > 2:
+            lines.append(f"  - (+{len(critiques) - 2} more critiques omitted)")
+
+        if len(lines) >= max_lines:
+            break
 
     return "\n".join(lines) if lines else "No substantive critiques were recorded."
+
+
+def _clip_text(value: Any, max_chars: int) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
