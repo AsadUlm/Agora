@@ -1,39 +1,29 @@
 """
-Round Manager — executes a single round within a ChatTurn.
+Round Manager — executes one debate round with controlled per-agent parallelism.
 
-Responsibilities:
-  1. Create the Round DB record and manage its lifecycle (queued → running → completed/failed)
-  2. Call RetrievalService (RAG hook) before each round
-  3. Call the LLM provider per agent and log each LLMCall record
-  4. Save one Message per agent per round (correct sender_type / message_type)
-  5. Return a list of AgentRoundResult for the ChatEngine to aggregate
-
-Architecture:
-    ChatEngine
-        └── RoundManager.execute_round_{1,2,3}()
-                ├── RetrievalService.retrieve()   (RAG hook — stubbed until Step 5)
-                ├── _call_llm()                   (calls provider, logs LLMCall)
-                └── _save_message()               (saves Message to DB)
-
-Key design rules:
-  - RoundManager owns ALL database writes for round, message, llm_call tables.
-  - LLMService (provider) is stateless: call in → response out. No DB access.
-  - One Message row per agent per round (chat_agent_id always set for agent messages).
-  - sequence_no is tracked as an instance counter that starts at 0 and rises monotonically
-    across all rounds within a single turn (passes through ChatEngine).
+Key guarantees:
+  - Independent AsyncSession per concurrent agent task
+  - Configurable per-round concurrency cap (LLM_MAX_CONCURRENT_AGENT_CALLS)
+  - Deterministic sequence numbers preassigned by stable agent order
+  - Immediate message_created WS event after each task commit
+  - Failure isolation: one failed agent does not block others
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import settings
 from app.models.llm_call import LLMCall, LLMCallStatus
 from app.models.message import Message, MessageType, MessageVisibility, SenderType
 from app.models.round import Round, RoundStatus, RoundType
@@ -50,20 +40,15 @@ from app.schemas.contracts import (
 from app.services.debate_engine.prompts.round1_prompts import build_opening_statement_prompt
 from app.services.debate_engine.prompts.round2_prompts import build_critique_prompt
 from app.services.debate_engine.prompts.round3_prompts import build_final_synthesis_prompt
-from app.services.llm.exceptions import LLMError, LLMParseError
-from app.services.llm.parser import parse_json_from_llm
+from app.services.debate_engine.response_normalizer import normalize_round_output
+from app.services.llm.exceptions import LLMError
 from app.services.llm.service import LLMService, get_llm_service
 from app.services.retrieval.retrieval_service import RetrievalService
 
 logger = logging.getLogger(__name__)
 
 # ── LLM output budget ────────────────────────────────────────────────────────
-# Hard ceiling for any single LLM call. Keeping this lower reduces credit
-# reservation and median latency spikes for long completions.
 MAX_ALLOWED_TOKENS = 1200
-
-# Per-round output budget. Round 1 is a tight opening statement; Rounds 2 and 3
-# need extra headroom for critiques and synthesis.
 ROUND_MAX_TOKENS: dict[int, int] = {
     1: 650,
     2: 850,
@@ -83,15 +68,23 @@ def _estimate_tokens_from_chars(char_count: int) -> int:
     """Quick token estimate for logging and perf diagnostics."""
     return max(1, int(char_count / 4))
 
-logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class _AgentTaskPlan:
+    agent_ctx: AgentContext
+    agent_index: int
+    sequence_no: int
+    message_type: MessageType
+    prompt_builder: Any | None = None
+    skipped_result: AgentRoundResult | None = None
 
 
 class RoundManager:
     """
     Executes one round (1, 2, or 3) within a debate turn.
 
-    Instantiated once per ChatTurn by the ChatEngine.
-    The `seq` counter ensures messages are globally ordered within the turn.
+    The sequence counter is monotonic across all rounds in one turn.
+    Sequence values are assigned before task fan-out to keep ordering deterministic.
     """
 
     def __init__(
@@ -100,13 +93,23 @@ class RoundManager:
         seq_start: int = 0,
         on_event: OnEventCallback | None = None,
         step_controller: Any = None,
+        session_factory: Any = None,
+        max_concurrent_agent_calls: int | None = None,
     ) -> None:
         self.db = db
-        self._seq = seq_start                     # monotonic message sequence counter
+        self._seq = seq_start
         self._retrieval = RetrievalService()
         self._llm: LLMService = get_llm_service()
         self._on_event = on_event
-        self._step_controller = step_controller   # optional StepController for manual mode
+        self._step_controller = step_controller
+        self._session_factory = session_factory or self._build_session_factory_from_db(db)
+
+        configured_concurrency = (
+            max_concurrent_agent_calls
+            if max_concurrent_agent_calls is not None
+            else settings.LLM_MAX_CONCURRENT_AGENT_CALLS
+        )
+        self._max_concurrent_agent_calls = max(1, int(configured_concurrency))
 
     @property
     def next_seq(self) -> int:
@@ -120,39 +123,43 @@ class RoundManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     async def execute_round_1(self, ctx: TurnContext) -> list[AgentRoundResult]:
-        """
-        Round 1 — Opening Statements.
+        """Round 1 — Opening statements (parallel across agents)."""
+        round_record = await self._create_round(
+            ctx,
+            round_number=1,
+            round_type=RoundType.initial,
+        )
 
-        Each agent independently generates:
-          • stance
-          • key_points (3-5)
-          • confidence (0.0–1.0)
-        """
-        round_record = await self._create_round(ctx, round_number=1, round_type=RoundType.initial)
-        results: list[AgentRoundResult] = []
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
 
-        for agent_ctx in ctx.agents:
-            chunks = await self._retrieve_for_agent(ctx, agent_ctx)
-            chunk_dicts = [c.model_dump() for c in chunks]
-            prompt = build_opening_statement_prompt(
-                role=agent_ctx.role,
-                question=ctx.question,
-                reasoning_style=agent_ctx.reasoning_style,
-                reasoning_depth=agent_ctx.reasoning_depth,
-                retrieved_chunks=chunk_dicts,
-                knowledge_mode=agent_ctx.knowledge_mode,
-                knowledge_strict=agent_ctx.knowledge_strict,
+            def _build_prompt(chunks: list[RetrievedChunk], agent: AgentContext = agent_ctx) -> str:
+                return build_opening_statement_prompt(
+                    role=agent.role,
+                    question=ctx.question,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                    retrieved_chunks=[c.model_dump() for c in chunks],
+                    knowledge_mode=agent.knowledge_mode,
+                    knowledge_strict=agent.knowledge_strict,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.agent_response,
+                    prompt_builder=_build_prompt,
+                )
             )
-            result = await self._call_llm(
-                agent_ctx=agent_ctx,
-                prompt=prompt,
-                round_record=round_record,
-                turn_id=ctx.turn_id,
-                session_id=ctx.session_id,
-                message_type=MessageType.agent_response,
-                retrieved_chunks=chunks,
-            )
-            results.append(result)
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in Round 1."
+            await self._fail_round(round_record, reason)
+            raise RuntimeError(reason)
 
         await self._complete_round(round_record, ctx)
         return results
@@ -162,96 +169,121 @@ class RoundManager:
         ctx: TurnContext,
         round1_results: list[AgentRoundResult],
     ) -> list[AgentRoundResult]:
-        """
-        Round 2 — Cross Examination.
+        """Round 2 — Cross examination (parallel across agents)."""
+        round_record = await self._create_round(
+            ctx,
+            round_number=2,
+            round_type=RoundType.critique,
+        )
 
-        Each agent critiques every other agent's Round 1 output.
-        Agents that had zero opponents are passed through with an empty critique list.
-        """
-        round_record = await self._create_round(ctx, round_number=2, round_type=RoundType.critique)
-        results: list[AgentRoundResult] = []
+        r1_by_id: dict[str, AgentRoundResult] = {str(r.agent_id): r for r in round1_results}
+        plans: list[_AgentTaskPlan] = []
 
-        # Build a lookup: agent_id → round1 result for prompt construction
-        r1_by_id: dict[str, AgentRoundResult] = {
-            str(r.agent_id): r for r in round1_results
-        }
-
-        for agent_ctx in ctx.agents:
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
             own_r1 = r1_by_id.get(str(agent_ctx.agent_id))
-            own_stance = own_r1.structured.get("stance", "") if own_r1 else ""
+            own_stance = _first_non_empty(
+                [
+                    own_r1.structured.get("main_argument", "") if own_r1 else "",
+                    own_r1.structured.get("short_summary", "") if own_r1 else "",
+                    own_r1.structured.get("stance", "") if own_r1 else "",
+                ]
+            )
 
-            other_agents = [
-                {
-                    "role": r.role,
-                    "stance": r.structured.get("stance", ""),
-                    "key_points": r.structured.get("key_points", []),
-                }
-                for r in round1_results
-                if r.agent_id != agent_ctx.agent_id
-            ]
+            other_agents: list[dict[str, Any]] = []
+            for r in round1_results:
+                if r.agent_id == agent_ctx.agent_id:
+                    continue
+                if r.generation_status != "success":
+                    continue
+                summary = _first_non_empty(
+                    [
+                        r.structured.get("main_argument", ""),
+                        r.structured.get("short_summary", ""),
+                        r.structured.get("stance", ""),
+                    ]
+                )
+                key_points = r.structured.get("key_points", [])
+                if not isinstance(key_points, list):
+                    key_points = []
+                other_agents.append(
+                    {
+                        "role": r.role,
+                        "stance": summary,
+                        "key_points": key_points,
+                    }
+                )
 
             if not other_agents:
-                # Single-agent session — no cross-examination possible
-                empty_result = AgentRoundResult(
+                skipped_result = AgentRoundResult(
                     agent_id=agent_ctx.agent_id,
                     role=agent_ctx.role,
-                    content="{}",
-                    structured={"critiques": []},
-                    generation_status="skipped",
-                    error="No opponents to critique.",
-                )
-                msg = await self._save_message(
-                    session_id=ctx.session_id,
-                    turn_id=ctx.turn_id,
-                    round_id=round_record.id,
-                    agent_id=agent_ctx.agent_id,
-                    sender_type=SenderType.agent,
-                    message_type=MessageType.critique,
-                    content=empty_result.content,
-                )
-                if self._on_event is not None:
-                    await self._on_event(ExecutionEvent(
-                        event_type=ExecutionEventType.message_created,
-                        session_id=ctx.session_id,
-                        turn_id=ctx.turn_id,
-                        round_id=round_record.id,
-                        round_number=round_record.round_number,
-                        agent_id=agent_ctx.agent_id,
-                        payload={
-                            "message_id": str(msg.id),
-                            "round_id": str(round_record.id),
-                            "sender_type": msg.sender_type.value,
-                            "message_type": msg.message_type.value,
-                            "content": msg.content,
-                            "sequence_no": msg.sequence_no,
-                            "generation_status": "skipped",
+                    content=json.dumps(
+                        {
+                            "short_summary": "No valid opponent response was available, so this critique targets the general position.",
+                            "target_agent": "General position",
+                            "challenge": "The target response was unavailable, so this critique focuses on the general position.",
+                            "weakness_found": "Without concrete target content, the main weakness is insufficient evidence and unclear assumptions.",
+                            "counterargument": "A stronger position should provide explicit evidence, constraints, and implementation details.",
+                            "response": "The target response was unavailable, so this critique focuses on the general position. A stronger argument should provide explicit evidence, clear assumptions, and practical implementation details.",
                         },
-                    ))
-                results.append(empty_result)
+                        ensure_ascii=False,
+                    ),
+                    structured={
+                        "short_summary": "No valid opponent response was available, so this critique targets the general position.",
+                        "target_agent": "General position",
+                        "challenge": "The target response was unavailable, so this critique focuses on the general position.",
+                        "weakness_found": "Without concrete target content, the main weakness is insufficient evidence and unclear assumptions.",
+                        "counterargument": "A stronger position should provide explicit evidence, constraints, and implementation details.",
+                        "response": "The target response was unavailable, so this critique focuses on the general position. A stronger argument should provide explicit evidence, clear assumptions, and practical implementation details.",
+                    },
+                    generation_status="skipped",
+                    error="No successful opponents to critique.",
+                )
+                plans.append(
+                    _AgentTaskPlan(
+                        agent_ctx=agent_ctx,
+                        agent_index=agent_index,
+                        sequence_no=sequence_no,
+                        message_type=MessageType.critique,
+                        skipped_result=skipped_result,
+                    )
+                )
                 continue
 
-            chunks_r2 = await self._retrieve_for_agent(ctx, agent_ctx)
-            prompt = build_critique_prompt(
-                role=agent_ctx.role,
-                question=ctx.question,
-                own_stance=own_stance,
-                other_agents=other_agents,
-                reasoning_style=agent_ctx.reasoning_style,
-                reasoning_depth=agent_ctx.reasoning_depth,
-                retrieved_chunks=[c.model_dump() for c in chunks_r2],
-                knowledge_mode=agent_ctx.knowledge_mode,
-                knowledge_strict=agent_ctx.knowledge_strict,
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                agent: AgentContext = agent_ctx,
+                own: str = own_stance,
+                others: list[dict[str, Any]] = other_agents,
+            ) -> str:
+                return build_critique_prompt(
+                    role=agent.role,
+                    question=ctx.question,
+                    own_stance=own,
+                    other_agents=others,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                    retrieved_chunks=[c.model_dump() for c in chunks],
+                    knowledge_mode=agent.knowledge_mode,
+                    knowledge_strict=agent.knowledge_strict,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.critique,
+                    prompt_builder=_build_prompt,
+                )
             )
-            result = await self._call_llm(
-                agent_ctx=agent_ctx,
-                prompt=prompt,
-                round_record=round_record,
-                turn_id=ctx.turn_id,
-                session_id=ctx.session_id,
-                message_type=MessageType.critique,
-                retrieved_chunks=chunks_r2,
-            )
-            results.append(result)
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in Round 2."
+            await self._fail_round(round_record, reason)
+            raise RuntimeError(reason)
 
         await self._complete_round(round_record, ctx)
         return results
@@ -262,54 +294,319 @@ class RoundManager:
         round1_results: list[AgentRoundResult],
         round2_results: list[AgentRoundResult],
     ) -> list[AgentRoundResult]:
-        """
-        Round 3 — Final Synthesis.
+        """Round 3 — Final synthesis (parallel across agents)."""
+        round_record = await self._create_round(
+            ctx,
+            round_number=3,
+            round_type=RoundType.final,
+        )
 
-        Each agent reflects on the full debate and produces a final verdict.
-        """
-        round_record = await self._create_round(ctx, round_number=3, round_type=RoundType.final)
-        results: list[AgentRoundResult] = []
+        r1_by_id: dict[str, AgentRoundResult] = {str(r.agent_id): r for r in round1_results}
+        debate_digest = _build_round3_digest(
+            question=ctx.question,
+            round1_results=round1_results,
+            round2_results=round2_results,
+        )
+        debate_digest_text = json.dumps(debate_digest, ensure_ascii=False)
 
-        r1_by_id: dict[str, AgentRoundResult] = {
-            str(r.agent_id): r for r in round1_results
-        }
-
-        # Build the debate summary from Round 2 results for the prompt
-        debate_summary = _build_debate_summary(round2_results)
-
-        for agent_ctx in ctx.agents:
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
             own_r1 = r1_by_id.get(str(agent_ctx.agent_id))
-            original_stance = own_r1.structured.get("stance", "") if own_r1 else ""
+            original_stance = _first_non_empty(
+                [
+                    own_r1.structured.get("final_position", "") if own_r1 else "",
+                    own_r1.structured.get("main_argument", "") if own_r1 else "",
+                    own_r1.structured.get("short_summary", "") if own_r1 else "",
+                    own_r1.structured.get("stance", "") if own_r1 else "",
+                ]
+            )
 
-            chunks_r3 = await self._retrieve_for_agent(ctx, agent_ctx)
-            prompt = build_final_synthesis_prompt(
-                role=agent_ctx.role,
-                question=ctx.question,
-                original_stance=original_stance,
-                debate_summary=debate_summary,
-                reasoning_style=agent_ctx.reasoning_style,
-                reasoning_depth=agent_ctx.reasoning_depth,
-                retrieved_chunks=[c.model_dump() for c in chunks_r3],
-                knowledge_mode=agent_ctx.knowledge_mode,
-                knowledge_strict=agent_ctx.knowledge_strict,
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                agent: AgentContext = agent_ctx,
+                stance: str = original_stance,
+                summary: str = debate_digest_text,
+            ) -> str:
+                return build_final_synthesis_prompt(
+                    role=agent.role,
+                    question=ctx.question,
+                    original_stance=stance,
+                    debate_digest=summary,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                    retrieved_chunks=[c.model_dump() for c in chunks],
+                    knowledge_mode=agent.knowledge_mode,
+                    knowledge_strict=agent.knowledge_strict,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.final_summary,
+                    prompt_builder=_build_prompt,
+                )
             )
-            result = await self._call_llm(
-                agent_ctx=agent_ctx,
-                prompt=prompt,
-                round_record=round_record,
-                turn_id=ctx.turn_id,
-                session_id=ctx.session_id,
-                message_type=MessageType.final_summary,
-                retrieved_chunks=chunks_r3,
-            )
-            results.append(result)
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in Round 3."
+            await self._fail_round(round_record, reason)
+            raise RuntimeError(reason)
 
         await self._complete_round(round_record, ctx)
         return results
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Internal helpers — parallel execution
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _resolve_round_concurrency(self, turn_id: uuid.UUID, agent_count: int) -> int:
+        base = min(agent_count, self._max_concurrent_agent_calls)
+        if self._step_controller is None:
+            return max(1, base)
+
+        snapshot_fn = getattr(self._step_controller, "snapshot", None)
+        if callable(snapshot_fn):
+            snap = snapshot_fn(turn_id)
+            if isinstance(snap, dict) and snap.get("mode") == "manual":
+                logger.info(
+                    "Manual mode detected for turn=%s; forcing round concurrency to 1",
+                    turn_id,
+                )
+                return 1
+        return max(1, base)
+
+    async def _execute_round_parallel(
+        self,
+        ctx: TurnContext,
+        round_record: Round,
+        plans: list[_AgentTaskPlan],
+    ) -> list[AgentRoundResult]:
+        if not plans:
+            return []
+
+        concurrency = self._resolve_round_concurrency(ctx.turn_id, len(plans))
+        logger.info(
+            "Round %d parallel start agents=%d concurrency=%d",
+            round_record.round_number,
+            len(plans),
+            concurrency,
+        )
+
+        started_perf = time.perf_counter()
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _run_plan(plan: _AgentTaskPlan) -> AgentRoundResult:
+            async with semaphore:
+                if plan.skipped_result is not None:
+                    return await self._persist_skipped_result(ctx, round_record, plan)
+                if plan.prompt_builder is None:
+                    raise RuntimeError("Agent task plan has no prompt builder.")
+                return await self._run_agent_task(ctx, round_record, plan)
+
+        gathered = await asyncio.gather(
+            *[_run_plan(plan) for plan in plans],
+            return_exceptions=True,
+        )
+
+        results: list[AgentRoundResult] = []
+        for plan, item in zip(plans, gathered, strict=False):
+            if isinstance(item, Exception):
+                logger.error(
+                    "Unhandled agent task exception: round=%d agent=%s role=%s",
+                    round_record.round_number,
+                    plan.agent_ctx.agent_id,
+                    plan.agent_ctx.role,
+                    exc_info=(type(item), item, item.__traceback__),
+                )
+                fallback = await self._persist_unhandled_task_failure(
+                    ctx=ctx,
+                    round_record=round_record,
+                    plan=plan,
+                    error=str(item),
+                )
+                results.append(fallback)
+            else:
+                results.append(item)
+
+        elapsed_s = time.perf_counter() - started_perf
+        failed_count = sum(1 for r in results if r.generation_status == "failed")
+        logger.info(
+            "Round %d parallel done in %.2fs failed=%d/%d",
+            round_record.round_number,
+            elapsed_s,
+            failed_count,
+            len(results),
+        )
+        return results
+
+    async def _run_agent_task(
+        self,
+        ctx: TurnContext,
+        round_record: Round,
+        plan: _AgentTaskPlan,
+    ) -> AgentRoundResult:
+        agent_started_perf = time.perf_counter()
+
+        async with self._session_factory() as task_db:
+            chunks = await self._retrieve_for_agent(task_db, ctx, plan.agent_ctx)
+            prompt = plan.prompt_builder(chunks)
+            result = await self._call_llm(
+                db=task_db,
+                agent_ctx=plan.agent_ctx,
+                prompt=prompt,
+                round_record=round_record,
+                turn_id=ctx.turn_id,
+                session_id=ctx.session_id,
+                message_type=plan.message_type,
+                sequence_no=plan.sequence_no,
+                agent_index=plan.agent_index,
+                retrieved_chunks=chunks,
+            )
+
+        elapsed_s = time.perf_counter() - agent_started_perf
+        logger.info(
+            "Agent %s done in %.2fs status=%s round=%d",
+            plan.agent_ctx.role,
+            elapsed_s,
+            result.generation_status,
+            round_record.round_number,
+        )
+        return result
+
+    async def _persist_skipped_result(
+        self,
+        ctx: TurnContext,
+        round_record: Round,
+        plan: _AgentTaskPlan,
+    ) -> AgentRoundResult:
+        skipped = plan.skipped_result
+        if skipped is None:
+            raise RuntimeError("Skipped task must provide skipped_result.")
+
+        message_id: str | None = None
+        async with self._session_factory() as task_db:
+            msg = await self._save_message(
+                db=task_db,
+                session_id=ctx.session_id,
+                turn_id=ctx.turn_id,
+                round_id=round_record.id,
+                agent_id=plan.agent_ctx.agent_id,
+                sender_type=SenderType.agent,
+                message_type=plan.message_type,
+                content=skipped.content,
+                sequence_no=plan.sequence_no,
+            )
+            await task_db.commit()
+            message_id = str(msg.id)
+
+        if self._on_event is not None:
+            await self._on_event(
+                ExecutionEvent(
+                    event_type=ExecutionEventType.message_created,
+                    session_id=ctx.session_id,
+                    turn_id=ctx.turn_id,
+                    round_id=round_record.id,
+                    round_number=round_record.round_number,
+                    agent_id=plan.agent_ctx.agent_id,
+                    payload={
+                        "message_id": message_id,
+                        "round_id": str(round_record.id),
+                        "sender_type": SenderType.agent.value,
+                        "message_type": plan.message_type.value,
+                        "content": skipped.content,
+                        "sequence_no": plan.sequence_no,
+                        "generation_status": skipped.generation_status,
+                        "agent_role": plan.agent_ctx.role,
+                        "agent_index": plan.agent_index,
+                    },
+                )
+            )
+        return skipped
+
+    async def _persist_unhandled_task_failure(
+        self,
+        ctx: TurnContext,
+        round_record: Round,
+        plan: _AgentTaskPlan,
+        error: str,
+    ) -> AgentRoundResult:
+        content = json.dumps({"error": error})
+        message_id: str | None = None
+
+        try:
+            async with self._session_factory() as task_db:
+                msg = await self._save_message(
+                    db=task_db,
+                    session_id=ctx.session_id,
+                    turn_id=ctx.turn_id,
+                    round_id=round_record.id,
+                    agent_id=plan.agent_ctx.agent_id,
+                    sender_type=SenderType.agent,
+                    message_type=plan.message_type,
+                    content=content,
+                    sequence_no=plan.sequence_no,
+                )
+                await task_db.commit()
+                message_id = str(msg.id)
+        except Exception:
+            logger.exception(
+                "Failed to persist fallback error message: round=%d agent=%s",
+                round_record.round_number,
+                plan.agent_ctx.agent_id,
+            )
+
+        if self._on_event is not None:
+            await self._on_event(
+                ExecutionEvent(
+                    event_type=ExecutionEventType.message_created,
+                    session_id=ctx.session_id,
+                    turn_id=ctx.turn_id,
+                    round_id=round_record.id,
+                    round_number=round_record.round_number,
+                    agent_id=plan.agent_ctx.agent_id,
+                    payload={
+                        "message_id": message_id,
+                        "round_id": str(round_record.id),
+                        "sender_type": SenderType.agent.value,
+                        "message_type": plan.message_type.value,
+                        "content": content,
+                        "sequence_no": plan.sequence_no,
+                        "generation_status": "failed",
+                        "agent_role": plan.agent_ctx.role,
+                        "agent_index": plan.agent_index,
+                    },
+                )
+            )
+
+        return AgentRoundResult(
+            agent_id=plan.agent_ctx.agent_id,
+            role=plan.agent_ctx.role,
+            content=content,
+            structured={},
+            generation_status="failed",
+            error=error,
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Internal helpers — DB operations
     # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_session_factory_from_db(db: AsyncSession) -> Any:
+        bind = db.get_bind()
+        if bind is None:
+            raise RuntimeError("Unable to resolve DB bind for RoundManager session factory.")
+        return async_sessionmaker(
+            bind=bind,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autoflush=False,
+            autocommit=False,
+        )
 
     async def _create_round(
         self,
@@ -317,14 +614,7 @@ class RoundManager:
         round_number: int,
         round_type: RoundType,
     ) -> Round:
-        """
-        Create a Round record and transition it to running.
-
-        Lifecycle: queued → running  (sync path does both steps immediately).
-        In Step 3 (async), the background worker creates the Round as queued via
-        the route, then transitions to running when the worker picks it up.
-        The two-step flush here preserves the same state machine without branching.
-        """
+        """Create a Round record, mark it running, and persist before fan-out."""
         round_record = Round(
             chat_turn_id=ctx.turn_id,
             round_number=round_number,
@@ -334,10 +624,10 @@ class RoundManager:
         self.db.add(round_record)
         await self.db.flush()
 
-        # Transition: queued → running
         round_record.status = RoundStatus.running
         round_record.started_at = datetime.now(timezone.utc)
         await self.db.flush()
+        await self.db.commit()
 
         logger.info(
             "Round %d running (id=%s, turn=%s)",
@@ -345,15 +635,20 @@ class RoundManager:
             round_record.id,
             ctx.turn_id,
         )
-
         if self._on_event is not None:
-            logger.info("WS emit round_started round=%d turn=%s", round_number, ctx.turn_id)
-            await self._on_event(ExecutionEvent(
-                event_type=ExecutionEventType.round_started,
-                session_id=ctx.session_id,
-                turn_id=ctx.turn_id,
-                round_number=round_number,
-            ))
+            logger.info(
+                "WS emit round_started round=%d turn=%s",
+                round_number,
+                ctx.turn_id,
+            )
+            await self._on_event(
+                ExecutionEvent(
+                    event_type=ExecutionEventType.round_started,
+                    session_id=ctx.session_id,
+                    turn_id=ctx.turn_id,
+                    round_number=round_number,
+                )
+            )
 
         return round_record
 
@@ -362,31 +657,36 @@ class RoundManager:
         round_record.status = RoundStatus.completed
         round_record.ended_at = datetime.now(timezone.utc)
         await self.db.flush()
-        logger.info("Round %d completed.", round_record.round_number)
+        await self.db.commit()
 
+        logger.info("Round %d completed.", round_record.round_number)
         if self._on_event is not None:
             logger.info(
                 "WS emit round_completed round=%d turn=%s",
                 round_record.round_number,
                 ctx.turn_id,
             )
-            await self._on_event(ExecutionEvent(
-                event_type=ExecutionEventType.round_completed,
-                session_id=ctx.session_id,
-                turn_id=ctx.turn_id,
-                round_id=round_record.id,
-                round_number=round_record.round_number,
-            ))
+            await self._on_event(
+                ExecutionEvent(
+                    event_type=ExecutionEventType.round_completed,
+                    session_id=ctx.session_id,
+                    turn_id=ctx.turn_id,
+                    round_id=round_record.id,
+                    round_number=round_record.round_number,
+                )
+            )
 
     async def _fail_round(self, round_record: Round, reason: str) -> None:
         """Transition round: running → failed."""
         round_record.status = RoundStatus.failed
         round_record.ended_at = datetime.now(timezone.utc)
         await self.db.flush()
+        await self.db.commit()
         logger.error("Round %d failed: %s", round_record.round_number, reason)
 
     async def _save_message(
         self,
+        db: AsyncSession,
         session_id: uuid.UUID,
         turn_id: uuid.UUID,
         round_id: uuid.UUID,
@@ -394,9 +694,9 @@ class RoundManager:
         sender_type: SenderType,
         message_type: MessageType,
         content: str,
+        sequence_no: int,
         visibility: MessageVisibility = MessageVisibility.visible,
     ) -> Message:
-        """Persist one Message row. Advances the sequence counter."""
         msg = Message(
             chat_session_id=session_id,
             chat_turn_id=turn_id,
@@ -406,22 +706,28 @@ class RoundManager:
             message_type=message_type,
             visibility=visibility,
             content=content,
-            sequence_no=self.next_seq,
+            sequence_no=sequence_no,
         )
-        self.db.add(msg)
-        await self.db.flush()
+        db.add(msg)
+        await db.flush()
         return msg
 
-    async def _log_llm_call(
+    async def _save_llm_call(
         self,
+        db: AsyncSession,
         turn_id: uuid.UUID,
         round_id: uuid.UUID,
         agent_id: uuid.UUID,
         provider: str,
         model: str,
         temperature: float,
+        status: LLMCallStatus,
+        started_at: datetime,
+        ended_at: datetime,
+        prompt_tokens: int,
+        completion_tokens: int,
+        latency_ms: int,
     ) -> LLMCall:
-        """Create an LLMCall record in 'started' state."""
         call_record = LLMCall(
             chat_turn_id=turn_id,
             round_id=round_id,
@@ -429,32 +735,32 @@ class RoundManager:
             provider=provider,
             model=model,
             temperature=temperature,
-            status=LLMCallStatus.running,
-            started_at=datetime.now(timezone.utc),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=latency_ms,
+            status=status,
+            started_at=started_at,
+            ended_at=ended_at,
         )
-        self.db.add(call_record)
-        await self.db.flush()
+        db.add(call_record)
+        await db.flush()
         return call_record
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Internal helpers — LLM orchestration
+    # Internal helpers — retrieval and LLM orchestration
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _retrieve(self, ctx: TurnContext) -> list[RetrievedChunk]:
-        """Call RetrievalService with the real DB session (session-wide, legacy)."""
-        return await self._retrieval.retrieve(
-            query=ctx.question,
-            session_id=ctx.session_id,
-            db=self.db,
-        )
-
-    async def _retrieve_for_agent(self, ctx: TurnContext, agent_ctx: AgentContext) -> list[RetrievedChunk]:
-        """Agent-aware retrieval — respects agent's knowledge configuration."""
+    async def _retrieve_for_agent(
+        self,
+        db: AsyncSession,
+        ctx: TurnContext,
+        agent_ctx: AgentContext,
+    ) -> list[RetrievedChunk]:
         return await self._retrieval.retrieve_for_agent(
             agent_id=agent_ctx.agent_id,
             session_id=ctx.session_id,
             query=ctx.question,
-            db=self.db,
+            db=db,
             knowledge_mode=agent_ctx.knowledge_mode,
             assigned_document_ids=agent_ctx.assigned_document_ids,
             top_k=RETRIEVAL_TOP_K,
@@ -462,40 +768,32 @@ class RoundManager:
 
     async def _build_retrieval_summary(
         self,
+        db: AsyncSession,
         chunks: list[RetrievedChunk],
         max_chunks: int = RETRIEVAL_TOP_K,
         text_chars: int = 280,
     ) -> dict[str, Any] | None:
-        """
-        Build a UI-facing summary of retrieved chunks for the WS event payload.
-
-        Groups chunks by document, looks up document filenames in one query,
-        truncates chunk text. Stays runtime-only (not persisted).
-        Returns None on any DB lookup failure to avoid blocking the debate.
-        """
         if not chunks:
             return None
 
-        from sqlalchemy import select  # local import to keep top-level minimal
         from app.models.document import Document
 
-        # Cap to top N chunks (already ordered by similarity descending).
         capped = chunks[:max_chunks]
-
-        # Resolve unique document IDs → filenames in one query.
         doc_ids = list({c.document_id for c in capped})
         names: dict[uuid.UUID, str] = {}
         try:
             rows = (
-                await self.db.execute(
+                await db.execute(
                     select(Document.id, Document.filename).where(Document.id.in_(doc_ids))
                 )
             ).all()
             names = {row[0]: row[1] for row in rows}
-        except Exception:  # pragma: no cover — defensive
-            logger.warning("retrieval summary: failed to resolve document filenames", exc_info=True)
+        except Exception:
+            logger.warning(
+                "retrieval summary: failed to resolve document filenames",
+                exc_info=True,
+            )
 
-        # Group chunks by document, preserving overall ordering.
         grouped: dict[uuid.UUID, list[dict[str, Any]]] = {}
         order: list[uuid.UUID] = []
         for c in capped:
@@ -521,67 +819,47 @@ class RoundManager:
 
     async def _call_llm(
         self,
+        db: AsyncSession,
         agent_ctx: AgentContext,
         prompt: str,
         round_record: Round,
         turn_id: uuid.UUID,
         session_id: uuid.UUID,
         message_type: MessageType,
+        sequence_no: int,
+        agent_index: int,
         retrieved_chunks: list[RetrievedChunk] | None = None,
     ) -> AgentRoundResult:
-        """
-        Call the LLM for one agent in one round.
-
-        Steps:
-          1. Record LLMCall start
-          2. Call provider
-          3. Attempt JSON parse of response
-          4. Update LLMCall record (success/failed, tokens, latency)
-          5. Save Message to DB
-          6. Return AgentRoundResult
-
-        Always saves a Message even on failure (content = error description).
-        Never raises — failed agents are surfaced via AgentRoundResult.generation_status.
-        """
-        # ── Step gate (manual mode only) ─────────────────────────────────────
-        # Emit agent_started so the UI can describe what is about to happen,
-        # then wait on the step controller. In auto mode wait_for_step is a
-        # no-op.
         step_meta = {
             "round_number": round_record.round_number,
             "agent_id": str(agent_ctx.agent_id),
             "agent_role": agent_ctx.role,
+            "agent_index": agent_index,
             "message_type": message_type.value,
         }
         logger.info(
-            "WS emit agent_started: turn=%s round=%d agent=%s role=%s type=%s",
+            "WS emit agent_started: turn=%s round=%d agent=%s role=%s type=%s idx=%d",
             turn_id,
             round_record.round_number,
             agent_ctx.agent_id,
             agent_ctx.role,
             message_type.value,
+            agent_index,
         )
         if self._on_event is not None:
-            await self._on_event(ExecutionEvent(
-                event_type=ExecutionEventType.agent_started,
-                session_id=session_id,
-                turn_id=turn_id,
-                round_id=round_record.id,
-                round_number=round_record.round_number,
-                agent_id=agent_ctx.agent_id,
-                payload=step_meta,
-            ))
+            await self._on_event(
+                ExecutionEvent(
+                    event_type=ExecutionEventType.agent_started,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    round_id=round_record.id,
+                    round_number=round_record.round_number,
+                    agent_id=agent_ctx.agent_id,
+                    payload=step_meta,
+                )
+            )
         if self._step_controller is not None:
             await self._step_controller.wait_for_step(turn_id, step_meta)
-
-        call_record = await self._log_llm_call(
-            turn_id=turn_id,
-            round_id=round_record.id,
-            agent_id=agent_ctx.agent_id,
-            provider=agent_ctx.provider,
-            model=agent_ctx.model,
-            temperature=agent_ctx.temperature,
-        )
 
         request = LLMRequest(
             provider=agent_ctx.provider,
@@ -622,42 +900,29 @@ class RoundManager:
 
         try:
             response = await self._llm.generate(request)
-            content = response.content
+            raw_content = response.content
             prompt_tokens = response.prompt_tokens
             completion_tokens = response.completion_tokens
             provider_latency_ms = response.latency_ms
 
-            # Detect empty/whitespace-only responses (common with GPT-5 on
-            # OpenRouter when reasoning_effort silently swallows the answer,
-            # or when the provider returns a refusal in a non-content field).
-            if not content or not content.strip():
+            if not raw_content or not raw_content.strip():
                 raise LLMError(
                     "Model returned an empty response. "
                     "Check model compatibility with current request parameters "
                     "(max_tokens, response_format)."
                 )
 
-            # Attempt JSON parse — fall back to raw text gracefully
-            try:
-                structured = parse_json_from_llm(content)
-            except LLMParseError:
-                logger.warning(
-                    "Agent %s (%s): LLM response is not valid JSON — storing as plain text.",
-                    agent_ctx.agent_id,
-                    agent_ctx.role,
-                )
-                structured = {"raw_content": content}
-
-            call_record.status = LLMCallStatus.completed
-            call_record.prompt_tokens = prompt_tokens
-            call_record.completion_tokens = completion_tokens
-            call_record.latency_ms = provider_latency_ms
+            normalized = normalize_round_output(
+                round_number=round_record.round_number,
+                raw_text=raw_content,
+            )
+            structured = normalized.payload
+            content = json.dumps(normalized.payload, ensure_ascii=False)
 
         except LLMError as exc:
             error_msg = str(exc)
             content = json.dumps({"error": error_msg})
             generation_status = "failed"
-            call_record.status = LLMCallStatus.failed
             logger.exception(
                 "LLM failure for agent %s (%s) in round %d: %s",
                 agent_ctx.agent_id,
@@ -665,12 +930,20 @@ class RoundManager:
                 round_record.round_number,
                 exc,
             )
+        except Exception as exc:
+            error_msg = f"Unhandled provider error: {exc}"
+            content = json.dumps({"error": error_msg})
+            generation_status = "failed"
+            logger.exception(
+                "Unexpected LLM error for agent %s (%s) in round %d",
+                agent_ctx.agent_id,
+                agent_ctx.role,
+                round_record.round_number,
+            )
 
         llm_finished_at = datetime.now(timezone.utc)
         measured_duration_ms = int((time.perf_counter() - llm_started_perf) * 1000)
-        call_record.ended_at = llm_finished_at
-        if call_record.latency_ms is None or call_record.latency_ms <= 0:
-            call_record.latency_ms = measured_duration_ms
+        effective_latency_ms = provider_latency_ms if provider_latency_ms > 0 else measured_duration_ms
 
         logger.info(
             "LLM done: turn=%s round=%d agent=%s status=%s duration_ms=%d provider_latency_ms=%d output_chars=%d prompt_tokens=%d completion_tokens=%d finished_at=%s",
@@ -686,10 +959,24 @@ class RoundManager:
             llm_finished_at.isoformat(),
         )
 
-        await self.db.flush()
+        await self._save_llm_call(
+            db=db,
+            turn_id=turn_id,
+            round_id=round_record.id,
+            agent_id=agent_ctx.agent_id,
+            provider=agent_ctx.provider,
+            model=agent_ctx.model,
+            temperature=agent_ctx.temperature,
+            status=(LLMCallStatus.completed if generation_status == "success" else LLMCallStatus.failed),
+            started_at=llm_started_at,
+            ended_at=llm_finished_at,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=effective_latency_ms,
+        )
 
-        # Save the message regardless of success/failure
         msg = await self._save_message(
+            db=db,
             session_id=session_id,
             turn_id=turn_id,
             round_id=round_record.id,
@@ -697,7 +984,14 @@ class RoundManager:
             sender_type=SenderType.agent,
             message_type=message_type,
             content=content,
+            sequence_no=sequence_no,
         )
+
+        retrieval_summary: dict[str, Any] | None = None
+        if retrieved_chunks:
+            retrieval_summary = await self._build_retrieval_summary(db, retrieved_chunks)
+
+        await db.commit()
 
         if self._on_event is not None:
             event_payload: dict[str, Any] = {
@@ -706,13 +1000,24 @@ class RoundManager:
                 "sender_type": msg.sender_type.value,
                 "message_type": msg.message_type.value,
                 "content": msg.content,
-                "sequence_no": msg.sequence_no,
+                "sequence_no": sequence_no,
                 "generation_status": generation_status,
+                "agent_role": agent_ctx.role,
+                "agent_index": agent_index,
             }
-            if retrieved_chunks:
-                retrieval_summary = await self._build_retrieval_summary(retrieved_chunks)
-                if retrieval_summary is not None:
-                    event_payload["retrieval"] = retrieval_summary
+            if generation_status == "success" and isinstance(structured, dict):
+                display_content = structured.get("display_content")
+                short_summary = structured.get("short_summary")
+                is_fallback = structured.get("is_fallback")
+                if isinstance(display_content, str) and display_content.strip():
+                    event_payload["display_content"] = display_content
+                if isinstance(short_summary, str) and short_summary.strip():
+                    event_payload["short_summary"] = short_summary
+                if isinstance(is_fallback, bool):
+                    event_payload["is_fallback"] = is_fallback
+            if retrieval_summary is not None:
+                event_payload["retrieval"] = retrieval_summary
+
             logger.info(
                 "WS emit message_created: turn=%s round=%d agent=%s status=%s content_len=%d",
                 turn_id,
@@ -721,15 +1026,17 @@ class RoundManager:
                 generation_status,
                 len(content or ""),
             )
-            await self._on_event(ExecutionEvent(
-                event_type=ExecutionEventType.message_created,
-                session_id=session_id,
-                turn_id=turn_id,
-                round_id=round_record.id,
-                round_number=round_record.round_number,
-                agent_id=agent_ctx.agent_id,
-                payload=event_payload,
-            ))
+            await self._on_event(
+                ExecutionEvent(
+                    event_type=ExecutionEventType.message_created,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    round_id=round_record.id,
+                    round_number=round_record.round_number,
+                    agent_id=agent_ctx.agent_id,
+                    payload=event_payload,
+                )
+            )
 
         return AgentRoundResult(
             agent_id=agent_ctx.agent_id,
@@ -740,42 +1047,146 @@ class RoundManager:
             error=error_msg,
         )
 
+    @staticmethod
+    def _all_agents_failed(results: list[AgentRoundResult]) -> bool:
+        return bool(results) and all(r.generation_status == "failed" for r in results)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Utility
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_debate_summary(round2_results: list[AgentRoundResult]) -> str:
-    """Render Round 2 results as a compact plain-text block for Round 3 prompts."""
-    if not round2_results:
-        return "No cross-examination occurred (single agent or Round 2 skipped)."
+    """Backwards-compatible helper used by older callers/tests."""
+    digest = _build_round3_digest(
+        question="",
+        round1_results=[],
+        round2_results=round2_results,
+    )
+    return json.dumps(digest, ensure_ascii=False)
 
-    lines: list[str] = []
-    max_lines = 24
-    for result in round2_results:
-        critiques = result.structured.get("critiques", [])
-        if not critiques:
+
+def _build_round3_digest(
+    question: str,
+    round1_results: list[AgentRoundResult],
+    round2_results: list[AgentRoundResult],
+) -> dict[str, Any]:
+    """Build compact structured digest for Round 3 prompt input."""
+    round1_items: list[dict[str, Any]] = []
+    for r1 in round1_results:
+        if r1.generation_status != "success":
             continue
-        lines.append(f"{result.role} critiques:")
-        for c in critiques[:2]:
-            target = _clip_text(c.get("target_role", "?"), 36)
-            challenge = _clip_text(c.get("challenge", ""), 180)
-            weakness = _clip_text(c.get("weakness", ""), 120)
-            lines.append(
-                f"  - vs {target}: {challenge}"
-                f" [weakness: {weakness}]"
-            )
-            if len(lines) >= max_lines:
-                lines.append("Additional critiques omitted for brevity.")
-                break
+        key_points = r1.structured.get("key_points", [])
+        if not isinstance(key_points, list):
+            key_points = []
+        key_points = [
+            _clip_text(point, 160)
+            for point in key_points
+            if str(point or "").strip()
+        ][:3]
 
-        if len(critiques) > 2:
-            lines.append(f"  - (+{len(critiques) - 2} more critiques omitted)")
+        round1_items.append(
+            {
+                "agent": r1.role,
+                "stance": _clip_text(
+                    _first_non_empty(
+                        [
+                            r1.structured.get("stance", ""),
+                            r1.structured.get("final_position", ""),
+                            r1.structured.get("main_argument", ""),
+                        ]
+                    ),
+                    160,
+                ),
+                "short_summary": _clip_text(
+                    _first_non_empty(
+                        [
+                            r1.structured.get("short_summary", ""),
+                            r1.structured.get("main_argument", ""),
+                            r1.structured.get("response", ""),
+                        ]
+                    ),
+                    220,
+                ),
+                "key_points": key_points,
+            }
+        )
 
-        if len(lines) >= max_lines:
-            break
+    round2_items: list[dict[str, Any]] = []
+    for r2 in round2_results:
+        if r2.generation_status not in ("success", "skipped"):
+            continue
 
-    return "\n".join(lines) if lines else "No substantive critiques were recorded."
+        round2_items.append(
+            {
+                "agent": r2.role,
+                "target_agent": _clip_text(
+                    _first_non_empty(
+                        [
+                            r2.structured.get("target_agent", ""),
+                            r2.structured.get("target_role", ""),
+                        ]
+                    )
+                    or "General position",
+                    120,
+                ),
+                "short_summary": _clip_text(
+                    _first_non_empty(
+                        [
+                            r2.structured.get("short_summary", ""),
+                            r2.structured.get("challenge", ""),
+                            r2.structured.get("response", ""),
+                        ]
+                    ),
+                    220,
+                ),
+                "challenge": _clip_text(
+                    _first_non_empty(
+                        [
+                            r2.structured.get("challenge", ""),
+                            r2.structured.get("response", ""),
+                        ]
+                    ),
+                    220,
+                ),
+                "counterargument": _clip_text(
+                    _first_non_empty(
+                        [
+                            r2.structured.get("counterargument", ""),
+                            r2.structured.get("counter_evidence", ""),
+                        ]
+                    ),
+                    220,
+                ),
+            }
+        )
+
+    return {
+        "question": _clip_text(question, 400),
+        "round1": round1_items,
+        "round2": round2_items,
+    }
+
+
+def _build_round3_summary(
+    round1_results: list[AgentRoundResult],
+    round2_results: list[AgentRoundResult],
+) -> str:
+    """Backwards-compatible textual wrapper around the structured digest."""
+    digest = _build_round3_digest(
+        question="",
+        round1_results=round1_results,
+        round2_results=round2_results,
+    )
+    return json.dumps(digest, ensure_ascii=False)
+
+
+def _first_non_empty(values: list[Any]) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _clip_text(value: Any, max_chars: int) -> str:

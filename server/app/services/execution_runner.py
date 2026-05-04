@@ -91,7 +91,12 @@ async def run_turn_background(
             )
             await step_controller.register(turn_id, mode)  # type: ignore[arg-type]
 
-            engine = ChatEngine(db=db, on_event=on_event, step_controller=step_controller)
+            engine = ChatEngine(
+                db=db,
+                on_event=on_event,
+                step_controller=step_controller,
+                session_factory=factory,
+            )
             await engine.start_turn_execution(turn_id)
 
         except Exception as exc:

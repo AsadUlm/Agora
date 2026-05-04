@@ -10,6 +10,9 @@ def test_round1_prompt_requires_short_summary_schema() -> None:
     )
 
     assert '"short_summary"' in prompt
+    assert "Return only valid JSON" in prompt
+    assert "Do not mention JSON" in prompt
+    assert '"I need to create a JSON object..."' in prompt
     assert '"main_argument"' in prompt
     assert '"risks_or_caveats"' in prompt
     assert '"response"' in prompt
@@ -30,7 +33,10 @@ def test_round2_prompt_requires_normalized_critique_schema() -> None:
     )
 
     assert '"short_summary"' in prompt
-    assert '"target_role"' in prompt
+    assert '"target_agent"' in prompt
+    assert "Return only valid JSON" in prompt
+    assert "Do not mention JSON" in prompt
+    assert "The target response was unavailable" in prompt
     assert '"challenge"' in prompt
     assert '"weakness_found"' in prompt
     assert '"counterargument"' in prompt
@@ -42,12 +48,15 @@ def test_round3_prompt_requires_final_schema_with_response() -> None:
         role="ethicist",
         question="Should cities ban private cars from downtown?",
         original_stance="A strict ban can be inequitable without transit upgrades.",
-        debate_summary="Agents challenged both speed and fairness trade-offs.",
+        debate_digest='{"question":"Q","round1":[],"round2":[]}',
     )
 
     assert '"short_summary"' in prompt
+    assert "Return only valid JSON" in prompt
+    assert "Do not mention JSON" in prompt
     assert '"final_position"' in prompt
     assert '"what_changed"' in prompt
+    assert '"strongest_argument"' in prompt
     assert '"remaining_concerns"' in prompt
     assert '"conclusion"' in prompt
     assert '"response"' in prompt

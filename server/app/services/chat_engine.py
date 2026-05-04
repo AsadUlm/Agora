@@ -70,10 +70,17 @@ class ChatEngine:
     When None (default), the engine runs silently — no change to synchronous behavior.
     """
 
-    def __init__(self, db: AsyncSession, on_event: OnEventCallback | None = None, step_controller: Any = None) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        on_event: OnEventCallback | None = None,
+        step_controller: Any = None,
+        session_factory: Any = None,
+    ) -> None:
         self.db = db
         self._on_event = on_event
         self._step_controller = step_controller
+        self._session_factory = session_factory
 
     async def start_turn_execution(self, turn_id: uuid.UUID) -> dict[str, Any]:
         """
@@ -116,6 +123,7 @@ class ChatEngine:
             seq_start=1,
             on_event=self._on_event,
             step_controller=self._step_controller,
+            session_factory=self._session_factory,
         )
 
         try:

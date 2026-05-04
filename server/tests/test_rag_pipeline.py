@@ -484,7 +484,7 @@ class TestPromptBuilders:
             role="Philosopher",
             question="Is AI safe?",
             original_stance="Cautiously optimistic",
-            debate_summary="Various arguments were made.",
+            debate_digest='{"question":"Is AI safe?","round1":[],"round2":[]}',
             retrieved_chunks=chunks,
         )
         assert "Final evidence Z." in prompt
