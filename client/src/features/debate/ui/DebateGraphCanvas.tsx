@@ -54,9 +54,6 @@ const LEVEL_Y = {
 const CANVAS_CENTER_X = 500;
 const AGENT_HORIZONTAL_GAP = 280;
 const NODE_WIDTH_ESTIMATE = 200;
-const NODE_REVEAL_MIN_MS = 170;
-const NODE_REVEAL_MAX_MS = 250;
-const EDGE_REVEAL_MS = 160;
 
 function computeLayout(graphNodes: DebateGraphNode[]): Map<string, { x: number; y: number }> {
     const positions = new Map<string, { x: number; y: number }>();
@@ -171,25 +168,25 @@ export default function DebateGraphCanvas() {
     const agents = useDebateStore((s) => s.agents);
     const selectNode = useGraphStore((s) => s.selectNode);
     const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
-    const forceRevealAll = useGraphStore((s) => s.forceRevealAll);
     const clearFocus = useGraphStore((s) => s.clearFocus);
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
     const execution = useDebateExecutionState();
-    const recoveryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const playbackMode = useDebateStore((s) => s.playbackMode);
+    const openedAsCompleted = useDebateStore((s) => s.openedAsCompleted);
+    const playbackQueue = useDebateStore((s) => s.playbackQueue);
+    const revealedNodeIds = useDebateStore((s) => s.revealedNodeIds);
+    const revealedEdgeIds = useDebateStore((s) => s.revealedEdgeIds);
+    const syncPlaybackFromCanonical = useDebateStore((s) => s.syncPlaybackFromCanonical);
+    const revealNextVisual = useDebateStore((s) => s.revealNextVisual);
+    const setRenderedCounts = useDebateStore((s) => s.setRenderedCounts);
     const prevVisibleCountRef = useRef(0);
     const rfInstance = useRef<ReactFlowInstance | null>(null);
-    const [revealedNodeIds, setRevealedNodeIds] = useState<string[]>([]);
-    const [revealedEdgeIds, setRevealedEdgeIds] = useState<string[]>([]);
     const [freshEdgeIds, setFreshEdgeIds] = useState<string[]>([]);
     const [showCompletionBanner, setShowCompletionBanner] = useState(false);
     const [completionPulse, setCompletionPulse] = useState(false);
-    const nodeQueueRef = useRef<string[]>([]);
-    const edgeQueueRef = useRef<string[]>([]);
-    const nodeQueueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const edgeQueueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const autoRunTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const freshEdgeTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-    const revealedNodesRef = useRef<Set<string>>(new Set());
-    const revealedEdgesRef = useRef<Set<string>>(new Set());
+    const prevRevealedEdgeSetRef = useRef<Set<string>>(new Set());
     const prevDebateStatusRef = useRef(execution.debateStatus);
     const isLiveExecution = execution.debateStatus === "queued" || execution.debateStatus === "running";
 
@@ -203,46 +200,9 @@ export default function DebateGraphCanvas() {
         }, 1200);
     }, []);
 
-    const revealNextNode = useCallback(() => {
-        nodeQueueTimerRef.current = null;
-        const nextId = nodeQueueRef.current.shift();
-        if (!nextId) return;
-
-        if (!revealedNodesRef.current.has(nextId)) {
-            const nextSet = new Set(revealedNodesRef.current);
-            nextSet.add(nextId);
-            revealedNodesRef.current = nextSet;
-            setRevealedNodeIds(Array.from(nextSet));
-        }
-
-        if (nodeQueueRef.current.length > 0) {
-            const delay = NODE_REVEAL_MIN_MS + Math.floor(Math.random() * (NODE_REVEAL_MAX_MS - NODE_REVEAL_MIN_MS + 1));
-            nodeQueueTimerRef.current = setTimeout(revealNextNode, delay);
-        }
-    }, []);
-
-    const revealNextEdge = useCallback(() => {
-        edgeQueueTimerRef.current = null;
-        const nextId = edgeQueueRef.current.shift();
-        if (!nextId) return;
-
-        if (!revealedEdgesRef.current.has(nextId)) {
-            const nextSet = new Set(revealedEdgesRef.current);
-            nextSet.add(nextId);
-            revealedEdgesRef.current = nextSet;
-            setRevealedEdgeIds(Array.from(nextSet));
-            markEdgeFresh(nextId);
-        }
-
-        if (edgeQueueRef.current.length > 0) {
-            edgeQueueTimerRef.current = setTimeout(revealNextEdge, EDGE_REVEAL_MS);
-        }
-    }, [markEdgeFresh]);
-
     useEffect(() => {
         return () => {
-            if (nodeQueueTimerRef.current) clearTimeout(nodeQueueTimerRef.current);
-            if (edgeQueueTimerRef.current) clearTimeout(edgeQueueTimerRef.current);
+            if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current);
             Object.values(freshEdgeTimeoutsRef.current).forEach((t) => clearTimeout(t));
         };
     }, []);
@@ -494,8 +454,9 @@ export default function DebateGraphCanvas() {
         () => visibleEdgeIdsOrdered.join("|"),
         [visibleEdgeIdsOrdered],
     );
-    const visibleEdgeById = useMemo(
-        () => new Map(orderedVisibleEdges.map((edge) => [edge.id, edge])),
+
+    const canonicalEdgeRefs = useMemo(
+        () => orderedVisibleEdges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
         [orderedVisibleEdges],
     );
 
@@ -510,119 +471,49 @@ export default function DebateGraphCanvas() {
     const positions = useMemo(() => computeLayout(renderNodes), [layoutKey, renderNodes]);
 
     useEffect(() => {
-        if (visibleNodeIdsOrdered.length === 0) {
-            if (nodeQueueTimerRef.current) clearTimeout(nodeQueueTimerRef.current);
-            nodeQueueRef.current = [];
-            revealedNodesRef.current = new Set();
-            setRevealedNodeIds([]);
-            return;
-        }
-
-        const visibleSet = new Set(visibleNodeIdsOrdered);
-        const pruned = new Set(
-            [...revealedNodesRef.current].filter((nodeId) => visibleSet.has(nodeId)),
-        );
-        if (pruned.size !== revealedNodesRef.current.size) {
-            revealedNodesRef.current = pruned;
-            setRevealedNodeIds(Array.from(pruned));
-        }
-
-        nodeQueueRef.current = nodeQueueRef.current.filter((nodeId) => visibleSet.has(nodeId));
-
-        if (!isLiveExecution) {
-            if (nodeQueueTimerRef.current) clearTimeout(nodeQueueTimerRef.current);
-            nodeQueueRef.current = [];
-            revealedNodesRef.current = visibleSet;
-            setRevealedNodeIds(visibleNodeIdsOrdered);
-            return;
-        }
-
-        const missing = visibleNodeIdsOrdered.filter(
-            (nodeId) => !revealedNodesRef.current.has(nodeId) && !nodeQueueRef.current.includes(nodeId),
-        );
-        if (missing.length > 0) {
-            nodeQueueRef.current.push(...missing);
-        }
-
-        if (!nodeQueueTimerRef.current && nodeQueueRef.current.length > 0) {
-            nodeQueueTimerRef.current = setTimeout(revealNextNode, NODE_REVEAL_MIN_MS);
-        }
-    }, [visibleNodeIdsOrdered, visibleNodeKey, isLiveExecution, revealNextNode]);
-
-    useEffect(() => {
-        if (visibleEdgeIdsOrdered.length === 0) {
-            if (edgeQueueTimerRef.current) clearTimeout(edgeQueueTimerRef.current);
-            edgeQueueRef.current = [];
-            revealedEdgesRef.current = new Set();
-            setRevealedEdgeIds([]);
-            setFreshEdgeIds([]);
-            return;
-        }
-
-        const visibleSet = new Set(visibleEdgeIdsOrdered);
-        const pruned = new Set(
-            [...revealedEdgesRef.current].filter((edgeId) => visibleSet.has(edgeId)),
-        );
-        if (pruned.size !== revealedEdgesRef.current.size) {
-            revealedEdgesRef.current = pruned;
-            setRevealedEdgeIds(Array.from(pruned));
-        }
-
-        edgeQueueRef.current = edgeQueueRef.current.filter((edgeId) => visibleSet.has(edgeId));
-
-        if (!isLiveExecution) {
-            if (edgeQueueTimerRef.current) clearTimeout(edgeQueueTimerRef.current);
-            edgeQueueRef.current = [];
-            revealedEdgesRef.current = visibleSet;
-            setRevealedEdgeIds(visibleEdgeIdsOrdered);
-            return;
-        }
-
-        const revealable = visibleEdgeIdsOrdered.filter((edgeId) => {
-            const edge = visibleEdgeById.get(edgeId);
-            if (!edge) return false;
-            return revealedNodesRef.current.has(edge.source) && revealedNodesRef.current.has(edge.target);
+        const revealAllCompletedHistory = openedAsCompleted && !isLiveExecution;
+        syncPlaybackFromCanonical({
+            canonicalNodeIds: visibleNodeIdsOrdered,
+            canonicalEdges: canonicalEdgeRefs,
+            isLiveExecution,
+            revealAll: revealAllCompletedHistory,
         });
-
-        const missing = revealable.filter(
-            (edgeId) => !revealedEdgesRef.current.has(edgeId) && !edgeQueueRef.current.includes(edgeId),
-        );
-        if (missing.length > 0) {
-            edgeQueueRef.current.push(...missing);
-        }
-
-        if (!edgeQueueTimerRef.current && edgeQueueRef.current.length > 0) {
-            edgeQueueTimerRef.current = setTimeout(revealNextEdge, EDGE_REVEAL_MS);
-        }
     }, [
+        canonicalEdgeRefs,
+        isLiveExecution,
+        openedAsCompleted,
+        syncPlaybackFromCanonical,
+        visibleNodeIdsOrdered,
+        visibleNodeKey,
         visibleEdgeIdsOrdered,
         visibleEdgeKey,
-        visibleEdgeById,
-        isLiveExecution,
-        revealNextEdge,
-        revealedNodeIds,
     ]);
+
+    // Reveal queue auto-run: one item at a time, deterministic delay.
+    useEffect(() => {
+        if (playbackMode !== "auto") return;
+        if (playbackQueue.length === 0) return;
+        autoRunTimerRef.current = setTimeout(() => {
+            revealNextVisual();
+        }, 300 + Math.floor(Math.random() * 301));
+        return () => {
+            if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current);
+        };
+    }, [playbackMode, playbackQueue.length, revealNextVisual]);
+
+    useEffect(() => {
+        const prevSet = prevRevealedEdgeSetRef.current;
+        const nextSet = new Set(revealedEdgeIds);
+        for (const edgeId of revealedEdgeIds) {
+            if (!prevSet.has(edgeId)) {
+                markEdgeFresh(edgeId);
+            }
+        }
+        prevRevealedEdgeSetRef.current = nextSet;
+    }, [revealedEdgeIds, markEdgeFresh]);
 
     // Count visible nodes (after reveal queue)
     const visibleCount = revealedNodeIds.length;
-
-    // Recovery: if nodes exist but ALL are hidden for 4s, force-reveal
-    const allHidden = renderNodes.length > 0 && renderNodes.every((n) => n.status === "hidden");
-    useEffect(() => {
-        if (allHidden) {
-            recoveryRef.current = setTimeout(() => {
-                const g = useGraphStore.getState().graph;
-                const stillAllHidden = g.nodes.length > 0 && g.nodes.every((n) => n.status === "hidden");
-                if (stillAllHidden) {
-                    console.warn("[Agora] Canvas recovery: all nodes hidden, forcing reveal");
-                    forceRevealAll();
-                }
-            }, 4000);
-        }
-        return () => {
-            if (recoveryRef.current) clearTimeout(recoveryRef.current);
-        };
-    }, [allHidden, forceRevealAll]);
 
     // Re-fit view when visible node count transitions from 0 → N
     useEffect(() => {
@@ -706,7 +597,12 @@ export default function DebateGraphCanvas() {
 
     const flowEdges: Edge[] = useMemo(() => {
         return graph.edges
-            .filter((e) => e.status !== "hidden" && revealedEdgeSet.has(e.id))
+            .filter((e) =>
+                e.status !== "hidden"
+                && revealedEdgeSet.has(e.id)
+                && revealedNodeSet.has(e.source)
+                && revealedNodeSet.has(e.target),
+            )
             .map((e: DebateGraphEdge) => {
                 const relevantByRound = isEdgeRelevant(e, selectedRound);
                 const dimmedByRound = selectedRound !== null && !relevantByRound;
@@ -760,6 +656,16 @@ export default function DebateGraphCanvas() {
         setEdges(flowEdges);
     }, [flowEdges, setEdges]);
 
+    useEffect(() => {
+        setRenderedCounts(flowNodes.length, flowEdges.length);
+    }, [flowNodes.length, flowEdges.length, setRenderedCounts]);
+
+    useEffect(() => {
+        if (!import.meta.env.DEV) return;
+        // eslint-disable-next-line no-console
+        console.log("[RENDER] rendered nodes", flowNodes.length);
+    }, [flowNodes.length]);
+
     const onNodeClick: NodeMouseHandler = useCallback(
         (_event, node) => {
             selectNode(node.id === selectedNodeId ? null : node.id);
@@ -786,14 +692,18 @@ export default function DebateGraphCanvas() {
         );
     }
 
-    // All nodes hidden — animation is preparing
-    if (allHidden) {
+    // Canonical graph exists but nothing has been revealed yet.
+    if (flowNodes.length === 0) {
         return (
             <div className="absolute inset-0 flex items-center justify-center bg-agora-bg">
                 <div className="text-center space-y-3">
-                    <div className="text-3xl animate-pulse">🎬</div>
+                    <div className="text-3xl">⏳</div>
                     <p className="text-agora-text-muted text-sm">
-                        Preparing cinematic replay…
+                        {playbackQueue.length > 0
+                            ? playbackMode === "paused"
+                                ? "A response is ready. Click Next Step to reveal it."
+                                : "Auto Run is revealing responses..."
+                            : "Waiting for the first agent response..."}
                     </p>
                 </div>
             </div>

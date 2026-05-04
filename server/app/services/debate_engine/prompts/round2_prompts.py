@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 
+def _compact_text(value: str, max_chars: int) -> str:
+    normalized = " ".join(str(value or "").split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 1].rstrip() + "…"
+
+
+def _compact_points(points: list[str], max_items: int = 2) -> list[str]:
+    return [_compact_text(point, 110) for point in points[:max_items] if str(point or "").strip()]
+
+
 def _format_context_block(chunks: list[dict]) -> str:
     if not chunks:
         return ""
     lines = ["\nRelevant document context (reference when critiquing):\n"]
-    for i, c in enumerate(chunks, start=1):
-        lines.append(f"[Source {i}]\n{c['content']}\n")
+    for i, c in enumerate(chunks[:3], start=1):
+        lines.append(f"[Source {i}]\n{_compact_text(c.get('content', ''), 260)}\n")
     return "\n".join(lines)
 
 
@@ -65,10 +76,10 @@ def build_critique_prompt(
     # Format other agents' stances
     opponents_block = ""
     for i, agent in enumerate(other_agents, start=1):
-        key_pts = "\n".join(f"    - {pt}" for pt in agent.get("key_points", []))
+        key_pts = "\n".join(f"    - {pt}" for pt in _compact_points(agent.get("key_points", [])))
         opponents_block += (
             f"\nOpponent {i} — {agent['role']}:\n"
-            f"  Stance: {agent.get('stance', '(no stance provided)')}\n"
+            f"  Stance: {_compact_text(agent.get('stance', '(no stance provided)'), 220)}\n"
             f"  Key points:\n{key_pts or '    (none provided)'}\n"
         )
 
@@ -76,7 +87,7 @@ def build_critique_prompt(
 
 The debate question is: {question}
 
-Your own opening stance was: {own_stance}
+Your own opening stance was: {_compact_text(own_stance, 220)}
 {_knowledge_instruction(knowledge_mode, knowledge_strict, bool(retrieved_chunks or []))}{_format_context_block(retrieved_chunks or [])}
 Your task: Critique the following opponents' arguments in Round 2 Cross-Examination.
 
@@ -89,11 +100,17 @@ For each opponent, identify their weakest argument, challenge it directly, and e
 
 Respond ONLY with a valid JSON object in this exact format:
 {{
+    "short_summary": "<one clear sentence, max 180 chars>",
+    "target_role": "<the primary opponent you are addressing>",
+    "challenge": "<your direct challenge>",
+    "weakness_found": "<the core flaw or gap>",
+    "counterargument": "<your strongest counterargument>",
+    "response": "<full critique in natural language>",
   "critiques": [
     {{
       "target_role": "<opponent's role>",
       "challenge": "<your direct challenge to their argument>",
-      "weakness": "<the core flaw or gap you identified>",
+            "weakness": "<the core flaw or gap you identified>",
       "counter_evidence": "<any evidence or reasoning that refutes them>"
     }}
   ]

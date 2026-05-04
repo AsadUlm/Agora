@@ -26,12 +26,15 @@ export default function DebateWorkspacePage() {
         if (!debateId) return;
         if (turnStatus !== "queued" && turnStatus !== "running") return;
 
-        const tick = () => {
+        // REST polling is a fallback for missed WS events; WS is the
+        // primary channel. We intentionally avoid an immediate poll so
+        // the first reveal remains WS-driven whenever possible. 2500ms is
+        // gentle on the backend while still
+        // recovering quickly if a WS event slips. Polling stops as soon
+        // as turnStatus transitions to completed/failed.
+        const intervalId = setInterval(() => {
             void loadDebate(debateId, { silent: true });
-        };
-
-        tick();
-        const intervalId = setInterval(tick, 1800);
+        }, 2500);
         return () => clearInterval(intervalId);
     }, [debateId, turnStatus, loadDebate]);
 

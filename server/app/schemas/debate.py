@@ -15,6 +15,9 @@ class DebateStartRequest(BaseModel):
     question: str
     agents: list[AgentCreate]
     session_id: uuid.UUID | None = None
+    # "auto" runs the entire debate without pausing (legacy behavior).
+    # "manual" pauses before each agent until /debates/{id}/next-step is called.
+    execution_mode: str = "auto"
 
 
 # ── Response schemas (Step 6 — structured, frontend-ready) ────────────────────
@@ -86,6 +89,7 @@ class TurnDTO(BaseModel):
     id: uuid.UUID
     turn_index: int
     status: str                         # queued | running | completed | failed
+    execution_mode: str = "auto"        # auto | manual
     started_at: datetime | None
     ended_at: datetime | None
     user_message: UserMessageDTO | None

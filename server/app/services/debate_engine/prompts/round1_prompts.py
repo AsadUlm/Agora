@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 
+def _compact_chunk_text(text: str, max_chars: int = 260) -> str:
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 1].rstrip() + "…"
+
+
 def _format_context_block(chunks: list[dict]) -> str:
     """
     Render retrieved document chunks as an indented text block.
@@ -12,8 +19,8 @@ def _format_context_block(chunks: list[dict]) -> str:
     if not chunks:
         return ""
     lines = ["\nRelevant document context (use this to ground your arguments):\n"]
-    for i, c in enumerate(chunks, start=1):
-        lines.append(f"[Source {i}]\n{c['content']}\n")
+    for i, c in enumerate(chunks[:3], start=1):
+        lines.append(f"[Source {i}]\n{_compact_chunk_text(c.get('content', ''))}\n")
     return "\n".join(lines)
 
 
@@ -71,7 +78,11 @@ Reasoning style: {style_instruction}
 
 Respond ONLY with a valid JSON object in this exact format:
 {{
+    "short_summary": "<one clear sentence, max 180 chars>",
   "stance": "<your clear position on the question>",
+    "main_argument": "<the core argument behind your stance>",
   "key_points": ["<point 1>", "<point 2>", "<point 3>"],
-  "confidence": <float between 0.0 and 1.0>
+    "risks_or_caveats": "<main uncertainty, trade-off, or caveat>",
+    "response": "<full opening response in natural language>",
+    "confidence": <float between 0.0 and 1.0>
 }}"""

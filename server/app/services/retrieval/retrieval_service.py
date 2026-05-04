@@ -54,7 +54,7 @@ class RetrievalService:
         query: str,
         session_id: uuid.UUID,
         db: AsyncSession,
-        top_k: int = 5,
+        top_k: int = 3,
     ) -> list[RetrievedChunk]:
         """
         Retrieve the top-k most relevant chunks for the query (session-wide).
@@ -76,7 +76,7 @@ class RetrievalService:
         db: AsyncSession,
         knowledge_mode: str = "shared_session_docs",
         assigned_document_ids: list[uuid.UUID] | None = None,
-        top_k: int = 5,
+        top_k: int = 3,
     ) -> list[RetrievedChunk]:
         """
         Agent-aware retrieval — respects the agent's knowledge configuration.

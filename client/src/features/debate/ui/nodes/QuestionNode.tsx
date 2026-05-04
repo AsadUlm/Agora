@@ -36,7 +36,7 @@ export default function QuestionNode({
           bg-gradient-to-br from-indigo-600/90 to-purple-700/90
           border-2 border-indigo-400/50
           shadow-lg shadow-indigo-500/20
-          min-w-[200px] max-w-[300px]
+                    min-w-[220px] max-w-[360px]
           text-center cursor-pointer
                     transition-all duration-150
           ${selected ? "glow-accent border-indigo-300" : "hover:border-indigo-400/70"}
@@ -45,8 +45,8 @@ export default function QuestionNode({
                 <div className="text-[10px] uppercase tracking-widest text-indigo-200/70 mb-1 font-semibold">
                     Question
                 </div>
-                <div className="text-sm font-medium text-white leading-snug">
-                    {data.label?.slice(0, 80) ?? "Question"}
+                <div className="text-sm font-medium text-white leading-snug line-clamp-3" title={data.label ?? "Question"}>
+                    {data.label ?? "Question"}
                 </div>
 
                 <Handle

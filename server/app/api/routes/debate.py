@@ -28,10 +28,14 @@ Step 6 — DTO shaping:
 
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -158,10 +162,12 @@ async def start_debate(
     await db.flush()
 
     # ── 3. Create ChatTurn (queued — background task transitions it to running)
+    mode = request.execution_mode if request.execution_mode in ("auto", "manual") else "auto"
     turn = ChatTurn(
         chat_session_id=session.id,
         turn_index=1,
         status=ChatTurnStatus.queued,
+        execution_mode=mode,
     )
     db.add(turn)
     await db.flush()
@@ -314,6 +320,255 @@ async def get_turn(
     agents_by_id = _agents_index(list(agents))
 
     return serialize_turn(turn, agents_by_id)
+
+
+# ── POST /debates/{id}/next-step ──────────────────────────────────────────────
+
+@router.post("/{debate_id}/next-step", status_code=status.HTTP_200_OK)
+async def next_step(
+    debate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Release exactly one pending step in manual-mode execution.
+
+    Behavior:
+      - If the active turn is in manual mode and currently waiting on the
+        StepController gate, releases it. The engine then runs one agent
+        and pauses again.
+      - If the gate is already running, returns 409.
+      - If the turn has already completed, returns its status.
+      - If the turn is in auto mode, this is a no-op success.
+
+    Returns:
+        {
+          "turn_id": "...",
+          "status": "queued"|"running"|"completed"|"failed",
+          "execution_mode": "auto"|"manual",
+          "released": true|false,
+          "pending_step": {...} | null,   # what is about to run (if any)
+        }
+    """
+    from app.services.debate_engine.step_controller import step_controller
+
+    # Ownership check + load latest turn
+    stmt = (
+        select(ChatTurn)
+        .join(ChatSession, ChatTurn.chat_session_id == ChatSession.id)
+        .where(ChatSession.id == debate_id, ChatSession.user_id == current_user.id)
+        .order_by(ChatTurn.turn_index.desc())
+        .limit(1)
+    )
+    turn = (await db.execute(stmt)).scalar_one_or_none()
+    if turn is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debate not found.")
+
+    if turn.status in (ChatTurnStatus.completed, ChatTurnStatus.failed, ChatTurnStatus.cancelled):
+        return {
+            "turn_id": str(turn.id),
+            "status": turn.status.value,
+            "execution_mode": turn.execution_mode,
+            "released": False,
+            "pending_step": None,
+        }
+
+    snap = step_controller.snapshot(turn.id)
+    if snap is None:
+        # Background task hasn't registered yet — not an error, just not ready.
+        return {
+            "turn_id": str(turn.id),
+            "status": turn.status.value,
+            "execution_mode": turn.execution_mode,
+            "released": False,
+            "pending_step": None,
+            "reason": "not_ready",
+        }
+    if snap["is_running"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A step is currently running. Wait for it to complete.",
+        )
+
+    released = await step_controller.release_step(turn.id)
+    logger.info(
+        "POST /debates/%s/next-step turn=%s status=%s mode=%s released=%s pending=%s",
+        debate_id,
+        turn.id,
+        turn.status.value,
+        turn.execution_mode,
+        released,
+        snap.get("pending_step"),
+    )
+    return {
+        "turn_id": str(turn.id),
+        "status": turn.status.value,
+        "execution_mode": turn.execution_mode,
+        "released": released,
+        "pending_step": snap.get("pending_step"),
+    }
+
+
+# ── GET /debates/{id}/step-state ─────────────────────────────────────────────
+
+@router.get("/{debate_id}/step-state", status_code=status.HTTP_200_OK)
+async def get_step_state(
+    debate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Read-only snapshot of the StepController for the latest turn.
+
+    Lets the client recover from missed ``agent_started`` WebSocket events
+    (e.g. when the WS opens after the engine has already paused at a gate).
+    Never releases the gate.
+
+    Returns:
+        {
+          "turn_id":        "<uuid>",
+          "status":         "queued"|"running"|"completed"|"failed"|"cancelled",
+          "execution_mode": "auto"|"manual",
+          "is_running":     bool,
+          "pending_step":   {...} | null,
+          "gate_set":       bool,
+        }
+    """
+    from app.services.debate_engine.step_controller import step_controller
+
+    stmt = (
+        select(ChatTurn)
+        .join(ChatSession, ChatTurn.chat_session_id == ChatSession.id)
+        .where(ChatSession.id == debate_id, ChatSession.user_id == current_user.id)
+        .order_by(ChatTurn.turn_index.desc())
+        .limit(1)
+    )
+    turn = (await db.execute(stmt)).scalar_one_or_none()
+    if turn is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debate not found.")
+
+    snap = step_controller.snapshot(turn.id)
+    return {
+        "turn_id": str(turn.id),
+        "status": turn.status.value,
+        "execution_mode": turn.execution_mode,
+        "is_running": bool(snap and snap.get("is_running")),
+        "pending_step": snap.get("pending_step") if snap else None,
+        "gate_set": bool(snap and snap.get("gate_set")),
+    }
+
+
+# ── POST /debates/{id}/auto-run ───────────────────────────────────────────────
+
+@router.post("/{debate_id}/resume", status_code=status.HTTP_200_OK)
+async def resume_debate(
+    debate_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    session_factory=Depends(get_session_factory),
+) -> dict:
+    """
+    Requeue a stalled queued turn.
+
+    Safety guards:
+      - only for latest turn owned by current user
+      - only when status is queued
+      - only when StepController has no pending/running step
+      - only after a short warm-up window (prevents duplicate runners)
+    """
+    from app.services.debate_engine.step_controller import step_controller
+
+    stmt = (
+        select(ChatTurn)
+        .join(ChatSession, ChatTurn.chat_session_id == ChatSession.id)
+        .where(ChatSession.id == debate_id, ChatSession.user_id == current_user.id)
+        .order_by(ChatTurn.turn_index.desc())
+        .limit(1)
+    )
+    turn = (await db.execute(stmt)).scalar_one_or_none()
+    if turn is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debate not found.")
+
+    if turn.status != ChatTurnStatus.queued:
+        return {
+            "turn_id": str(turn.id),
+            "status": turn.status.value,
+            "resumed": False,
+            "reason": "not_queued",
+        }
+
+    snap = step_controller.snapshot(turn.id)
+    if snap is not None and (snap.get("is_running") or snap.get("pending_step") is not None):
+        return {
+            "turn_id": str(turn.id),
+            "status": turn.status.value,
+            "resumed": False,
+            "reason": "already_active",
+        }
+
+    age_s = (datetime.now(timezone.utc) - turn.created_at).total_seconds()
+    if age_s < 15:
+        return {
+            "turn_id": str(turn.id),
+            "status": turn.status.value,
+            "resumed": False,
+            "reason": "warming_up",
+        }
+
+    # Drop stale gate state (if any) and start a fresh background runner.
+    await step_controller.cleanup(turn.id)
+    background_tasks.add_task(
+        run_turn_background,
+        turn_id=turn.id,
+        session_id=turn.chat_session_id,
+        on_event=ws_manager.emit,
+        session_factory=session_factory,
+    )
+
+    return {
+        "turn_id": str(turn.id),
+        "status": turn.status.value,
+        "resumed": True,
+    }
+
+
+# ── POST /debates/{id}/auto-run ───────────────────────────────────────────────
+
+@router.post("/{debate_id}/auto-run", status_code=status.HTTP_200_OK)
+async def switch_auto_run(
+    debate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Switch a manual-mode debate into auto execution: releases the gate
+    permanently so all subsequent steps run without further /next-step calls.
+    No-op if the debate is already auto / completed.
+    """
+    from app.services.debate_engine.step_controller import step_controller
+
+    stmt = (
+        select(ChatTurn)
+        .join(ChatSession, ChatTurn.chat_session_id == ChatSession.id)
+        .where(ChatSession.id == debate_id, ChatSession.user_id == current_user.id)
+        .order_by(ChatTurn.turn_index.desc())
+        .limit(1)
+    )
+    turn = (await db.execute(stmt)).scalar_one_or_none()
+    if turn is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debate not found.")
+
+    turn.execution_mode = "auto"
+    await db.commit()
+    switched = await step_controller.switch_mode(turn.id, "auto")
+    return {
+        "turn_id": str(turn.id),
+        "status": turn.status.value,
+        "execution_mode": "auto",
+        "switched": switched,
+    }
+
 
 
 # ── GET /debates ──────────────────────────────────────────────────────────────

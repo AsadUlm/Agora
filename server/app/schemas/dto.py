@@ -178,6 +178,7 @@ def serialize_turn(
         id=turn.id,
         turn_index=turn.turn_index,
         status=turn.status.value,
+        execution_mode=getattr(turn, "execution_mode", "auto") or "auto",
         started_at=turn.started_at,
         ended_at=turn.ended_at,
         user_message=user_message,

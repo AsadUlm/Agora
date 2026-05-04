@@ -3,7 +3,6 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import {
     listDebates,
-    startDebate,
     createSession,
     uploadDocument,
     listDocuments,
@@ -19,10 +18,12 @@ import {
     type AgentConfig,
 } from "@/features/debate/model/agent-config.types";
 import AgentConfigDrawer from "@/features/debate/ui/AgentConfigDrawer";
+import { useDebateStore } from "@/features/debate/model/debate.store";
 
 export default function DebateListPage() {
     const navigate = useNavigate();
     const location = useLocation();
+    const startDebate = useDebateStore((s) => s.startDebate);
     const [debates, setDebates] = useState<DebateListItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [creating, setCreating] = useState(false);
@@ -68,11 +69,14 @@ export default function DebateListPage() {
         if (!question.trim() || enabledCount === 0) return;
         setCreating(true);
         try {
-            const res = await startDebate({
-                question: question.trim(),
-                agents: agentConfigsToPayload(agentConfigs),
-                ...(draftSessionId ? { session_id: draftSessionId } : {}),
-            });
+            const res = await startDebate(
+                question.trim(),
+                agentConfigsToPayload(agentConfigs),
+                // Backend executes the full pipeline automatically; the
+                // frontend playback queue controls visual reveal.
+                "auto",
+                draftSessionId ? { sessionId: draftSessionId } : undefined,
+            );
             // Reset draft state after successful creation
             setDraftSessionId(null);
             setDocuments([]);

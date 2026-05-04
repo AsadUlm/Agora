@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/shared/lib/cn";
 import { useDebateStore } from "../model/debate.store";
@@ -12,6 +12,7 @@ export default function TopTopicBar() {
     const agents = useDebateStore((s) => s.agents);
     const graph = useGraphStore((s) => s.graph);
     const execution = useDebateExecutionState();
+    const [questionExpanded, setQuestionExpanded] = useState(false);
 
     const narration = useMemo(
         () => deriveActiveNarration({
@@ -40,68 +41,103 @@ export default function TopTopicBar() {
                     ? "All Rounds"
                     : `Round ${execution.activeRound}`;
 
+    const fullQuestion = session?.question ?? "No debate loaded";
+
     return (
-        <div className="h-14 px-6 flex items-center justify-between border-b border-agora-border bg-agora-surface/80 backdrop-blur-sm">
-            <div className="flex items-center gap-4">
-                {/* Back to Debates */}
-                <button
-                    onClick={() => navigate("/debates")}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all"
-                    title="Back to all debates"
-                >
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                        <path d="M9 3L5 7l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                    All Debates
-                </button>
-
-                <div className="h-5 w-px bg-agora-border" />
-
-                <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm">
-                        A
-                    </div>
-                    <span className="text-sm font-semibold text-white">AGORA</span>
-                </div>
-
-                <div className="h-5 w-px bg-agora-border" />
-
-                <div className="text-sm text-agora-text-muted truncate max-w-[500px]">
-                    {session?.question ?? "No debate loaded"}
-                </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-                {execution.debateStatus && (
-                    <span
-                        className={cn(
-                            "px-2.5 py-0.5 rounded-full text-[11px] font-medium border uppercase tracking-wider",
-                            statusColor[execution.debateStatus] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30",
-                        )}
+        <>
+            <div className="h-14 px-6 flex items-center justify-between border-b border-agora-border bg-agora-surface/80 backdrop-blur-sm">
+                <div className="flex items-center gap-4 min-w-0">
+                    {/* Back to Debates */}
+                    <button
+                        onClick={() => navigate("/debates")}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all"
+                        title="Back to all debates"
                     >
-                        {execution.debateStatus === "running" && (
-                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 mr-1.5 animate-pulse" />
-                        )}
-                        {statusLabel}
-                    </span>
-                )}
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M9 3L5 7l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        All Debates
+                    </button>
 
-                <span className="text-[11px] text-agora-text-muted">
-                    {stageLabel}
-                </span>
+                    <div className="h-5 w-px bg-agora-border" />
 
-                {execution.debateStatus === "running" && (
-                    <span className="text-[11px] text-indigo-300/90 truncate max-w-[260px]">
-                        {narration.relation ?? narration.title}
-                    </span>
-                )}
+                    <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm">
+                            A
+                        </div>
+                        <span className="text-sm font-semibold text-white">AGORA</span>
+                    </div>
 
-                {session?.agents && (
+                    <div className="h-5 w-px bg-agora-border" />
+
+                    <button
+                        type="button"
+                        title={fullQuestion}
+                        onClick={() => setQuestionExpanded(true)}
+                        className="min-w-0 max-w-[560px] text-left text-sm text-agora-text-muted hover:text-white transition-colors"
+                    >
+                        <span className="truncate block">{fullQuestion}</span>
+                    </button>
+                </div>
+                <div className="flex items-center gap-3">
+                    {execution.debateStatus && (
+                        <span
+                            className={cn(
+                                "px-2.5 py-0.5 rounded-full text-[11px] font-medium border uppercase tracking-wider",
+                                statusColor[execution.debateStatus] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30",
+                            )}
+                        >
+                            {execution.debateStatus === "running" && (
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 mr-1.5 animate-pulse" />
+                            )}
+                            {statusLabel}
+                        </span>
+                    )}
+
                     <span className="text-[11px] text-agora-text-muted">
-                        {session.agents.length} agents
+                        {stageLabel}
                     </span>
-                )}
+
+                    {execution.debateStatus === "running" && (
+                        <span className="text-[11px] text-indigo-300/90 truncate max-w-[260px]">
+                            {narration.relation ?? narration.title}
+                        </span>
+                    )}
+
+                    {session?.agents && (
+                        <span className="text-[11px] text-agora-text-muted">
+                            {session.agents.length} agents
+                        </span>
+                    )}
+                </div>
             </div>
-        </div>
+
+            {questionExpanded && (
+                <div
+                    className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-[2px] flex items-center justify-center p-4"
+                    onClick={() => setQuestionExpanded(false)}
+                >
+                    <div
+                        className="w-full max-w-2xl rounded-2xl border border-agora-border bg-agora-surface shadow-2xl"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="px-5 py-4 border-b border-agora-border flex items-center justify-between">
+                            <h3 className="text-sm font-semibold text-white">Debate question</h3>
+                            <button
+                                type="button"
+                                onClick={() => setQuestionExpanded(false)}
+                                className="w-8 h-8 rounded-lg bg-agora-surface-light flex items-center justify-center text-agora-text-muted hover:text-white hover:bg-gray-600 transition-colors"
+                                aria-label="Close question dialog"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                        <div className="px-5 py-4">
+                            <p className="text-sm text-white leading-relaxed whitespace-pre-wrap break-words">{fullQuestion}</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
     );
 }

@@ -49,6 +49,7 @@ function safePayload(msg: MessageDTO): Record<string, unknown> {
 
 function extractContent(msg: MessageDTO): string {
     const p = safePayload(msg);
+    if (typeof p["response"] === "string") return p["response"] as string;
     if (typeof p["reasoning"] === "string") return p["reasoning"] as string;
     if (typeof p["text"] === "string") return p["text"] as string;
     // Fall back to the first available string field in payload
@@ -68,7 +69,7 @@ export function mapSessionToGraph(session: SessionDetailDTO): DebateGraph {
     nodes.push({
         id: QUESTION_NODE_ID,
         kind: "question",
-        label: session.question?.slice(0, 80) || session.title || "Question",
+        label: session.question || session.title || "Question",
         round: 0,
         status: "visible",
         content: session.question,
@@ -297,12 +298,13 @@ function addSynthesisNode(
     agents: AgentDTO[],
 ): void {
     const existing = nodes.find((n) => n.id === SYNTHESIS_NODE_ID);
+    const rawJson = JSON.stringify(summary);
     const rawText =
         typeof summary["summary"] === "string"
             ? (summary["summary"] as string)
             : typeof summary["text"] === "string"
                 ? (summary["text"] as string)
-                : JSON.stringify(summary);
+                : rawJson;
     const summaryText = formatFinalSummary(rawText);
 
     if (!existing) {
@@ -313,8 +315,12 @@ function addSynthesisNode(
             round: 3,
             status: "completed",
             summary: summaryText,
-            content: summaryText,
+            content: rawJson,
         });
+    } else {
+        existing.summary = summaryText;
+        existing.content = rawJson;
+        existing.status = "completed";
     }
 
     // Ensure edges from agents → synthesis (prefer intermediate nodes if they exist)
