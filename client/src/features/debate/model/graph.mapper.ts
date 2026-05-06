@@ -19,7 +19,15 @@ import type {
     WsEvent,
 } from "../api/debate.types";
 import { isErrorPayload, isErrorText, shouldSkipGraphInference, normalizeAgentError, formatModeratorError } from "./error-normalizer";
-import { formatModeratorEvent, formatRound1Summary, formatRound2Summary, formatFinalSummary, getTurnSummary } from "./formatters";
+import {
+    extractFullResponse,
+    formatModeratorEvent,
+    formatRound1Summary,
+    formatRound2Summary,
+    formatFinalSummary,
+    getTurnSummary,
+    normalizeSummary,
+} from "./formatters";
 import type {
     ActivityItem,
     DebateGraph,
@@ -49,14 +57,27 @@ function safePayload(msg: MessageDTO): Record<string, unknown> {
 
 function extractContent(msg: MessageDTO): string {
     const p = safePayload(msg);
-    if (typeof p["response"] === "string") return p["response"] as string;
-    if (typeof p["reasoning"] === "string") return p["reasoning"] as string;
-    if (typeof p["text"] === "string") return p["text"] as string;
+    if (typeof p["display_content"] === "string" && String(p["display_content"]).trim()) {
+        return extractFullResponse(String(p["display_content"]));
+    }
+    if (typeof p["response"] === "string") return extractFullResponse(String(p["response"]));
+    if (typeof p["reasoning"] === "string") return extractFullResponse(String(p["reasoning"]));
+    if (typeof p["text"] === "string") return extractFullResponse(String(p["text"]));
     // Fall back to the first available string field in payload
     for (const val of Object.values(p)) {
-        if (typeof val === "string" && val.length > 0) return val;
+        if (typeof val === "string" && val.length > 0) return extractFullResponse(val);
     }
+    return extractFullResponse(msg.text ?? "");
+}
+
+function extractRawOutput(msg: MessageDTO): string {
+    const p = safePayload(msg);
+    if (typeof p["raw_content"] === "string") return String(p["raw_content"]);
     return msg.text ?? "";
+}
+
+function isFallbackPayload(msg: MessageDTO): boolean {
+    return safePayload(msg)["is_fallback"] === true;
 }
 
 // ── Map full session to initial graph ────────────────────────────────
@@ -156,6 +177,11 @@ function applyRoundToGraph(
                 });
             }
             agentNode.content = extractContent(msg);
+            agentNode.metadata = {
+                ...(agentNode.metadata ?? {}),
+                rawOutput: extractRawOutput(msg),
+                isFallback: isFallbackPayload(msg),
+            };
             agentNode.round = rn;
         }
 
@@ -198,6 +224,7 @@ function applyRoundToGraph(
                     agentRole: parentNode?.agentRole,
                     summary: formatRound2Summary(msg.text, parentNode?.agentRole, targetAgentForSummary?.agentRole),
                     content: extractContent(msg),
+                    metadata: { rawOutput: extractRawOutput(msg), isFallback: isFallbackPayload(msg) },
                 });
 
                 // Continuation edge from agent to intermediate
@@ -217,6 +244,11 @@ function applyRoundToGraph(
                 const intermNode = nodes.find((n) => n.id === intermNodeId)!;
                 intermNode.summary = formatRound2Summary(msg.text, intermNode.agentRole, targetAgentForSummary?.agentRole);
                 intermNode.content = extractContent(msg);
+                intermNode.metadata = {
+                    ...(intermNode.metadata ?? {}),
+                    rawOutput: extractRawOutput(msg),
+                    isFallback: isFallbackPayload(msg),
+                };
                 if (isCompleted) intermNode.status = "completed";
                 else if (isRunning) intermNode.status = "active";
             }
@@ -315,11 +347,17 @@ function addSynthesisNode(
             round: 3,
             status: "completed",
             summary: summaryText,
-            content: rawJson,
+            content: normalizeSummary("", rawText, 260),
+            metadata: { rawOutput: rawJson, isFallback: summary["is_fallback"] === true },
         });
     } else {
         existing.summary = summaryText;
-        existing.content = rawJson;
+        existing.content = normalizeSummary("", rawText, 260);
+        existing.metadata = {
+            ...(existing.metadata ?? {}),
+            rawOutput: rawJson,
+            isFallback: summary["is_fallback"] === true,
+        };
         existing.status = "completed";
     }
 

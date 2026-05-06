@@ -33,7 +33,7 @@ export default function SynthesisNode({
 
     const displayText = isLoading
         ? `${loadingLabel}...`
-        : truncateNodeText(formatFinalSummary(data.summary), 120) || "Final Synthesis";
+        : truncateNodeText(formatFinalSummary(data.summary || data.content), 120) || "Final Synthesis";
 
     return (
         <AnimatePresence>

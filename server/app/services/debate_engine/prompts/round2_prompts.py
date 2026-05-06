@@ -98,20 +98,28 @@ Critique style: {style_instruction}
 
 For each opponent, identify their weakest argument, challenge it directly, and explain the flaw.
 
-Respond ONLY with a valid JSON object in this exact format:
+Output contract:
+- Return only valid JSON.
+- Do not use markdown fences.
+- Do not mention JSON, schema, fields, or instructions.
+- Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
+- Every field must be user-facing content.
+- short_summary must be one complete sentence.
+- response must be clean prose for end users.
+- If target content is unavailable, use this sentence in challenge context:
+    "The target response was unavailable, so this critique focuses on the general position."
+
+Forbidden examples:
+- "I need to create a JSON object..."
+- "Generating JSON synthesis..."
+- "Here is the JSON..."
+
+Return only valid JSON in this exact format:
 {{
-    "short_summary": "<one clear sentence, max 180 chars>",
-    "target_role": "<the primary opponent you are addressing>",
-    "challenge": "<your direct challenge>",
-    "weakness_found": "<the core flaw or gap>",
-    "counterargument": "<your strongest counterargument>",
-    "response": "<full critique in natural language>",
-  "critiques": [
-    {{
-      "target_role": "<opponent's role>",
-      "challenge": "<your direct challenge to their argument>",
-            "weakness": "<the core flaw or gap you identified>",
-      "counter_evidence": "<any evidence or reasoning that refutes them>"
-    }}
-  ]
+    "short_summary": "<one complete sentence>",
+    "target_agent": "<name or role of the agent being challenged>",
+    "challenge": "<specific claim being challenged>",
+    "weakness_found": "<why that argument is weak or incomplete>",
+    "counterargument": "<clean counterargument>",
+    "response": "<full user-facing critique>"
 }}"""

@@ -18,7 +18,7 @@ import { useGraphStore } from "./graph.store";
 import { useModeratorStore } from "./moderator.store";
 import { usePlaybackStore } from "./playback.store";
 import { useAnimationStore } from "./animation/animation.store";
-import { formatRound1Summary, formatRound2Summary, getTurnSummary } from "./formatters";
+import { formatRound1Summary, formatRound2Summary, getTurnSummary, normalizeSummary } from "./formatters";
 import { shouldSkipGraphInference } from "./error-normalizer";
 
 interface PendingStepInfo {
@@ -395,6 +395,15 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 typeof payload["content"] === "string"
                     ? (payload["content"] as string)
                     : "";
+            const displayContentHint =
+                typeof payload["display_content"] === "string"
+                    ? String(payload["display_content"]).trim()
+                    : "";
+            const shortSummaryHint =
+                typeof payload["short_summary"] === "string"
+                    ? String(payload["short_summary"]).trim()
+                    : "";
+            const isFallbackHint = payload["is_fallback"] === true;
             const generationStatus =
                 typeof payload["generation_status"] === "string"
                     ? String(payload["generation_status"]).toLowerCase()
@@ -404,6 +413,16 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 (a) => a.id === event.agent_id,
             );
             const role = agentObj?.role;
+            const fallbackContent = getTurnSummary({
+                raw: rawContent,
+                round: rn,
+                kind: rn === 2 ? "intermediate" : rn === 3 ? "synthesis" : undefined,
+                sourceRole: role,
+                maxLen: 220,
+            });
+            const safeContent = failed
+                ? ""
+                : displayContentHint || fallbackContent;
 
             const graphStore = useGraphStore.getState();
             const ensureVisible = (nodeId: string) => {
@@ -431,9 +450,19 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
                         ? "This agent response failed to generate."
-                        : formatRound1Summary(rawContent),
-                    content: rawContent,
-                    metadata: { loading: false, failed },
+                        : normalizeSummary(
+                            shortSummaryHint || formatRound1Summary(rawContent),
+                            safeContent || rawContent || "Initial position prepared.",
+                            200,
+                        ),
+                    content: safeContent,
+                    metadata: {
+                        loading: false,
+                        failed,
+                        isFallback: isFallbackHint,
+                        rawOutput: rawContent,
+                        displayContent: safeContent,
+                    },
                 });
                 ensureVisible(nodeId);
                 get().enqueuePlaybackNode(nodeId);
@@ -489,13 +518,23 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
                         ? "This agent response failed to generate."
-                        : formatRound2Summary(
-                            rawContent,
-                            role,
-                            targetAgent?.role,
+                        : normalizeSummary(
+                            shortSummaryHint || formatRound2Summary(
+                                rawContent,
+                                role,
+                                targetAgent?.role,
+                            ),
+                            safeContent || rawContent || "Critique prepared.",
+                            200,
                         ),
-                    content: rawContent,
-                    metadata: { loading: false, failed },
+                    content: safeContent,
+                    metadata: {
+                        loading: false,
+                        failed,
+                        isFallback: isFallbackHint,
+                        rawOutput: rawContent,
+                        displayContent: safeContent,
+                    },
                 });
                 ensureVisible(nodeId);
                 get().enqueuePlaybackNode(nodeId);
@@ -514,13 +553,23 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
                         ? "This agent response failed to generate."
-                        : getTurnSummary({
-                            raw: rawContent,
-                            round: 3,
-                            sourceRole: role,
-                        }),
-                    content: rawContent,
-                    metadata: { loading: false, failed },
+                        : normalizeSummary(
+                            shortSummaryHint || getTurnSummary({
+                                raw: rawContent,
+                                round: 3,
+                                sourceRole: role,
+                            }),
+                            safeContent || rawContent || "Final synthesis prepared.",
+                            210,
+                        ),
+                    content: safeContent,
+                    metadata: {
+                        loading: false,
+                        failed,
+                        isFallback: isFallbackHint,
+                        rawOutput: rawContent,
+                        displayContent: safeContent,
+                    },
                 });
                 ensureVisible(nodeId);
                 get().enqueuePlaybackNode(nodeId);
@@ -552,8 +601,8 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                         kind: "synthesis",
                         maxLen: 200,
                     }),
-                    content: summaryText,
-                    metadata: { loading: false, failed: false },
+                    content: normalizeSummary("", summaryText, 260),
+                    metadata: { loading: false, failed: false, rawOutput: summaryText },
                 });
                 graphStore.setNodeStatus("synthesis-node", "completed");
                 get().enqueuePlaybackNode("synthesis-node");
