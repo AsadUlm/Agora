@@ -1,14 +1,8 @@
 """
 Groq LLM Provider.
 
-Uses the official `groq` Python SDK (AsyncGroq) to call the Groq API.
-Requires GROQ_API_KEY in environment / .env file.
-
-Supported models (as of 2026):
-  - llama-3.3-70b-versatile  (default, recommended)
-  - llama-3.1-70b-versatile
-  - mixtral-8x7b-32768
-  - gemma2-9b-it
+Legacy internal provider kept for existing deployments that still set
+GROQ_API_KEY. It is hidden from the current model catalog.
 """
 
 from __future__ import annotations

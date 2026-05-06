@@ -3,6 +3,7 @@
  */
 
 export type KnowledgeMode = "no_docs" | "shared_session_docs" | "assigned_docs_only";
+export type ModelPresetKey = "fast" | "balanced" | "high_quality";
 
 export interface AgentConfig {
     /** Client-side ID for key management */
@@ -19,6 +20,8 @@ export interface AgentConfig {
     provider: string;
     /** Model name */
     model: string;
+    /** Model quality/speed preset */
+    modelPreset: ModelPresetKey | null;
     /** Temperature (0–2) */
     temperature: number;
     /** Whether this agent participates */
@@ -45,6 +48,38 @@ export interface AgentPreset {
     knowledgeMode: KnowledgeMode;
     knowledgeStrict: boolean;
 }
+
+export interface ModelPreset {
+    key: ModelPresetKey;
+    label: string;
+    provider: string;
+    model: string;
+    temperature: number;
+}
+
+export const MODEL_PRESETS: ModelPreset[] = [
+    {
+        key: "fast",
+        label: "Fast",
+        provider: "openrouter",
+        model: "x-ai/grok-4.1-fast",
+        temperature: 0.6,
+    },
+    {
+        key: "balanced",
+        label: "Balanced",
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4.5",
+        temperature: 0.7,
+    },
+    {
+        key: "high_quality",
+        label: "High Quality",
+        provider: "openrouter",
+        model: "openai/gpt-5.5",
+        temperature: 0.5,
+    },
+];
 
 export const AGENT_PRESETS: AgentPreset[] = [
     {
@@ -117,7 +152,8 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         reasoningStyle: "analytical",
         reasoningDepth: "normal",
         provider: "openrouter",
-        model: "openai/gpt-5",
+        model: "anthropic/claude-sonnet-4.5",
+        modelPreset: "balanced",
         temperature: 0.7,
         enabled: true,
         knowledgeMode: "shared_session_docs",
@@ -133,8 +169,9 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         reasoningStyle: "critical",
         reasoningDepth: "normal",
         provider: "openrouter",
-        model: "anthropic/claude-haiku-4.5",
-        temperature: 0.8,
+        model: "x-ai/grok-4.1-fast",
+        modelPreset: "fast",
+        temperature: 0.6,
         enabled: true,
         knowledgeMode: "shared_session_docs",
         knowledgeStrict: false,
@@ -149,8 +186,9 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         reasoningStyle: "creative",
         reasoningDepth: "normal",
         provider: "openrouter",
-        model: "x-ai/grok-4-fast",
-        temperature: 0.9,
+        model: "openai/gpt-5.5",
+        modelPreset: "high_quality",
+        temperature: 0.5,
         enabled: true,
         knowledgeMode: "no_docs",
         knowledgeStrict: false,
@@ -160,7 +198,7 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
     },
 ];
 
-export const PROVIDER_OPTIONS = ["groq", "openrouter"] as const;
+export const PROVIDER_OPTIONS = ["openrouter"] as const;
 
 /**
  * Static fallback catalog. The authoritative source is the backend
@@ -168,25 +206,15 @@ export const PROVIDER_OPTIONS = ["groq", "openrouter"] as const;
  * the UI usable even if the catalog hasn't loaded yet.
  */
 export const MODEL_OPTIONS: Record<string, string[]> = {
-    groq: [
-        "llama-3.3-70b-versatile",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "meta-llama/llama-4-maverick-17b-128e-instruct",
-        "deepseek-r1-distill-llama-70b",
-        "qwen/qwen3-32b",
-        "moonshotai/kimi-k2-instruct",
-        "gemma2-9b-it",
-    ],
     openrouter: [
-        "openai/gpt-5",
-        "openai/gpt-4.1-mini",
-        "google/gemini-2.5-flash",
-        "anthropic/claude-haiku-4.5",
-        "deepseek/deepseek-v3.2-exp",
-        "moonshotai/kimi-k2-thinking",
-        "x-ai/grok-4-fast",
-        "x-ai/grok-4",
         "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-5.5",
+        "openai/gpt-4.1-mini",
+        "deepseek/deepseek-v3.2",
+        "x-ai/grok-4.1-fast",
+        "x-ai/grok-4",
+        "moonshotai/kimi-k2.5",
     ],
 };
 
@@ -249,7 +277,8 @@ export function createAgentConfig(partial?: Partial<AgentConfig>): AgentConfig {
         reasoningStyle: "balanced",
         reasoningDepth: "normal",
         provider: "openrouter",
-        model: "openai/gpt-5",
+        model: "anthropic/claude-sonnet-4.5",
+        modelPreset: "balanced",
         temperature: 0.7,
         enabled: true,
         knowledgeMode: "shared_session_docs",

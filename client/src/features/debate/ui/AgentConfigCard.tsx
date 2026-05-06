@@ -4,6 +4,7 @@ import { cn } from "@/shared/lib/cn";
 import type { AgentConfig } from "../model/agent-config.types";
 import {
     MODEL_OPTIONS,
+    MODEL_PRESETS,
     PROVIDER_OPTIONS,
     REASONING_STYLES,
     REASONING_DEPTHS,
@@ -57,6 +58,16 @@ export default function AgentConfigCard({
             ]),
         );
     const models = modelMap[agent.provider] ?? modelMap.openrouter ?? [];
+    const catalogPresets = catalog.find((p) => p.id === "openrouter")?.presets ?? [];
+    const modelPresets = catalogPresets.length
+        ? catalogPresets.map((preset) => ({
+            key: preset.id,
+            label: preset.name,
+            provider: preset.provider,
+            model: preset.model,
+            temperature: preset.temperature,
+        }))
+        : MODEL_PRESETS;
 
     return (
         <motion.div
@@ -170,7 +181,7 @@ export default function AgentConfigCard({
                             {/* Preset selector */}
                             <div className="mt-3 mb-3">
                                 <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1 block">
-                                    Preset
+                                    Agent Preset
                                 </label>
                                 <select
                                     value={agent.preset ?? "custom"}
@@ -198,6 +209,40 @@ export default function AgentConfigCard({
                                     <option value="custom">Custom</option>
                                     {AGENT_PRESETS.map((p) => (
                                         <option key={p.key} value={p.key}>{p.label}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Model preset selector */}
+                            <div className="mb-3">
+                                <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1 block">
+                                    Model Preset
+                                </label>
+                                <select
+                                    value={agent.modelPreset ?? "custom"}
+                                    onChange={(e) => {
+                                        const key = e.target.value;
+                                        if (key === "custom") {
+                                            onUpdate({ modelPreset: null });
+                                            return;
+                                        }
+                                        const preset = modelPresets.find((p) => p.key === key);
+                                        if (preset) {
+                                            onUpdate({
+                                                modelPreset: preset.key as AgentConfig["modelPreset"],
+                                                provider: preset.provider,
+                                                model: preset.model,
+                                                temperature: preset.temperature,
+                                            });
+                                        }
+                                    }}
+                                    className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
+                                >
+                                    <option value="custom">Custom model</option>
+                                    {modelPresets.map((preset) => (
+                                        <option key={preset.key} value={preset.key}>
+                                            {preset.label}
+                                        </option>
                                     ))}
                                 </select>
                             </div>
@@ -268,6 +313,7 @@ export default function AgentConfigCard({
                                             onUpdate({
                                                 provider,
                                                 model: newModels[0]?.id ?? agent.model,
+                                                modelPreset: null,
                                             });
                                         }}
                                         className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
@@ -287,7 +333,7 @@ export default function AgentConfigCard({
                                     </label>
                                     <select
                                         value={agent.model}
-                                        onChange={(e) => onUpdate({ model: e.target.value })}
+                                        onChange={(e) => onUpdate({ model: e.target.value, modelPreset: null })}
                                         className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                                     >
                                         {models.map((m) => (
@@ -312,6 +358,7 @@ export default function AgentConfigCard({
                                         onChange={(e) =>
                                             onUpdate({
                                                 temperature: parseFloat(e.target.value),
+                                                modelPreset: null,
                                             })
                                         }
                                         className="w-full h-1.5 bg-agora-border rounded-full appearance-none cursor-pointer accent-indigo-500"

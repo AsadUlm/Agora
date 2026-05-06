@@ -35,8 +35,9 @@ async def list_providers(_: User = Depends(get_current_user)) -> list[ProviderIn
     if isinstance(service, ProviderRouter):
         available = {p.lower() for p in service.available_providers}
 
-    # Only expose groq and openrouter to the UI — mock is internal, others unused.
-    EXPOSED = {"groq", "openrouter"}
+    # Only expose the modern OpenRouter catalog to the UI; mock/internal legacy
+    # providers remain hidden from model selection.
+    EXPOSED = {"openrouter"}
     providers = _registry.list_providers()
     result: list[ProviderInfo] = []
     for p in providers:

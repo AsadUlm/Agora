@@ -54,6 +54,10 @@ def test_round3_prompt_requires_final_schema_with_response() -> None:
     assert '"short_summary"' in prompt
     assert "Return only valid JSON" in prompt
     assert "Do not mention JSON" in prompt
+    assert "Do NOT describe your process" in prompt
+    assert "Write like a final conclusion for a human reader" in prompt
+    assert "Take a strong final stance" in prompt
+    assert "Synthesize across the agents" in prompt
     assert '"final_position"' in prompt
     assert '"what_changed"' in prompt
     assert '"strongest_argument"' in prompt
