@@ -74,8 +74,19 @@ def _extract_docx(data: bytes) -> str:
         raise ExtractionError("python-docx is not installed. Add python-docx to requirements.txt.") from exc
 
     doc = docx.Document(io.BytesIO(data))
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    result = "\n".join(paragraphs)
+    texts: list[str] = []
+
+    for p in doc.paragraphs:
+        if p.text.strip():
+            texts.append(p.text)
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if cell.text.strip():
+                    texts.append(cell.text)
+
+    result = "\n".join(texts)
     if not result.strip():
         raise ExtractionError("DOCX document contains no extractable text.")
     return result

@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
     OPENROUTER_API_KEY: str | None = None
+    GEMINI_API_KEY: str | None = None
 
     # ── OpenRouter defaults ───────────────────────────────────────────────
     OPENROUTER_MODEL: str = "anthropic/claude-sonnet-4.5"
@@ -58,8 +59,8 @@ class Settings(BaseSettings):
     # NOTE: leaving the default at "mock" keeps local startup safe; flip to
     # "openrouter" via .env for real RAG quality.
     EMBEDDING_PROVIDER: str = "mock"
-    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
-    EMBEDDING_DIM: int = 1536                          # must match DocumentChunk.embedding Vector dim
+    EMBEDDING_MODEL: str = "google/gemini-embedding-exp-03-07"
+    EMBEDDING_DIM: int = 768                           # must match DocumentChunk.embedding Vector dim
 
     # ── File upload storage ───────────────────────────────────────────────
     # Local filesystem path for uploaded documents.

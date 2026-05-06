@@ -216,8 +216,25 @@ export default function NodeDetailDrawer() {
 
     const quickTakeaway = useMemo(() => {
         if (!node) return "";
+        const raw = node.summary || node.content;
+        // If raw is already plain text (not JSON), use it directly
+        const trimmed = (raw ?? "").trimStart();
+        if (!trimmed.startsWith("{")) {
+            return trimmed.slice(0, 180);
+        }
+        // Raw is JSON — extract the summary field before displaying
+        try {
+            const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+            for (const key of ["short_summary", "summary", "final_position", "final_stance", "stance", "conclusion"]) {
+                if (typeof parsed[key] === "string" && (parsed[key] as string).trim()) {
+                    return (parsed[key] as string).trim().slice(0, 180);
+                }
+            }
+        } catch {
+            // not valid JSON, fall through
+        }
         return getTurnSummary({
-            raw: node.summary || node.content,
+            raw,
             round: node.round,
             kind: node.kind,
             sourceRole: node.agentRole,

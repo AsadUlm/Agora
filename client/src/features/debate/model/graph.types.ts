@@ -34,6 +34,8 @@ export interface DebateGraphNode {
     summary?: string;
     agentId?: string;
     agentRole?: string;
+    agentModel?: string;
+    agentProvider?: string;
     content?: string;
     metadata?: Record<string, unknown>;
     /** Optional knowledge attachment summary used by AgentNode to render a badge. */

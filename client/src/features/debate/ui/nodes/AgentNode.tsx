@@ -51,6 +51,28 @@ function getRoleEmoji(role: string | undefined): string {
     return "🤖";
 }
 
+function modelShortName(model: string): string {
+    const lower = model.toLowerCase();
+    if (lower.includes("gpt-5")) return "GPT-5";
+    if (lower.includes("gpt-4.1-mini")) return "GPT-4.1m";
+    if (lower.includes("gemini-2.5-flash")) return "Gemini";
+    if (lower.includes("claude-haiku")) return "Haiku";
+    if (lower.includes("claude-sonnet")) return "Sonnet";
+    if (lower.includes("grok-4-fast")) return "Grok fast";
+    if (lower.includes("grok-4")) return "Grok";
+    if (lower.includes("deepseek")) return "DeepSeek";
+    if (lower.includes("kimi-k2-thinking")) return "Kimi K2.5";
+    if (lower.includes("kimi-k2")) return "Kimi K2";
+    if (lower.includes("llama-4-scout")) return "L4 Scout";
+    if (lower.includes("llama-4-maverick")) return "L4 Mav";
+    if (lower.includes("llama-3.3")) return "L3.3-70B";
+    if (lower.includes("qwen")) return "Qwen3";
+    if (lower.includes("mock")) return "Mock";
+    // fallback: last segment after /
+    const parts = model.split("/");
+    return parts[parts.length - 1].slice(0, 10);
+}
+
 export default function AgentNode({
     data,
     id,
@@ -108,6 +130,11 @@ export default function AgentNode({
                     <span className="text-[10px] uppercase tracking-wider text-white/60 font-semibold">
                         {data.agentRole ?? "Agent"}
                     </span>
+                    {data.agentModel && (
+                        <span className="ml-auto text-[8px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 font-medium truncate max-w-[70px]" title={data.agentModel}>
+                            {modelShortName(data.agentModel)}
+                        </span>
+                    )}
                     {data.kind === "intermediate" && (
                         <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 font-medium">
                             R2

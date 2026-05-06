@@ -11,8 +11,8 @@ The factory function get_embedding_service() returns the right implementation
 based on settings.EMBEDDING_PROVIDER.  RoundManager and DocumentIngestionService
 always call through this interface, never a provider directly.
 
-Vector dimension: 1536 (OpenAI text-embedding-3-small / ada-002 compatible).
-This must match the Vector(1536) column in document_chunks.embedding.
+Vector dimension: 768 (Gemini text-embedding-004 compatible).
+This must match the Vector(768) column in document_chunks.embedding.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_DIM = 1536
+EMBEDDING_DIM = 768
 
 
 class EmbeddingProviderError(RuntimeError):
@@ -48,7 +48,7 @@ class EmbeddingService(ABC):
 
 class OpenAIEmbeddingService(EmbeddingService):
     """
-    OpenAI text-embedding-3-small (1536-dim).
+    OpenAI text-embedding-3-small.
 
     Requires OPENAI_API_KEY.  Both embed() and embed_batch() use the async
     OpenAI client so they never block the event loop.
@@ -85,7 +85,7 @@ class OpenRouterEmbeddingService(EmbeddingService):
         {
           "model": "openai/text-embedding-3-small",
           "input": ["text 1", "text 2"],
-          "dimensions": 1536
+          "dimensions": 768
         }
 
     Returns vectors in the original input order (sorted by ``index`` if
@@ -223,6 +223,71 @@ class OpenRouterEmbeddingService(EmbeddingService):
         return result
 
 
+class GeminiEmbeddingService(EmbeddingService):
+    """
+    Google Gemini embeddings via the Generative Language REST API.
+
+    Uses GEMINI_API_KEY and calls:
+        POST https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents
+    """
+
+    _DEFAULT_MODEL = "text-embedding-004"
+
+    def __init__(self, api_key: str, model: str = _DEFAULT_MODEL) -> None:
+        if not api_key:
+            raise EmbeddingProviderError("GeminiEmbeddingService requires GEMINI_API_KEY.")
+        self._api_key = api_key
+        self._model = model
+
+    async def embed(self, text: str) -> list[float]:
+        return (await self.embed_batch([text]))[0]
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        import httpx  # deferred; httpx is in requirements
+
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._model}:batchEmbedContents?key={self._api_key}"
+        )
+        payload = {
+            "requests": [
+                {"model": f"models/{self._model}", "content": {"parts": [{"text": t[:32000]}]}}
+                for t in texts
+            ]
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload)
+        except httpx.HTTPError as exc:
+            raise EmbeddingProviderError(f"Gemini embeddings transport error: {exc}") from exc
+
+        if resp.status_code < 200 or resp.status_code >= 300:
+            raise EmbeddingProviderError(
+                f"Gemini embeddings HTTP {resp.status_code}: {resp.text[:500]}"
+            )
+
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise EmbeddingProviderError("Gemini embeddings: response was not valid JSON") from exc
+
+        embeddings = data.get("embeddings")
+        if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+            raise EmbeddingProviderError(
+                f"Gemini embeddings: expected {len(texts)} vectors, got unexpected response shape"
+            )
+
+        result: list[list[float]] = []
+        for item in embeddings:
+            vec = item.get("values") if isinstance(item, dict) else None
+            if not isinstance(vec, list) or not vec:
+                raise EmbeddingProviderError("Gemini embeddings: missing 'values' in response item")
+            result.append([float(v) for v in vec])
+        return result
+
+
 class MockEmbeddingService(EmbeddingService):
     """
     Zero-vector embeddings for tests and offline development.
@@ -265,6 +330,20 @@ def _make_service() -> EmbeddingService:
     from app.core.config import settings  # deferred — avoids circular import
 
     provider = settings.EMBEDDING_PROVIDER.lower()
+
+    if provider == "gemini":
+        if not getattr(settings, "GEMINI_API_KEY", None):
+            logger.warning(
+                "EMBEDDING_PROVIDER=gemini but GEMINI_API_KEY is not set. "
+                "Falling back to MockEmbeddingService."
+            )
+        else:
+            model = getattr(settings, "EMBEDDING_MODEL", GeminiEmbeddingService._DEFAULT_MODEL)
+            # Strip OpenRouter-style prefix if someone left "google/text-embedding-004"
+            if "/" in model:
+                model = model.split("/", 1)[1]
+            logger.info("Embedding provider: Gemini (model=%s)", model)
+            return GeminiEmbeddingService(api_key=settings.GEMINI_API_KEY, model=model)
 
     if provider == "openrouter":
         if not settings.OPENROUTER_API_KEY:

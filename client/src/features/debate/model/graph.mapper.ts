@@ -116,6 +116,8 @@ export function mapSessionToGraph(session: SessionDetailDTO): DebateGraph {
             status: "hidden",
             agentId: agent.id,
             agentRole: agent.role,
+            agentModel: agent.model,
+            agentProvider: agent.provider,
             knowledge: { mode, docCount },
         });
     });

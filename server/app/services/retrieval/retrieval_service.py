@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentStatus
@@ -37,8 +37,8 @@ from app.services.embeddings.embedding_service import get_embedding_service
 logger = logging.getLogger(__name__)
 
 # Minimum similarity threshold — chunks below this score are excluded.
-# cos_distance = 1 - cosine_similarity, so distance < 0.45 means similarity > 0.55.
-_MIN_SIMILARITY = 0.45
+# Lowered to 0.20 to support cross-lingual queries (e.g. English question vs Korean doc).
+_MIN_SIMILARITY = 0.20
 
 
 class RetrievalService:
@@ -186,8 +186,8 @@ class RetrievalService:
                     DocumentChunk.document_id,
                     DocumentChunk.chunk_index,
                     DocumentChunk.content,
-                    (
-                        text(f"1 - (document_chunks.embedding <=> '{vector_literal}'::vector)")
+                    literal_column(
+                        f"1 - (document_chunks.embedding <=> '{vector_literal}'::vector)"
                     ).label("similarity"),
                 )
                 .join(Document, Document.id == DocumentChunk.document_id)
@@ -195,7 +195,7 @@ class RetrievalService:
                 .where(Document.status == DocumentStatus.ready)
                 .where(DocumentChunk.embedding.is_not(None))
                 .where(
-                    text(f"document_chunks.embedding <=> '{vector_literal}'::vector < {1 - _MIN_SIMILARITY}")
+                    text(f"(document_chunks.embedding <=> '{vector_literal}'::vector) < {1 - _MIN_SIMILARITY}")
                 )
             )
             if document_ids is not None:
