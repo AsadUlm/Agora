@@ -13,7 +13,7 @@ export interface FormattedMessage {
 }
 
 const SAFE_FORMAT_FALLBACK = "Response generated, but could not be formatted.";
-const SUMMARY_MAX_CHARS = 210;
+const SUMMARY_MAX_CHARS = Number.POSITIVE_INFINITY;
 const META_PHRASE_REGEX = /\b(i need to|i will|generating|here is|as an ai)\b/i;
 
 /**
@@ -149,7 +149,7 @@ export function formatModeratorEvent(
         const stance = extractStance(parsed, messageContent);
         return {
             title: `${role} presented initial position`,
-            description: stance ? truncate(stance, 120) : "Shared their opening argument",
+            description: stance || "Shared their opening argument",
             type: "info",
         };
     }
@@ -178,7 +178,7 @@ export function formatModeratorEvent(
         const stance = extractStance(parsed, messageContent);
         return {
             title: `${role} contributed to synthesis`,
-            description: stance ? truncate(stance, 120) : "Provided final perspective",
+            description: stance || "Provided final perspective",
             type: "synthesis",
         };
     }
@@ -294,7 +294,7 @@ export function formatFinalSummary(raw: string | undefined | null): string {
     return normalizeSummary("", cleanText(String(raw)) || "Final synthesis prepared.", 220);
 }
 
-export function normalizeSummary(summary: string, fallbackText: string, maxChars = SUMMARY_MAX_CHARS): string {
+export function normalizeSummary(summary: string, fallbackText: string, _maxChars = SUMMARY_MAX_CHARS): string {
     const base = cleanText(summary);
     const fallback = cleanText(fallbackText);
 
@@ -302,10 +302,6 @@ export function normalizeSummary(summary: string, fallbackText: string, maxChars
     candidate = removeMetaFragments(candidate).trim();
 
     if (!candidate) candidate = SAFE_FORMAT_FALLBACK;
-
-    if (candidate.length > maxChars) {
-        candidate = trimToSentenceBoundary(candidate, maxChars);
-    }
 
     if (candidate && !/[.!?]$/.test(candidate)) {
         candidate = `${candidate}.`;
@@ -325,7 +321,7 @@ export function getTurnSummary(args: {
     targetRole?: string | null;
     maxLen?: number;
 }): string {
-    const { raw, round, kind, sourceRole, targetRole, maxLen = 140 } = args;
+    const { raw, round, kind, sourceRole, targetRole } = args;
     let summary = "";
 
     if (round === 1) {
@@ -335,10 +331,10 @@ export function getTurnSummary(args: {
     } else if (round === 3 || kind === "synthesis") {
         summary = formatFinalSummary(raw);
     } else {
-        summary = normalizeSummary("", cleanText(String(raw ?? "")), Math.max(160, maxLen));
+        summary = normalizeSummary("", cleanText(String(raw ?? "")));
     }
 
-    return normalizeSummary(summary, cleanText(String(raw ?? "")), Math.max(160, maxLen));
+    return normalizeSummary(summary, cleanText(String(raw ?? "")));
 }
 
 /**
@@ -370,9 +366,14 @@ export function extractStructuredContent(
             return [{ heading: "Response", body: cleaned }];
         }
 
+        const detailSections: ContentSection[] = [];
+        for (let idx = 1; idx < paragraphs.length; idx += 1) {
+            detailSections.push({ heading: `Detail ${idx}`, body: paragraphs[idx] });
+        }
+
         return [
             { heading: "Main Point", body: paragraphs[0] },
-            ...paragraphs.slice(1, 3).map((p, i) => ({ heading: `Detail ${i + 1}`, body: p })),
+            ...detailSections,
         ];
     }
 
@@ -617,19 +618,19 @@ function extractPrimaryResponse(
     return cleaned || SAFE_FORMAT_FALLBACK;
 }
 
-function deriveSummaryFromText(text: string, maxLen = 180): string {
+function deriveSummaryFromText(text: string, _maxLen = 180): string {
     const cleaned = cleanText(text);
     if (!cleaned) return SAFE_FORMAT_FALLBACK;
-    return normalizeSummary("", cleaned, maxLen);
+    return normalizeSummary("", cleaned);
 }
 
 // ── Truncation for node display ──────────────────────────────────────
 
-export function truncateNodeText(text: string | undefined, maxLen = 80): string {
+export function truncateNodeText(text: string | undefined, _maxLen = 80): string {
     if (!text) return "";
     const cleaned = cleanText(text);
     if (!cleaned) return "";
-    return normalizeSummary("", cleaned, Math.max(maxLen, 170));
+    return normalizeSummary("", cleaned);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -708,27 +709,6 @@ function removeMetaFragments(text: string): string {
     }
 
     return value.replace(/\s+/g, " ").trim();
-}
-
-function trimToSentenceBoundary(text: string, maxChars: number): string {
-    const normalized = cleanText(text);
-    if (normalized.length <= maxChars) return normalized;
-
-    const sentences = normalized.split(/(?<=[.!?])\s+/).filter(Boolean);
-    let acc = "";
-    for (const sentence of sentences) {
-        const next = acc ? `${acc} ${sentence}` : sentence;
-        if (next.length > maxChars) break;
-        acc = next;
-    }
-    if (acc) return acc.trim();
-
-    const clipped = normalized.slice(0, maxChars).trim();
-    const boundary = clipped.lastIndexOf(" ");
-    if (boundary > Math.floor(maxChars * 0.6)) {
-        return clipped.slice(0, boundary).trim();
-    }
-    return clipped;
 }
 
 function stripCodeFences(value: string): string {
@@ -816,17 +796,7 @@ function extractFirstMeaningful(obj: Record<string, unknown>): string {
 
 function capitalizeRole(role: string | null | undefined): string {
     if (!role) return "Agent";
-    return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
-}
-
-function truncate(s: string, max: number): string {
-    if (s.length <= max) return s;
-    const clipped = s.slice(0, max).trim();
-    const boundary = clipped.lastIndexOf(" ");
-    if (boundary > Math.floor(max * 0.55)) {
-        return clipped.slice(0, boundary).trimEnd();
-    }
-    return clipped;
+    return role.replace(/^./, (first) => first.toUpperCase()).replace(/(.)(.*)/, (_match, first, rest) => `${first}${String(rest).toLowerCase()}`);
 }
 
 function extractStance(
@@ -836,13 +806,12 @@ function extractStance(
     if (parsed) {
         for (const key of ["short_summary", "final_position", "final_stance", "stance", "summary", "position", "text"]) {
             if (typeof parsed[key] === "string" && (parsed[key] as string).trim()) {
-                return truncate((parsed[key] as string).trim(), 150);
+                return cleanText((parsed[key] as string).trim());
             }
         }
     }
     if (raw) {
-        const cleaned = cleanText(raw);
-        return truncate(cleaned, 150);
+        return cleanText(raw);
     }
     return "";
 }
@@ -875,11 +844,11 @@ function extractCritiqueSummary(
         if (Array.isArray(critiques) && critiques.length > 0) {
             const first = critiques[0] as Record<string, unknown> | undefined;
             if (first && typeof first["challenge"] === "string") {
-                return truncate(first["challenge"] as string, 120);
+                return cleanText(first["challenge"] as string);
             }
         }
         if (typeof parsed["critique"] === "string") {
-            return truncate(parsed["critique"] as string, 120);
+            return cleanText(parsed["critique"] as string);
         }
     }
     return extractStance(parsed, raw) || "Raised concerns about another agent's position";

@@ -14,16 +14,54 @@ from app.services.llm.parser import parse_json_from_llm
 logger = logging.getLogger(__name__)
 
 _MAX_SUMMARY_CHARS = 180
+_NO_PUNCTUATION_FALLBACK_CHARS = 200
 
-_META_PATTERNS = [
-    r"(?im)^\s*(i need to|i will|let me)\b[^.!?\n]*[.!?]?",
-    r"(?im)^\s*(generating|generate|here is|below is)\b[^.!?\n]*[.!?]?",
-    r"(?i)\b(i need to|i will)\b[^.!?\n]*(json|schema|format|object)[^.!?\n]*[.!?]?",
-    r"(?i)\b(generating|generate)\b[^.!?\n]*(json|synthesis|object)[^.!?\n]*[.!?]?",
-    r"(?i)\b(here is|below is)\b[^.!?\n]*(json|object)[^.!?\n]*[.!?]?",
-    r"(?i)\bas an ai\b[^.!?\n]*[.!?]?",
-    r"(?i)\b(return only|schema|field list|instruction)\b[^.!?\n]*[.!?]?",
-]
+_META_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in [
+        r"(?im)^\s*(i need to|i will|i'm going to|let me)\b[^.!?\n]*[.!?]?",
+        r"(?im)^\s*(generating|generate|here is|below is)\b[^.!?\n]*[.!?]?",
+        r"(?i)\b(i need to|i will|i'm going to)\b[^.!?\n]*(json|schema|format|object)[^.!?\n]*[.!?]?",
+        r"(?i)\b(generating|generate)\b[^.!?\n]*(json|synthesis|object)[^.!?\n]*[.!?]?",
+        r"(?i)\b(here is|below is)\b[^.!?\n]*(json|object|answer)[^.!?\n]*[.!?]?",
+        r"(?i)\bas an ai\b[^.!?\n]*[.!?]?",
+        r"(?i)\b(return only|schema|field list|instruction)\b[^.!?\n]*[.!?]?",
+    ]
+)
+_CODE_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```")
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+", flags=re.MULTILINE)
+_BOLD_RE = re.compile(r"\*\*(.*?)\*\*")
+_SENTENCE_RE = re.compile(r"[^.!?]+[.!?]+")
+
+_STRONG_CLAIM_KEYWORDS = (
+    "strongest",
+    "because",
+    "therefore",
+    "should",
+    "must",
+    "best",
+    "core",
+    "central",
+    "key",
+    "evidence",
+)
+_CONCERN_KEYWORDS = (
+    "concern",
+    "risks",
+    "unresolved",
+    "caveat",
+    "limitation",
+    "trade-off",
+    "tradeoff",
+)
+_CHANGE_KEYWORDS = (
+    "changed",
+    "refined",
+    "after",
+    "critique",
+    "considering",
+    "now",
+)
 
 
 @dataclass(frozen=True)
@@ -93,12 +131,13 @@ def normalize_round_output(
 def fallback_parse(raw_text: str, round_number: int = 0) -> NormalizedRoundOutput:
     """Build a safe structured response from non-JSON model output."""
     extracted = _extract_best_jsonish_field(raw_text)
-    cleaned_text = _sanitize_text(extracted or raw_text)
+    paragraph_text = _sanitize_text(extracted or raw_text, preserve_paragraphs=True)
+    cleaned_text = _sanitize_text(paragraph_text or extracted or raw_text)
 
     if not cleaned_text:
         cleaned_text = "Response generated, but could not be formatted."
 
-    short_summary = normalize_summary("", cleaned_text, max_chars=_MAX_SUMMARY_CHARS)
+    short_summary = generate_summary(cleaned_text, max_chars=_MAX_SUMMARY_CHARS)
     payload: dict[str, Any] = {
         "short_summary": short_summary,
         "response": cleaned_text,
@@ -126,15 +165,7 @@ def fallback_parse(raw_text: str, round_number: int = 0) -> NormalizedRoundOutpu
             }
         )
     elif round_number == 3:
-        payload.update(
-            {
-                "final_position": short_summary,
-                "what_changed": "The final answer was formatted automatically from the model's prose response.",
-                "strongest_argument": short_summary,
-                "remaining_concerns": "The model did not provide structured remaining concerns.",
-                "conclusion": short_summary,
-            }
-        )
+        payload.update(_build_round3_fallback_fields(cleaned_text, paragraph_text))
 
     return NormalizedRoundOutput(
         payload=payload,
@@ -149,16 +180,42 @@ def normalize_summary(summary: str, fallback_text: str, max_chars: int = _MAX_SU
     """Normalize summary into a complete user-facing sentence."""
     base = _sanitize_text(summary)
     fallback = _sanitize_text(fallback_text)
+    return generate_summary(base or fallback, max_chars=max_chars)
 
-    candidate = base or _first_sentence(fallback) or fallback
-    if not candidate:
-        candidate = "Response generated, but could not be formatted."
 
-    candidate = _trim_to_sentence_boundary(candidate, max_chars)
-    if candidate and candidate[-1] not in ".!?":
-        candidate = f"{candidate}."
+def generate_summary(text: str, max_chars: int = _MAX_SUMMARY_CHARS) -> str:
+    """Generate a sentence-safe summary from cleaned model text."""
+    cleaned = _sanitize_text(text)
+    if not cleaned:
+        return "Response generated, but could not be formatted."
 
-    return candidate
+    complete_sentences = _complete_sentences(cleaned)
+    if complete_sentences:
+        # Never cut through a sentence. The length target applies when the model
+        # gives a usable complete sentence; unusually long sentences are kept
+        # intact rather than producing broken UI text.
+        return _ensure_terminal_punctuation(complete_sentences[0])
+
+    fallback = _clip_without_sentence(cleaned, _NO_PUNCTUATION_FALLBACK_CHARS)
+    return _ensure_terminal_punctuation(fallback)
+
+
+def _build_round3_fallback_fields(cleaned_text: str, paragraph_text: str) -> dict[str, str]:
+    paragraphs = _paragraphs(paragraph_text or cleaned_text)
+    final_position = paragraphs[0] if paragraphs else generate_summary(cleaned_text)
+    conclusion = paragraphs[-1] if paragraphs else final_position
+
+    strongest_argument = _strongest_claim_sentence(cleaned_text) or generate_summary(cleaned_text)
+    what_changed = _keyword_sentence(cleaned_text, _CHANGE_KEYWORDS) or "The final position weighs the strongest support against the main trade-offs raised in the debate."
+    remaining_concerns = _keyword_sentence(cleaned_text, _CONCERN_KEYWORDS)
+
+    return {
+        "final_position": final_position,
+        "what_changed": what_changed,
+        "strongest_argument": strongest_argument,
+        "remaining_concerns": remaining_concerns,
+        "conclusion": conclusion,
+    }
 
 
 def _normalize_round1(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
@@ -350,6 +407,66 @@ def _derive_points_from_text(text: str, limit: int = 3) -> list[str]:
     return points or ["The position requires further detail."]
 
 
+def _complete_sentences(text: str) -> list[str]:
+    cleaned = _sanitize_text(text)
+    if not cleaned:
+        return []
+    return [match.group(0).strip() for match in _SENTENCE_RE.finditer(cleaned) if match.group(0).strip()]
+
+
+def _ensure_terminal_punctuation(text: str) -> str:
+    cleaned = _sanitize_text(text)
+    if not cleaned:
+        return "Response generated, but could not be formatted."
+    if cleaned[-1] not in ".!?":
+        return f"{cleaned}."
+    return cleaned
+
+
+def _clip_without_sentence(text: str, max_chars: int) -> str:
+    cleaned = _sanitize_text(text)
+    if len(cleaned) <= max_chars:
+        return cleaned
+    clipped = cleaned[:max_chars].rstrip()
+    boundary = clipped.rfind(" ")
+    if boundary > int(max_chars * 0.6):
+        clipped = clipped[:boundary].rstrip()
+    return clipped.rstrip(" ,;:-")
+
+
+def _paragraphs(text: str) -> list[str]:
+    cleaned = _sanitize_text(text, preserve_paragraphs=True)
+    if not cleaned:
+        return []
+    return [part.strip() for part in re.split(r"\n\s*\n+", cleaned) if part.strip()]
+
+
+def _keyword_sentence(text: str, keywords: tuple[str, ...]) -> str:
+    for sentence in _complete_sentences(text):
+        lowered = sentence.lower()
+        if any(keyword in lowered for keyword in keywords):
+            return sentence
+    return ""
+
+
+def _strongest_claim_sentence(text: str) -> str:
+    sentences = _complete_sentences(text)
+    if not sentences:
+        return ""
+
+    best_sentence = sentences[0]
+    best_score = -1
+    for sentence in sentences:
+        lowered = sentence.lower()
+        score = sum(1 for keyword in _STRONG_CLAIM_KEYWORDS if keyword in lowered)
+        if "strongest" in lowered:
+            score += 3
+        if score > best_score:
+            best_sentence = sentence
+            best_score = score
+    return best_sentence
+
+
 def _extract_best_jsonish_field(text: str) -> str:
     """Recover a useful string field from malformed or embedded JSON-like text."""
     if not text:
@@ -405,29 +522,37 @@ def _strip_json_artifacts(text: str) -> str:
     return " ".join(lines).strip()
 
 
-def _sanitize_text(text: str) -> str:
+def _sanitize_text(text: str, preserve_paragraphs: bool = False) -> str:
     if not text:
         return ""
 
     cleaned = str(text)
     cleaned = cleaned.replace("\r\n", "\n")
-    cleaned = re.sub(r"```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```", r"\1", cleaned)
+    cleaned = _CODE_FENCE_RE.sub(r"\1", cleaned)
     cleaned = _strip_code_fences(cleaned)
     if _looks_json_like(cleaned):
         best = _extract_best_jsonish_field(cleaned)
         if best:
             cleaned = best
-    cleaned = re.sub(r"^\s{0,3}#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
-    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", cleaned)
+    cleaned = _HEADING_RE.sub("", cleaned)
+    cleaned = _BOLD_RE.sub(r"\1", cleaned)
     cleaned = cleaned.replace("**", "")
 
     for pattern in _META_PATTERNS:
-        cleaned = re.sub(pattern, " ", cleaned)
+        cleaned = pattern.sub(" ", cleaned)
+
+    cleaned = re.sub(r"(?i)\bjson\b", " ", cleaned)
 
     if _looks_json_like(cleaned):
         cleaned = _strip_json_artifacts(cleaned) or cleaned
 
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" `\n\t")
+    if preserve_paragraphs:
+        cleaned = re.sub(r"[ \t\f\v]+", " ", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        cleaned = re.sub(r" *\n *", "\n", cleaned)
+        cleaned = cleaned.strip(" `\n\t")
+    else:
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" `\n\t")
 
     if cleaned.startswith("{") and cleaned.endswith("}"):
         try:
@@ -462,40 +587,11 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _first_sentence(text: str) -> str:
-    normalized = _sanitize_text(text)
-    if not normalized:
-        return ""
-    parts = re.split(r"(?<=[.!?])\s+", normalized)
-    for part in parts:
-        candidate = part.strip()
-        if candidate:
-            return candidate
-    return normalized
+    sentences = _complete_sentences(text)
+    if sentences:
+        return sentences[0]
+    return _sanitize_text(text)
 
 
 def _trim_to_sentence_boundary(text: str, max_chars: int) -> str:
-    normalized = _sanitize_text(text)
-    if len(normalized) <= max_chars:
-        return normalized
-
-    sentences = re.split(r"(?<=[.!?])\s+", normalized)
-    selected: list[str] = []
-    total = 0
-    for sentence in sentences:
-        segment = sentence.strip()
-        if not segment:
-            continue
-        next_total = total + (1 if selected else 0) + len(segment)
-        if next_total > max_chars:
-            break
-        selected.append(segment)
-        total = next_total
-
-    if selected:
-        return " ".join(selected)
-
-    clipped = normalized[:max_chars].rstrip()
-    boundary = clipped.rfind(" ")
-    if boundary > int(max_chars * 0.6):
-        clipped = clipped[:boundary]
-    return clipped.rstrip(" ,;:-")
+    return generate_summary(text, max_chars=max_chars)

@@ -5,7 +5,7 @@ Covers:
   • Registry — provider listing, model listing, filtering, status
   • AgentConfig — from_raw parsing, defaults, rich configs, backward compat
   • LLM API endpoints — GET /llm/providers, GET /llm/models, GET /agents/config/options
-  • Placeholder provider rejection via factory
+    • Modern OpenRouter model catalog
   • Debate start with rich agent config
 """
 
@@ -16,7 +16,7 @@ from httpx import AsyncClient
 
 from app.schemas.agent_config import AgentConfig, ModelConfig, ReasoningConfig
 from app.services.llm.exceptions import ProviderConfigError, ProviderUnavailableError
-from app.services.llm.registry import ProviderRegistry
+from app.services.llm.registry import MODEL_PRESETS, OpenRouterModel, ProviderRegistry, provider_for_model
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -28,14 +28,15 @@ class TestProviderRegistry:
     def test_registry_has_providers(self):
         reg = ProviderRegistry()
         providers = reg.list_providers()
-        assert len(providers) >= 3  # groq, openai, mock at minimum
+        ids = {p.id for p in providers}
+        assert {"mock", "openrouter"}.issubset(ids)
 
-    def test_groq_is_registered(self):
+    def test_openrouter_is_registered(self):
         reg = ProviderRegistry()
-        groq = reg.get_provider("groq")
-        assert groq is not None
-        assert groq.name == "Groq"
-        assert groq.status in ("active", "configured")
+        openrouter = reg.get_provider("openrouter")
+        assert openrouter is not None
+        assert openrouter.name == "OpenRouter"
+        assert openrouter.status in ("active", "configured")
 
     def test_mock_is_always_active(self):
         reg = ProviderRegistry()
@@ -43,12 +44,12 @@ class TestProviderRegistry:
         assert mock is not None
         assert mock.status == "active"
 
-    def test_placeholders_exist(self):
+    def test_only_modern_openrouter_models_are_catalogued(self):
         reg = ProviderRegistry()
-        for pid in ("anthropic", "google", "mistral", "cohere", "deepseek"):
-            info = reg.get_provider(pid)
-            assert info is not None, f"Missing placeholder: {pid}"
-            assert info.status == "placeholder"
+        ids = {model.id for model in reg.list_models(provider="openrouter")}
+        assert ids == {model.value for model in OpenRouterModel}
+        assert f"google/gemini-{'2.5'}-flash" not in ids
+        assert f"openai/gpt-{'5'}" not in ids
 
     def test_each_provider_has_models(self):
         reg = ProviderRegistry()
@@ -62,9 +63,21 @@ class TestProviderRegistry:
 
     def test_list_models_filtered(self):
         reg = ProviderRegistry()
-        groq_models = reg.list_models(provider="groq")
-        assert len(groq_models) >= 2
-        assert all("llama" in m.id or "mixtral" in m.id for m in groq_models)
+        openrouter_models = reg.list_models(provider="openrouter")
+        assert len(openrouter_models) == len(OpenRouterModel)
+        assert openrouter_models[0].id == OpenRouterModel.CLAUDE_SONNET_4_5.value
+
+    def test_modern_model_presets(self):
+        presets = {preset.name: preset.model for preset in MODEL_PRESETS}
+        assert presets == {
+            "Fast": OpenRouterModel.GROK_4_1_FAST.value,
+            "Balanced": OpenRouterModel.CLAUDE_SONNET_4_5.value,
+            "High Quality": OpenRouterModel.GPT_5_5.value,
+        }
+
+    def test_modern_models_route_to_openrouter(self):
+        assert provider_for_model(OpenRouterModel.KIMI_K2_5.value, "groq") == "openrouter"
+        assert provider_for_model("unknown/model", "mock") == "mock"
 
     def test_list_models_unknown_provider_returns_empty(self):
         reg = ProviderRegistry()
@@ -99,12 +112,12 @@ class TestAgentConfig:
 
     def test_rich_config_parsed(self):
         raw = {
-            "model": {"provider": "groq", "model": "llama-3.3-70b-versatile", "temperature": 0.5},
+            "model": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.5", "temperature": 0.5},
             "reasoning": {"style": "analytical", "depth": "deep"},
         }
         cfg = AgentConfig.from_raw(raw)
-        assert cfg.model.provider == "groq"
-        assert cfg.model.model == "llama-3.3-70b-versatile"
+        assert cfg.model.provider == "openrouter"
+        assert cfg.model.model == "anthropic/claude-sonnet-4.5"
         assert cfg.model.temperature == 0.5
         assert cfg.reasoning.style == "analytical"
         assert cfg.reasoning.depth == "deep"
@@ -119,13 +132,13 @@ class TestAgentConfig:
     def test_model_dump_roundtrip(self):
         raw = {
             "identity": {"name": "Agent007", "description": "Secret agent"},
-            "model": {"provider": "groq"},
+            "model": {"provider": "openrouter"},
         }
         cfg = AgentConfig.from_raw(raw)
         dumped = cfg.model_dump()
         restored = AgentConfig.model_validate(dumped)
         assert restored.identity.name == "Agent007"
-        assert restored.model.provider == "groq"
+        assert restored.model.provider == "openrouter"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -233,7 +246,7 @@ async def test_debate_start_rich_config_payload(client: AsyncClient):
             {
                 "role": "optimist",
                 "config": {
-                    "model": {"provider": "groq", "model": "llama-3.3-70b-versatile"},
+                    "model": {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.5"},
                     "reasoning": {"style": "creative", "depth": "deep"},
                 },
             },

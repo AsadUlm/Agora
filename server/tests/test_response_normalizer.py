@@ -6,6 +6,7 @@ import uuid
 from app.schemas.contracts import AgentRoundResult
 from app.services.debate_engine.response_normalizer import (
     fallback_parse,
+    generate_summary,
     normalize_round_output,
     normalize_summary,
 )
@@ -81,6 +82,7 @@ def test_markdown_text_fallback_is_cleaned() -> None:
 def test_meta_text_fallback_removes_wrapper() -> None:
     raw = (
         "I need to create a JSON object first. "
+        "I'm going to prepare the answer as JSON. "
         "Generating final synthesis now. "
         "The final answer is that regulation should be targeted and evidence-based."
     )
@@ -90,7 +92,9 @@ def test_meta_text_fallback_removes_wrapper() -> None:
     response = str(out.payload["response"]).lower()
     assert out.payload["is_fallback"] is True
     assert "i need to" not in response
+    assert "i'm going to" not in response
     assert "generating" not in response
+    assert "json" not in response
     assert "targeted and evidence-based" in response
 
 
@@ -106,13 +110,20 @@ def test_malformed_json_fallback_extracts_readable_field() -> None:
 
 
 def test_round3_plain_text_fallback_keeps_final_answer() -> None:
-    raw = "After considering the critique, the final position is conditional support for targeted regulation."
+    raw = (
+        "I now support targeted regulation because the debate showed that high-risk systems need enforceable guardrails.\n\n"
+        "The strongest argument is that safety-critical AI can create harms that ordinary market incentives will not prevent.\n\n"
+        "Remaining concerns include enforcement capacity and the risk of overbroad rules.\n\n"
+        "Therefore, the best conclusion is a focused regulatory approach for high-impact uses."
+    )
 
     out = normalize_round_output(round_number=3, raw_text=raw)
 
     assert out.payload["is_fallback"] is True
-    assert out.payload["final_position"] == "After considering the critique, the final position is conditional support for targeted regulation."
-    assert out.payload["conclusion"] == out.payload["short_summary"]
+    assert out.payload["final_position"] == "I now support targeted regulation because the debate showed that high-risk systems need enforceable guardrails."
+    assert out.payload["strongest_argument"] == "The strongest argument is that safety-critical AI can create harms that ordinary market incentives will not prevent."
+    assert out.payload["remaining_concerns"] == "Remaining concerns include enforcement capacity and the risk of overbroad rules."
+    assert out.payload["conclusion"] == "Therefore, the best conclusion is a focused regulatory approach for high-impact uses."
 
 
 def test_normalizer_sanitizes_meta_reasoning_text() -> None:
@@ -184,6 +195,27 @@ def test_summary_fallback_builds_complete_sentence() -> None:
 
     assert summary.endswith((".", "!", "?"))
     assert "..." not in summary
+
+
+def test_generate_summary_never_cuts_complete_sentence() -> None:
+    long_sentence = (
+        "This complete sentence is intentionally long because it describes a nuanced policy position with many necessary qualifiers, "
+        "implementation details, fairness constraints, institutional trade-offs, and practical examples that exceed the target length but still end cleanly."
+    )
+
+    summary = generate_summary(f"{long_sentence} Second sentence should not be selected.")
+
+    assert summary == long_sentence
+    assert summary.endswith(".")
+
+
+def test_generate_summary_uses_200_char_fallback_only_without_punctuation() -> None:
+    raw = "word " * 80
+
+    summary = generate_summary(raw)
+
+    assert len(summary) <= 201
+    assert summary.endswith(".")
 
 
 def test_direct_fallback_parse_returns_structured_object() -> None:

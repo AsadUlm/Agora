@@ -81,10 +81,15 @@ Output contract:
 - Return only valid JSON.
 - Do not use markdown fences.
 - Do not mention JSON, schema, fields, or instructions.
+- Do NOT describe your process.
 - Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 - Every field must be user-facing content.
 - short_summary must be one complete sentence.
 - response must be clean prose for end users.
+- Write like a final conclusion for a human reader.
+- Take a strong final stance, not a process note.
+- Synthesize across the agents' strongest arguments and critiques.
+- End with a clear conclusion.
 - Synthesis must explain what changed after critique and why.
 
 Forbidden examples:

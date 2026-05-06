@@ -12,6 +12,7 @@ import logging
 
 from app.schemas.contracts import LLMRequest, LLMResponse
 from app.services.llm.exceptions import LLMGenerationError
+from app.services.llm.registry import provider_for_model
 from app.services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,8 @@ class ProviderRouter(LLMService):
         return list(self._providers.keys())
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
-        provider_key = request.provider.lower() if request.provider else self._default
+        requested_provider = request.provider.lower() if request.provider else self._default
+        provider_key = provider_for_model(request.model, requested_provider)
 
         service = self._providers.get(provider_key)
         if service is None:

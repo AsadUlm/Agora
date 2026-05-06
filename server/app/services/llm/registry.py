@@ -1,13 +1,77 @@
 """
-LLM provider registry — catalog of available providers and their models.
-
-Step 1 stub: defines the data shapes and a minimal registry with mock + placeholders.
-Full provider implementations (Groq, OpenAI) are wired in Step 2.
+LLM provider registry — catalog of available providers and modern models.
 """
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel
+
+
+class OpenRouterModel(str, Enum):
+    CLAUDE_SONNET_4_5 = "anthropic/claude-sonnet-4.5"
+    CLAUDE_HAIKU_4_5 = "anthropic/claude-haiku-4.5"
+    GPT_5_5 = "openai/gpt-5.5"
+    GPT_4_1_MINI = "openai/gpt-4.1-mini"
+    DEEPSEEK_V3_2 = "deepseek/deepseek-v3.2"
+    GROK_4_1_FAST = "x-ai/grok-4.1-fast"
+    GROK_4_THINKING = "x-ai/grok-4"
+    KIMI_K2_5 = "moonshotai/kimi-k2.5"
+
+
+class ModelPresetInfo(BaseModel):
+    id: str
+    name: str
+    provider: str = "openrouter"
+    model: str
+    temperature: float = 0.7
+
+
+MODERN_OPENROUTER_MODELS: tuple[tuple[OpenRouterModel, str, int], ...] = (
+    (OpenRouterModel.CLAUDE_SONNET_4_5, "Claude Sonnet 4.5", 200000),
+    (OpenRouterModel.CLAUDE_HAIKU_4_5, "Claude Haiku 4.5", 200000),
+    (OpenRouterModel.GPT_5_5, "GPT-5.5", 400000),
+    (OpenRouterModel.GPT_4_1_MINI, "GPT-4.1 Mini", 1047576),
+    (OpenRouterModel.DEEPSEEK_V3_2, "DeepSeek V3.2", 163840),
+    (OpenRouterModel.GROK_4_1_FAST, "Grok 4.1 Fast", 2000000),
+    (OpenRouterModel.GROK_4_THINKING, "Grok 4 (Thinking)", 256000),
+    (OpenRouterModel.KIMI_K2_5, "Kimi K2.5", 262144),
+)
+
+MODEL_PROVIDER_ROUTES: dict[str, str] = {
+    model.value: "openrouter" for model, _, _ in MODERN_OPENROUTER_MODELS
+}
+
+MODEL_PRESETS: tuple[ModelPresetInfo, ...] = (
+    ModelPresetInfo(
+        id="fast",
+        name="Fast",
+        model=OpenRouterModel.GROK_4_1_FAST.value,
+        temperature=0.6,
+    ),
+    ModelPresetInfo(
+        id="balanced",
+        name="Balanced",
+        model=OpenRouterModel.CLAUDE_SONNET_4_5.value,
+        temperature=0.7,
+    ),
+    ModelPresetInfo(
+        id="high_quality",
+        name="High Quality",
+        model=OpenRouterModel.GPT_5_5.value,
+        temperature=0.5,
+    ),
+)
+
+
+def provider_for_model(model: str | None, requested_provider: str | None = None) -> str:
+    """Resolve the provider for a known modern model id."""
+    if model:
+        provider = MODEL_PROVIDER_ROUTES.get(model)
+        if provider:
+            return provider
+    return (requested_provider or "openrouter").lower()
 
 
 class ModelInfo(BaseModel):
@@ -21,6 +85,7 @@ class ProviderInfo(BaseModel):
     name: str
     status: str  # "active" | "configured" | "placeholder"
     models: list[ModelInfo] = []
+    presets: list[ModelPresetInfo] = []
 
 
 class ProviderRegistry:
@@ -40,37 +105,15 @@ class ProviderRegistry:
                 status="active",
                 models=[ModelInfo(id="mock-model", name="Mock Model")],
             ),
-            "groq": ProviderInfo(
-                id="groq",
-                name="Groq",
-                status="configured",
-                models=[
-                    ModelInfo(id="llama-3.3-70b-versatile", name="LLaMA 3.3 70B Versatile", context_length=131072),
-                    ModelInfo(id="meta-llama/llama-4-scout-17b-16e-instruct", name="LLaMA 4 Scout 17B", context_length=131072),
-                    ModelInfo(id="meta-llama/llama-4-maverick-17b-128e-instruct", name="LLaMA 4 Maverick 17B", context_length=131072),
-                    ModelInfo(id="deepseek-r1-distill-llama-70b", name="DeepSeek R1 Distill 70B", context_length=131072),
-                    ModelInfo(id="qwen/qwen3-32b", name="Qwen 3 32B", context_length=131072),
-                    ModelInfo(id="moonshotai/kimi-k2-instruct", name="Kimi K2", context_length=131072),
-                    ModelInfo(id="gemma2-9b-it", name="Gemma 2 9B", context_length=8192),
-                ],
-            ),
             "openrouter": ProviderInfo(
                 id="openrouter",
                 name="OpenRouter",
                 status="configured",
                 models=[
-                    # Curated agent models
-                    ModelInfo(id="openai/gpt-5", name="GPT-5", context_length=400000),
-                    ModelInfo(id="openai/gpt-4.1-mini", name="GPT-4.1 Mini", context_length=1047576),
-                    ModelInfo(id="google/gemini-2.5-flash", name="Gemini 2.5 Flash", context_length=1048576),
-                    ModelInfo(id="anthropic/claude-haiku-4.5", name="Claude Haiku 4.5", context_length=200000),
-                    ModelInfo(id="deepseek/deepseek-v3.2-exp", name="DeepSeek V3.2", context_length=163840),
-                    ModelInfo(id="moonshotai/kimi-k2-thinking", name="Kimi K2.5", context_length=262144),
-                    ModelInfo(id="x-ai/grok-4-fast", name="Grok 4.1 Fast", context_length=2000000),
-                    ModelInfo(id="x-ai/grok-4", name="Grok 4 (Thinking)", context_length=256000),
-                    # Moderator (fixed)
-                    ModelInfo(id="anthropic/claude-sonnet-4.5", name="Claude Sonnet 4.5 (Moderator)", context_length=200000),
+                    ModelInfo(id=model.value, name=name, context_length=context_length)
+                    for model, name, context_length in MODERN_OPENROUTER_MODELS
                 ],
+                presets=list(MODEL_PRESETS),
             ),
         }
 
