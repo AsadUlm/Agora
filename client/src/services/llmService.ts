@@ -6,6 +6,14 @@ export interface LLMModelInfo {
     context_length: number;
 }
 
+export interface LLMModelPresetInfo {
+    id: string;
+    name: string;
+    provider: string;
+    model: string;
+    temperature: number;
+}
+
 export type LLMProviderStatus = "active" | "configured" | "placeholder";
 
 export interface LLMProviderInfo {
@@ -13,6 +21,7 @@ export interface LLMProviderInfo {
     name: string;
     status: LLMProviderStatus;
     models: LLMModelInfo[];
+    presets?: LLMModelPresetInfo[];
 }
 
 /**

@@ -156,9 +156,10 @@ function buildSections(args: {
 }): ContentSection[] {
     const { round, kind, parsed, fullResponse } = args;
     const sections: ContentSection[] = [];
+    const isRound3 = round === 3 || kind === "synthesis";
 
     const shortSummary = firstScalar(parsed, ["short_summary", "summary"]);
-    if (shortSummary) {
+    if (shortSummary && !isRound3) {
         pushSection(sections, "Short Summary", shortSummary);
     }
 
@@ -175,20 +176,20 @@ function buildSections(args: {
         pushSection(sections, "Challenge", firstScalar(parsed, ["challenge", "critique"]));
         pushSection(sections, "Weakness Found", firstScalar(parsed, ["weakness_found", "weakness"]));
         pushSection(sections, "Counterargument", firstScalar(parsed, ["counterargument", "counter_evidence"]));
-    } else if (round === 3 || kind === "synthesis") {
-        pushSection(sections, "Final Position", firstScalar(parsed, ["final_position", "final_stance"]));
+    } else if (isRound3) {
+        pushSection(sections, "Final Position / Argument", firstScalar(parsed, ["final_position", "final_stance", "response", "display_content"]));
+        pushSection(sections, "Key Insight", firstScalar(parsed, ["strongest_argument"]));
         pushSection(sections, "What Changed", firstScalar(parsed, ["what_changed"]));
-        pushSection(sections, "Strongest Argument", firstScalar(parsed, ["strongest_argument"]));
-        pushSection(sections, "Remaining Concerns", firstScalar(parsed, ["remaining_concerns"]));
+        pushSection(sections, "Concerns", firstScalar(parsed, ["remaining_concerns"]));
         pushSection(sections, "Conclusion", firstScalar(parsed, ["conclusion", "recommendation"]));
     }
 
-    if (fullResponse) {
+    if (fullResponse && !isRound3) {
         pushSection(sections, "Full Response", fullResponse);
     }
 
     if (sections.length === 0 && fullResponse) {
-        pushSection(sections, "Response", normalizeSummary("", fullResponse, 260));
+        pushSection(sections, isRound3 ? "Final Position / Argument" : "Response", normalizeSummary("", fullResponse, 260));
     }
 
     return mergeSections(sections);
@@ -225,13 +226,13 @@ export default function NodeDetailDrawer() {
     }, [node]);
 
     const parsedPayload = useMemo(
-        () => parseResponsePayload(rawOutput || node?.content || node?.summary || null),
-        [node?.content, node?.summary, rawOutput],
+        () => parseResponsePayload(node?.content || node?.summary || null),
+        [node?.content, node?.summary],
     );
 
     const fullResponse = useMemo(
-        () => extractFullResponse(node?.content || rawOutput || node?.summary || null),
-        [node?.content, node?.summary, rawOutput],
+        () => extractFullResponse(node?.content || node?.summary || null),
+        [node?.content, node?.summary],
     );
 
     const contentSections = useMemo(() => {
@@ -241,7 +242,7 @@ export default function NodeDetailDrawer() {
             kind: node.kind,
             parsed: parsedPayload,
             fullResponse,
-        }).slice(0, 8);
+        });
     }, [node, isLoading, parsedPayload, fullResponse]);
 
     const retrieval = useMemo(() => parseRetrieval(node?.metadata), [node]);
@@ -334,7 +335,7 @@ export default function NodeDetailDrawer() {
 
                         {!isLoading && contentSections.length > 0 && (
                             <section className="space-y-2.5">
-                                <Label>Details</Label>
+                                <Label>{node.round === 3 || node.kind === "synthesis" ? "Analysis" : "Details"}</Label>
                                 {contentSections.map((section, idx) => (
                                     <div
                                         key={`${section.heading}-${idx}`}
