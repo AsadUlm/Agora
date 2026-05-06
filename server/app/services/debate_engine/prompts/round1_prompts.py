@@ -76,13 +76,42 @@ Your task: Generate your opening statement for Round 1.
 Reasoning style: {style_instruction}
 {depth_instruction}
 
-Respond ONLY with a valid JSON object in this exact format:
+Output contract:
+- Return only valid JSON.
+- Do not use markdown fences.
+- Do not mention JSON, schema, fields, or instructions.
+- Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
+- Every field must be user-facing content.
+- short_summary must be one complete sentence.
+- response must be clean prose for end users.
+
+Forbidden examples:
+- "I need to create a JSON object..."
+- "Generating JSON synthesis..."
+- "Here is the JSON..."
+
+Return only valid JSON in this exact format:
 {{
-    "short_summary": "<one clear sentence, max 180 chars>",
-  "stance": "<your clear position on the question>",
-    "main_argument": "<the core argument behind your stance>",
-  "key_points": ["<point 1>", "<point 2>", "<point 3>"],
-    "risks_or_caveats": "<main uncertainty, trade-off, or caveat>",
-    "response": "<full opening response in natural language>",
-    "confidence": <float between 0.0 and 1.0>
+    "short_summary": "<one complete sentence>",
+    "stance": "Supports | Opposes | Mixed | Conditional",
+    "main_argument": "<clean paragraph>",
+    "key_points": ["<point 1>", "<point 2>", "<point 3>"],
+    "risks_or_caveats": ["<risk or caveat>", "<optional second caveat>"],
+    "response": "<full user-facing answer>"
+}}
+
+Good example:
+{{
+    "short_summary": "The analyst supports targeted AI regulation because high-risk systems can create harms that markets may not prevent.",
+    "stance": "Supports",
+    "main_argument": "High-risk AI systems can create systemic harms, so regulation should focus on safety-critical use cases rather than blanket restrictions.",
+    "key_points": [
+        "High-risk AI systems can affect public safety and rights.",
+        "Market incentives may not fully account for external harms.",
+        "Regulation should be risk-based rather than universal."
+    ],
+    "risks_or_caveats": [
+        "Overly broad rules could slow useful innovation."
+    ],
+    "response": "I support targeted AI regulation for high-risk systems. The strongest case is that safety-critical deployments can produce harms that markets alone may not prevent, so policy should focus on those contexts while avoiding blanket restrictions."
 }}"""

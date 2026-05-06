@@ -12,6 +12,10 @@ export interface FormattedMessage {
     fields: { label: string; value: string }[];
 }
 
+const SAFE_FORMAT_FALLBACK = "Response generated, but could not be formatted.";
+const SUMMARY_MAX_CHARS = 210;
+const META_PHRASE_REGEX = /\b(i need to|i will|generating|here is|as an ai)\b/i;
+
 /**
  * Extract human-readable text from a raw agent message (which may be
  * JSON-encoded payload, raw text, or a mix).
@@ -26,7 +30,8 @@ export function formatAgentMessage(raw: string | undefined | null): FormattedMes
     if (parsed) return formatPayloadObject(parsed);
 
     // Not JSON — return cleaned text
-    return { text: cleanText(str), fields: [] };
+    const cleaned = cleanText(str);
+    return { text: cleaned || SAFE_FORMAT_FALLBACK, fields: [] };
 }
 
 /**
@@ -38,6 +43,7 @@ export function formatPayloadObject(obj: Record<string, unknown>): FormattedMess
 
     // Priority order for primary text
     const primaryKeys = [
+        "display_content",
         "short_summary",
         "final_stance",
         "final_position",
@@ -67,13 +73,16 @@ export function formatPayloadObject(obj: Record<string, unknown>): FormattedMess
         reasoning: "Reasoning",
         critique: "Critique",
         challenges: "Challenges",
+        target_agent: "Target",
         weakness_found: "Weakness Found",
         counterargument: "Counterargument",
         supports: "Supports",
         key_points: "Key Points",
         risks_or_caveats: "Risks / Caveats",
         what_changed: "What Changed",
+        strongest_argument: "Strongest Argument",
         remaining_concerns: "Remaining Concerns",
+        display_content: "Response",
         response: "Response",
         recommendations: "Recommendations",
         conclusion: "Conclusion",
@@ -106,7 +115,7 @@ export function formatPayloadObject(obj: Record<string, unknown>): FormattedMess
 
     // Last resort: stringify
     if (!primary && fields.length === 0) {
-        primary = cleanText(JSON.stringify(obj));
+        primary = cleanText(JSON.stringify(obj)) || SAFE_FORMAT_FALLBACK;
     }
 
     return { text: primary, fields };
@@ -188,11 +197,11 @@ export function formatModeratorEvent(
  * Round 1: extract a short opening stance.
  */
 export function formatRound1Summary(raw: string | undefined | null): string {
-    if (!raw) return "";
+    if (!raw) return "Initial position prepared.";
     const parsed = safeParse(raw);
     const response = extractPrimaryResponse(parsed, raw);
     const summary = extractShortSummary(parsed) || extractStance(parsed, null) || deriveSummaryFromText(response, 180);
-    return truncate(summary, 180);
+    return normalizeSummary(summary, response || "Initial position prepared.", 200);
 }
 
 /**
@@ -204,12 +213,12 @@ export function formatRound2Summary(
     _sourceRole?: string | null,
     targetRole?: string | null,
 ): string {
-    if (!raw) return "";
+    if (!raw) return "Critique prepared.";
     const parsed = safeParse(raw);
 
     const shortSummary = extractShortSummary(parsed);
     if (shortSummary) {
-        return truncate(shortSummary, 180);
+        return normalizeSummary(shortSummary, shortSummary, 200);
     }
 
     // Try structured critique extraction
@@ -219,54 +228,90 @@ export function formatRound2Summary(
 
         if (hasCritiques(parsed)) {
             const summary = extractCritiqueSummary(parsed, null);
-            return target
-                ? `Challenges ${tName}: "${truncate(summary, 120)}"`
-                : truncate(summary, 180);
+            return normalizeSummary(
+                target
+                    ? `Challenges ${tName}. ${summary}`
+                    : summary,
+                summary || "Critique prepared.",
+                200,
+            );
         }
 
         // Check for question/inquiry patterns
         const text = extractStance(parsed, null) || "";
         const lower = text.toLowerCase();
         if (lower.includes("question") || lower.includes("how can") || lower.includes("inquir")) {
-            return target
-                ? `Questions ${tName}: "${truncate(text, 120)}"`
-                : truncate(text, 180);
+            return normalizeSummary(
+                target
+                    ? `Questions ${tName}. ${text}`
+                    : text,
+                text || "Critique prepared.",
+                200,
+            );
         }
 
         // Support / agreement
         if (lower.includes("agree") || lower.includes("support") || lower.includes("builds on")) {
-            return target
-                ? `Supports ${tName}: "${truncate(text, 120)}"`
-                : truncate(text, 180);
+            return normalizeSummary(
+                target
+                    ? `Supports ${tName}. ${text}`
+                    : text,
+                text || "Critique prepared.",
+                200,
+            );
         }
 
         // Generic with target
         if (target && text) {
-            return `Responds to ${tName}: "${truncate(text, 120)}"`;
+            return normalizeSummary(`Responds to ${tName}. ${text}`, text, 200);
         }
-        if (text) return truncate(text, 180);
+        if (text) return normalizeSummary(text, text, 200);
     }
 
-    return deriveSummaryFromText(cleanText(String(raw)), 180);
+    return normalizeSummary("", cleanText(String(raw)) || "Critique prepared.", 200);
 }
 
 /**
  * Round 3 / synthesis: extract a clean final conclusion sentence.
  */
 export function formatFinalSummary(raw: string | undefined | null): string {
-    if (!raw) return "";
+    if (!raw) return "Final synthesis prepared.";
     const parsed = safeParse(raw);
     const shortSummary = extractShortSummary(parsed);
-    if (shortSummary) return truncate(shortSummary, 200);
+    if (shortSummary) return normalizeSummary(shortSummary, shortSummary, 220);
 
     if (parsed) {
-        for (const key of ["final_position", "final_stance", "conclusion", "recommendation", "summary", "stance", "text"]) {
+        for (const key of ["final_position", "final_stance", "conclusion", "recommendation", "summary", "stance", "text", "response"]) {
             if (typeof parsed[key] === "string" && (parsed[key] as string).trim()) {
-                return truncate((parsed[key] as string).trim(), 200);
+                return normalizeSummary(
+                    String(parsed[key]),
+                    extractPrimaryResponse(parsed, raw),
+                    220,
+                );
             }
         }
     }
-    return deriveSummaryFromText(cleanText(String(raw)), 200);
+    return normalizeSummary("", cleanText(String(raw)) || "Final synthesis prepared.", 220);
+}
+
+export function normalizeSummary(summary: string, fallbackText: string, maxChars = SUMMARY_MAX_CHARS): string {
+    const base = cleanText(summary);
+    const fallback = cleanText(fallbackText);
+
+    let candidate = base || firstMeaningfulSentence(fallback) || fallback || SAFE_FORMAT_FALLBACK;
+    candidate = removeMetaFragments(candidate).trim();
+
+    if (!candidate) candidate = SAFE_FORMAT_FALLBACK;
+
+    if (candidate.length > maxChars) {
+        candidate = trimToSentenceBoundary(candidate, maxChars);
+    }
+
+    if (candidate && !/[.!?]$/.test(candidate)) {
+        candidate = `${candidate}.`;
+    }
+
+    return candidate;
 }
 
 /**
@@ -290,10 +335,10 @@ export function getTurnSummary(args: {
     } else if (round === 3 || kind === "synthesis") {
         summary = formatFinalSummary(raw);
     } else {
-        summary = truncate(cleanText(String(raw ?? "")), maxLen);
+        summary = normalizeSummary("", cleanText(String(raw ?? "")), Math.max(160, maxLen));
     }
 
-    return truncate(summary, maxLen);
+    return normalizeSummary(summary, cleanText(String(raw ?? "")), Math.max(160, maxLen));
 }
 
 /**
@@ -365,9 +410,11 @@ export function extractStructuredContent(
                     final_stance: "Final Position",
                     final_position: "Final Position",
                     what_changed: "What Changed",
+                    strongest_argument: "Strongest Argument",
                     remaining_concerns: "Remaining Concerns",
                     recommendation: "Conclusion",
                     conclusion: "Conclusion",
+                    display_content: "Full Response",
                     response: "Full Response",
                     text: "Full Response",
                 }
@@ -381,9 +428,11 @@ export function extractStructuredContent(
                     argument: "Argument",
                     conclusion: "Conclusion",
                     recommendations: "Recommendations",
+                    strongest_argument: "Strongest Argument",
                     key_points: "Key Points",
                     critique: "Critique",
                     challenge: "Challenge",
+                    display_content: "Response",
                     response: "Response",
                     text: "Response",
                 };
@@ -546,6 +595,7 @@ function extractPrimaryResponse(
 ): string {
     if (parsed) {
         for (const key of [
+            "display_content",
             "response",
             "final_position",
             "final_stance",
@@ -557,21 +607,20 @@ function extractPrimaryResponse(
             "text",
         ]) {
             if (typeof parsed[key] === "string" && String(parsed[key]).trim()) {
-                return cleanText(String(parsed[key]));
+                const cleaned = cleanText(String(parsed[key]));
+                if (cleaned) return cleaned;
             }
         }
     }
 
     const cleaned = cleanText(String(raw ?? ""));
-    return cleaned;
+    return cleaned || SAFE_FORMAT_FALLBACK;
 }
 
 function deriveSummaryFromText(text: string, maxLen = 180): string {
     const cleaned = cleanText(text);
-    if (!cleaned) return "";
-
-    const sentence = firstMeaningfulSentence(cleaned) || cleaned;
-    return truncate(sentence, maxLen);
+    if (!cleaned) return SAFE_FORMAT_FALLBACK;
+    return normalizeSummary("", cleaned, maxLen);
 }
 
 // ── Truncation for node display ──────────────────────────────────────
@@ -580,20 +629,21 @@ export function truncateNodeText(text: string | undefined, maxLen = 80): string 
     if (!text) return "";
     const cleaned = cleanText(text);
     if (!cleaned) return "";
-    const sentence = firstMeaningfulSentence(cleaned);
-    return truncate(sentence || cleaned, maxLen);
+    return normalizeSummary("", cleaned, Math.max(maxLen, 170));
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function cleanText(str: string): string {
     let s = stripCodeFences(str).trim();
+    s = removeMetaFragments(s);
     // Remove wrapping braces/brackets that look like raw JSON
     if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
         const parsed = safeParse(s);
         if (parsed) {
             const best = extractFirstMeaningful(parsed);
             if (best) return best;
+            return "";
         }
     }
     // Normalize common markdown artifacts for cleaner UI text.
@@ -606,7 +656,8 @@ function cleanText(str: string): string {
         .trim();
     // Remove leading/trailing quotes
     if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
-    return s;
+    if (looksJsonLike(s)) return "";
+    return removeMetaFragments(s).trim();
 }
 
 function firstMeaningfulSentence(text: string): string {
@@ -623,6 +674,7 @@ function firstMeaningfulSentence(text: string): string {
 
     for (const sentence of sentences) {
         if (looksLikeLabel(sentence)) continue;
+        if (META_PHRASE_REGEX.test(sentence)) continue;
         return sentence;
     }
 
@@ -631,6 +683,52 @@ function firstMeaningfulSentence(text: string): string {
 
 function looksLikeLabel(text: string): boolean {
     return /^[A-Za-z][A-Za-z\s]{0,30}:$/.test(text.trim());
+}
+
+function looksJsonLike(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+        return true;
+    }
+    return /"[a-zA-Z0-9_]+"\s*:/.test(trimmed);
+}
+
+function removeMetaFragments(text: string): string {
+    let value = String(text || "");
+    const patterns = [
+        /\b(i need to|i will)\b[^.!?\n]*(json|schema|object|format)[^.!?\n]*[.!?]?/gi,
+        /\b(generating|generate)\b[^.!?\n]*(json|synthesis|object)[^.!?\n]*[.!?]?/gi,
+        /\b(here is|below is)\b[^.!?\n]*(json|object)[^.!?\n]*[.!?]?/gi,
+        /\bas an ai\b[^.!?\n]*[.!?]?/gi,
+    ];
+
+    for (const pattern of patterns) {
+        value = value.replace(pattern, " ");
+    }
+
+    return value.replace(/\s+/g, " ").trim();
+}
+
+function trimToSentenceBoundary(text: string, maxChars: number): string {
+    const normalized = cleanText(text);
+    if (normalized.length <= maxChars) return normalized;
+
+    const sentences = normalized.split(/(?<=[.!?])\s+/).filter(Boolean);
+    let acc = "";
+    for (const sentence of sentences) {
+        const next = acc ? `${acc} ${sentence}` : sentence;
+        if (next.length > maxChars) break;
+        acc = next;
+    }
+    if (acc) return acc.trim();
+
+    const clipped = normalized.slice(0, maxChars).trim();
+    const boundary = clipped.lastIndexOf(" ");
+    if (boundary > Math.floor(maxChars * 0.6)) {
+        return clipped.slice(0, boundary).trim();
+    }
+    return clipped;
 }
 
 function stripCodeFences(value: string): string {
@@ -723,12 +821,12 @@ function capitalizeRole(role: string | null | undefined): string {
 
 function truncate(s: string, max: number): string {
     if (s.length <= max) return s;
-    const clipped = s.slice(0, Math.max(0, max - 1));
+    const clipped = s.slice(0, max).trim();
     const boundary = clipped.lastIndexOf(" ");
     if (boundary > Math.floor(max * 0.55)) {
-        return `${clipped.slice(0, boundary).trimEnd()}…`;
+        return clipped.slice(0, boundary).trimEnd();
     }
-    return `${clipped.trimEnd()}…`;
+    return clipped;
 }
 
 function extractStance(

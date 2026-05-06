@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "openrouter"
     LLM_MODEL: str = "anthropic/claude-sonnet-4.5"
     LLM_TEMPERATURE: float = 0.7
+    LLM_MAX_CONCURRENT_AGENT_CALLS: int = 3
 
     # ── LLM API keys (optional — falls back to mock if not set) ──────────
     GROQ_API_KEY: str | None = None

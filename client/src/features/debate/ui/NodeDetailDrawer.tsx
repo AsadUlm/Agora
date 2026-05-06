@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useGraphStore } from "../model/graph.store";
 import { useDebateStore } from "../model/debate.store";
-import { extractFullResponse, getTurnSummary, parseResponsePayload } from "../model/formatters";
+import { extractFullResponse, getTurnSummary, normalizeSummary, parseResponsePayload } from "../model/formatters";
 
 const kindLabels: Record<string, string> = {
     question: "Question",
@@ -69,7 +69,11 @@ function relationLabel(kind: string, outgoing: boolean): string {
 }
 
 function normalizeScalar(value: unknown): string {
-    if (typeof value === "string") return value.trim();
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!trimmed) return "";
+        return normalizeSummary(trimmed, trimmed, 280);
+    }
     if (typeof value === "number" || typeof value === "boolean") return String(value);
     return "";
 }
@@ -174,12 +178,17 @@ function buildSections(args: {
     } else if (round === 3 || kind === "synthesis") {
         pushSection(sections, "Final Position", firstScalar(parsed, ["final_position", "final_stance"]));
         pushSection(sections, "What Changed", firstScalar(parsed, ["what_changed"]));
+        pushSection(sections, "Strongest Argument", firstScalar(parsed, ["strongest_argument"]));
         pushSection(sections, "Remaining Concerns", firstScalar(parsed, ["remaining_concerns"]));
         pushSection(sections, "Conclusion", firstScalar(parsed, ["conclusion", "recommendation"]));
     }
 
     if (fullResponse) {
         pushSection(sections, "Full Response", fullResponse);
+    }
+
+    if (sections.length === 0 && fullResponse) {
+        pushSection(sections, "Response", normalizeSummary("", fullResponse, 260));
     }
 
     return mergeSections(sections);
@@ -200,7 +209,9 @@ export default function NodeDetailDrawer() {
         : [];
 
     const isLoading = Boolean(node?.metadata?.["loading"] && !node?.content);
-    const rawOutput = (node?.content || node?.summary || "").trim();
+    const rawOutputValue = node?.metadata?.["rawOutput"];
+    const rawOutput = typeof rawOutputValue === "string" ? rawOutputValue.trim() : "";
+    const isFallbackFormatted = node?.metadata?.["isFallback"] === true;
 
     const quickTakeaway = useMemo(() => {
         if (!node) return "";
@@ -214,13 +225,13 @@ export default function NodeDetailDrawer() {
     }, [node]);
 
     const parsedPayload = useMemo(
-        () => parseResponsePayload(node?.content || node?.summary || null),
-        [node?.content, node?.summary],
+        () => parseResponsePayload(rawOutput || node?.content || node?.summary || null),
+        [node?.content, node?.summary, rawOutput],
     );
 
     const fullResponse = useMemo(
-        () => extractFullResponse(node?.content || node?.summary || null),
-        [node?.content, node?.summary],
+        () => extractFullResponse(node?.content || rawOutput || node?.summary || null),
+        [node?.content, node?.summary, rawOutput],
     );
 
     const contentSections = useMemo(() => {
@@ -270,6 +281,7 @@ export default function NodeDetailDrawer() {
                             <StatusBadge status={node.status} />
                             <Badge>{kindLabels[node.kind] ?? node.kind}</Badge>
                             {node.agentRole && <Badge>{node.agentRole}</Badge>}
+                            {isFallbackFormatted && <Badge>Formatted automatically</Badge>}
                         </div>
 
                         {node.round > 0 && (

@@ -38,7 +38,7 @@ def build_final_synthesis_prompt(
     role: str,
     question: str,
     original_stance: str,
-    debate_summary: str,
+    debate_digest: str,
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
     retrieved_chunks: list[dict] | None = None,
@@ -69,22 +69,36 @@ The debate question is: {question}
 Your original opening stance was:
 {_compact_text(original_stance, 260)}
 
-The full debate exchange (Round 2 cross-examination) was:
-{_compact_text(debate_summary, 900)}
+Debate digest (Round 1 positions and Round 2 critiques):
+{_compact_text(debate_digest, 1300)}
 {knowledge_block}{context_block}
 Your task: Generate your final synthesis for Round 3.
 
 Reasoning style: {style_instruction}
 {depth_instruction}
 
-Respond ONLY with a valid JSON object in this exact format:
+Output contract:
+- Return only valid JSON.
+- Do not use markdown fences.
+- Do not mention JSON, schema, fields, or instructions.
+- Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
+- Every field must be user-facing content.
+- short_summary must be one complete sentence.
+- response must be clean prose for end users.
+- Synthesis must explain what changed after critique and why.
+
+Forbidden examples:
+- "I need to create a JSON object..."
+- "Generating JSON synthesis..."
+- "Here is the JSON..."
+
+Return only valid JSON in this exact format:
 {{
-    "short_summary": "<one clear sentence, max 180 chars>",
-    "final_position": "<your final position after the debate>",
-  "final_stance": "<your final position after the full debate>",
-  "what_changed": "<what arguments or exchanges changed your thinking, if any>",
-  "remaining_concerns": "<unresolved issues or weaknesses in opposing arguments>",
-    "conclusion": "<your final recommendation or conclusion>",
-    "recommendation": "<your final recommendation or conclusion>",
-    "response": "<full final synthesis in natural language>"
+    "short_summary": "<one complete sentence summarizing your final position>",
+    "final_position": "<clear final stance after considering the debate>",
+    "what_changed": "<what changed or was refined after Round 2>",
+    "strongest_argument": "<strongest argument from the full debate>",
+    "remaining_concerns": "<important unresolved concerns>",
+    "conclusion": "<final concise conclusion>",
+    "response": "<full readable synthesis>"
 }}"""
