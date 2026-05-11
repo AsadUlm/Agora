@@ -24,8 +24,8 @@ function buildSuggestions(
     // 1) Unresolved questions = direct follow-up candidates.
     const unresolved = Array.isArray(latest["unresolved_questions"])
         ? (latest["unresolved_questions"] as unknown[]).filter(
-              (x): x is string => typeof x === "string" && x.trim().length > 0,
-          )
+            (x): x is string => typeof x === "string" && x.trim().length > 0,
+        )
         : [];
     for (const u of unresolved.slice(0, 2)) {
         // Reword as a question if it isn't already.
@@ -36,8 +36,8 @@ function buildSuggestions(
     // 2) Tradeoffs → "How would X react if …" framing.
     const tradeoffs = Array.isArray(latest["risk_tradeoffs"])
         ? (latest["risk_tradeoffs"] as unknown[]).filter(
-              (x): x is string => typeof x === "string" && x.trim().length > 0,
-          )
+            (x): x is string => typeof x === "string" && x.trim().length > 0,
+        )
         : [];
     if (tradeoffs.length > 0) {
         const t0 = tradeoffs[0].replace(/\.$/, "");
