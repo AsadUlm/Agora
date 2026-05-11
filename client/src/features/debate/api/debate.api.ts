@@ -72,6 +72,30 @@ export async function deleteDocument(
     );
 }
 
+// ── Follow-up debate cycles ──────────────────────────────────────────────────
+
+export interface FollowUpCreateResponse {
+    follow_up_id: string;
+    debate_id: string;
+    turn_id: string;
+    cycle_number: number;
+    question: string;
+    status: string;
+    ws_session_url: string;
+    ws_turn_url: string;
+}
+
+export async function postFollowUp(
+    debateId: string,
+    question: string,
+): Promise<FollowUpCreateResponse> {
+    const res = await apiClient.post<FollowUpCreateResponse>(
+        `/debates/${debateId}/follow-ups`,
+        { question },
+    );
+    return res.data;
+}
+
 // ── Step-by-step controls (Step 14) ──────────────────────────────────────────
 
 export interface NextStepResponse {

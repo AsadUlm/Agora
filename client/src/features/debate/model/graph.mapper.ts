@@ -123,13 +123,38 @@ export function mapSessionToGraph(session: SessionDetailDTO): DebateGraph {
     // Process rounds
     const turn = session.latest_turn;
     if (turn) {
+        // Map cycle_number → user follow-up question for quick lookup
+        const followUpsByCycle = new Map<number, string>();
+        for (const fu of turn.follow_ups ?? []) {
+            followUpsByCycle.set(fu.cycle_number, fu.question);
+        }
+
         for (const round of turn.rounds) {
-            applyRoundToGraph(nodes, edges, round, agents);
+            const cycle = round.cycle_number ?? 1;
+            if (cycle >= 2) {
+                const fuQuestion = followUpsByCycle.get(cycle) ?? "";
+                applyFollowUpRoundToGraph(nodes, edges, round, agents, cycle, fuQuestion);
+            } else {
+                applyRoundToGraph(nodes, edges, round, agents);
+            }
         }
 
         // Final summary → synthesis node
         if (turn.final_summary) {
-            addSynthesisNode(nodes, edges, turn.final_summary, agents);
+            // If the last round is an updated_synthesis, render it as the latest follow-up
+            // synthesis; otherwise render the original synthesis node.
+            const lastRound = turn.rounds[turn.rounds.length - 1];
+            if (lastRound && lastRound.round_type === "updated_synthesis") {
+                addUpdatedSynthesisNode(
+                    nodes,
+                    edges,
+                    turn.final_summary,
+                    agents,
+                    lastRound.cycle_number ?? 2,
+                );
+            } else {
+                addSynthesisNode(nodes, edges, turn.final_summary, agents);
+            }
         }
     }
 
@@ -373,6 +398,323 @@ function addSynthesisNode(
                 target: SYNTHESIS_NODE_ID,
                 kind: "summarizes",
                 round: 3,
+                status: "completed",
+            });
+        }
+    }
+}
+
+// ── Follow-up cycle node IDs ─────────────────────────────────────────
+
+function followUpQuestionId(cycle: number) {
+    return `followup-question-c${cycle}`;
+}
+function followUpAgentId(agentId: string, cycle: number) {
+    return `followup-agent-${agentId}-c${cycle}`;
+}
+function followUpCritiqueId(agentId: string, cycle: number) {
+    return `followup-critique-${agentId}-c${cycle}`;
+}
+function followUpSynthesisId(cycle: number) {
+    return `followup-synthesis-c${cycle}`;
+}
+
+// ── Apply one follow-up cycle round to graph (cycle ≥ 2) ─────────────
+
+function applyFollowUpRoundToGraph(
+    nodes: DebateGraphNode[],
+    edges: DebateGraphEdge[],
+    round: RoundDTO,
+    agents: AgentDTO[],
+    cycle: number,
+    followUpQuestion: string,
+): void {
+    const isCompleted = round.status === "completed";
+    const isRunning = round.status === "running";
+    const status: GraphNodeStatus = isCompleted ? "completed" : isRunning ? "active" : "visible";
+    const edgeStatus = isCompleted ? "completed" : "active";
+    const rn = round.round_number;
+    const rtype = round.round_type;
+
+    // 1) Ensure follow-up question node exists once per cycle
+    const fuqId = followUpQuestionId(cycle);
+    if (!nodes.find((n) => n.id === fuqId)) {
+        nodes.push({
+            id: fuqId,
+            kind: "followup-question",
+            label: `Follow-up #${cycle - 1}`,
+            round: rn,
+            cycle,
+            status: "visible",
+            content: followUpQuestion,
+            summary: followUpQuestion,
+        });
+
+        // Connect previous synthesis (initial or prior follow-up) to this question
+        const prevSynthId =
+            cycle === 2
+                ? SYNTHESIS_NODE_ID
+                : followUpSynthesisId(cycle - 1);
+        if (nodes.find((n) => n.id === prevSynthId)) {
+            const eid = `edge-${prevSynthId}-${fuqId}`;
+            if (!edges.find((e) => e.id === eid)) {
+                edges.push({
+                    id: eid,
+                    source: prevSynthId,
+                    target: fuqId,
+                    kind: "initial",
+                    round: rn,
+                    status: "completed",
+                });
+            }
+        }
+    }
+
+    if (rtype === "followup_response") {
+        // Each agent answers — create a per-agent response node
+        for (const msg of round.messages) {
+            if (!msg.agent_id) continue;
+            if (isErrorPayload(msg.payload ?? {}) || isErrorText(msg.text)) continue;
+
+            const agentRole =
+                msg.agent_role ??
+                agents.find((a) => a.id === msg.agent_id)?.role ??
+                "Agent";
+            const nid = followUpAgentId(msg.agent_id, cycle);
+
+            const summaryText = getTurnSummary({
+                raw: msg.text,
+                round: rn,
+                kind: "followup-agent",
+                sourceRole: agentRole,
+            });
+
+            const existing = nodes.find((n) => n.id === nid);
+            if (existing) {
+                existing.status = status;
+                existing.summary = summaryText;
+                existing.content = extractContent(msg);
+                existing.metadata = {
+                    ...(existing.metadata ?? {}),
+                    rawOutput: extractRawOutput(msg),
+                    isFallback: isFallbackPayload(msg),
+                };
+            } else {
+                nodes.push({
+                    id: nid,
+                    kind: "followup-agent",
+                    label: agentRole,
+                    round: rn,
+                    cycle,
+                    status,
+                    agentId: msg.agent_id,
+                    agentRole,
+                    summary: summaryText,
+                    content: extractContent(msg),
+                    metadata: {
+                        rawOutput: extractRawOutput(msg),
+                        isFallback: isFallbackPayload(msg),
+                    },
+                });
+            }
+
+            // Edge: question → response
+            const eid = `edge-${fuqId}-${nid}`;
+            if (!edges.find((e) => e.id === eid)) {
+                edges.push({
+                    id: eid,
+                    source: fuqId,
+                    target: nid,
+                    kind: "initial",
+                    round: rn,
+                    status: edgeStatus,
+                });
+            }
+        }
+    } else if (rtype === "followup_critique") {
+        for (const msg of round.messages) {
+            if (!msg.agent_id) continue;
+            if (isErrorPayload(msg.payload ?? {}) || isErrorText(msg.text)) continue;
+
+            const agentRole =
+                msg.agent_role ??
+                agents.find((a) => a.id === msg.agent_id)?.role ??
+                "Agent";
+            const nid = followUpCritiqueId(msg.agent_id, cycle);
+            const sourceResponseId = followUpAgentId(msg.agent_id, cycle);
+
+            const existing = nodes.find((n) => n.id === nid);
+            if (!existing) {
+                nodes.push({
+                    id: nid,
+                    kind: "followup-intermediate",
+                    label: agentRole,
+                    round: rn,
+                    cycle,
+                    status,
+                    agentId: msg.agent_id,
+                    agentRole,
+                    summary: formatRound2Summary(msg.text, agentRole),
+                    content: extractContent(msg),
+                    metadata: {
+                        rawOutput: extractRawOutput(msg),
+                        isFallback: isFallbackPayload(msg),
+                    },
+                });
+            } else {
+                existing.status = status;
+                existing.summary = formatRound2Summary(msg.text, agentRole);
+                existing.content = extractContent(msg);
+                existing.metadata = {
+                    ...(existing.metadata ?? {}),
+                    rawOutput: extractRawOutput(msg),
+                    isFallback: isFallbackPayload(msg),
+                };
+            }
+
+            // Edge: response → critique (continuation)
+            if (nodes.find((n) => n.id === sourceResponseId)) {
+                const contEid = `edge-${sourceResponseId}-${nid}`;
+                if (!edges.find((e) => e.id === contEid)) {
+                    edges.push({
+                        id: contEid,
+                        source: sourceResponseId,
+                        target: nid,
+                        kind: "initial",
+                        round: rn,
+                        status: edgeStatus,
+                    });
+                }
+            }
+
+            // Cross-edge to peer's response (challenges)
+            const targetRawId = inferTarget(msg, agents, `agent-${msg.agent_id}`);
+            const targetAgentId = targetRawId.startsWith("agent-")
+                ? targetRawId.slice("agent-".length)
+                : null;
+            if (targetAgentId) {
+                const targetCritiqueId = followUpCritiqueId(targetAgentId, cycle);
+                if (nodes.find((n) => n.id === targetCritiqueId)) {
+                    const xid = `edge-${msg.id}`;
+                    if (!edges.find((e) => e.id === xid)) {
+                        edges.push({
+                            id: xid,
+                            source: nid,
+                            target: targetCritiqueId,
+                            kind: "challenges",
+                            round: rn,
+                            status: edgeStatus,
+                            label: "challenges",
+                        });
+                    }
+                }
+            }
+        }
+    } else if (rtype === "updated_synthesis") {
+        // Updated synthesis is finalized via addUpdatedSynthesisNode using turn.final_summary.
+        // Pre-create a placeholder synthesis node so layout can include it while running.
+        const sid = followUpSynthesisId(cycle);
+        if (!nodes.find((n) => n.id === sid)) {
+            nodes.push({
+                id: sid,
+                kind: "followup-synthesis",
+                label: `Updated Synthesis #${cycle - 1}`,
+                round: rn,
+                cycle,
+                status,
+            });
+        } else {
+            const node = nodes.find((n) => n.id === sid)!;
+            node.status = status;
+        }
+
+        // Edges: each agent's critique → updated synthesis
+        for (const agent of agents) {
+            const critId = followUpCritiqueId(agent.id, cycle);
+            const respId = followUpAgentId(agent.id, cycle);
+            const sourceId = nodes.find((n) => n.id === critId)
+                ? critId
+                : nodes.find((n) => n.id === respId)
+                    ? respId
+                    : null;
+            if (!sourceId) continue;
+            const eid = `edge-${sourceId}-${sid}`;
+            if (!edges.find((e) => e.id === eid)) {
+                edges.push({
+                    id: eid,
+                    source: sourceId,
+                    target: sid,
+                    kind: "summarizes",
+                    round: rn,
+                    status: edgeStatus,
+                });
+            }
+        }
+    }
+}
+
+// ── Updated synthesis node (cycle ≥ 2) ───────────────────────────────
+
+function addUpdatedSynthesisNode(
+    nodes: DebateGraphNode[],
+    edges: DebateGraphEdge[],
+    summary: Record<string, unknown>,
+    agents: AgentDTO[],
+    cycle: number,
+): void {
+    const sid = followUpSynthesisId(cycle);
+    const rawJson = JSON.stringify(summary);
+    const rawText =
+        typeof summary["full_answer"] === "string"
+            ? (summary["full_answer"] as string)
+            : typeof summary["quick_takeaway"] === "string"
+                ? (summary["quick_takeaway"] as string)
+                : typeof summary["summary"] === "string"
+                    ? (summary["summary"] as string)
+                    : rawJson;
+    const summaryText = formatFinalSummary(rawText);
+
+    const existing = nodes.find((n) => n.id === sid);
+    if (!existing) {
+        nodes.push({
+            id: sid,
+            kind: "followup-synthesis",
+            label: `Updated Synthesis #${cycle - 1}`,
+            round: 0,
+            cycle,
+            status: "completed",
+            summary: summaryText,
+            content: normalizeSummary("", rawText, 260),
+            metadata: { rawOutput: rawJson, isFallback: summary["is_fallback"] === true },
+        });
+    } else {
+        existing.summary = summaryText;
+        existing.content = normalizeSummary("", rawText, 260);
+        existing.metadata = {
+            ...(existing.metadata ?? {}),
+            rawOutput: rawJson,
+            isFallback: summary["is_fallback"] === true,
+        };
+        existing.status = "completed";
+    }
+
+    for (const agent of agents) {
+        const critId = followUpCritiqueId(agent.id, cycle);
+        const respId = followUpAgentId(agent.id, cycle);
+        const sourceId = nodes.find((n) => n.id === critId)
+            ? critId
+            : nodes.find((n) => n.id === respId)
+                ? respId
+                : null;
+        if (!sourceId) continue;
+        const eid = `edge-${sourceId}-${sid}`;
+        if (!edges.find((e) => e.id === eid)) {
+            edges.push({
+                id: eid,
+                source: sourceId,
+                target: sid,
+                kind: "summarizes",
+                round: 0,
                 status: "completed",
             });
         }

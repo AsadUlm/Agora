@@ -65,11 +65,22 @@ class RoundDTO(BaseModel):
 
     id: uuid.UUID
     round_number: int
-    round_type: str             # initial | critique | final
+    cycle_number: int = 1
+    round_type: str             # initial | critique | final | followup_response | followup_critique | updated_synthesis
     status: str                 # queued | running | completed | failed
     started_at: datetime | None
     ended_at: datetime | None
     messages: list[MessageDTO]  # sorted by sequence_no, agents only
+
+
+class FollowUpDTO(BaseModel):
+    """User-asked follow-up question that opened a new debate cycle."""
+
+    id: uuid.UUID
+    chat_turn_id: uuid.UUID
+    cycle_number: int
+    question: str
+    created_at: datetime
 
 
 class UserMessageDTO(BaseModel):
@@ -95,6 +106,7 @@ class TurnDTO(BaseModel):
     user_message: UserMessageDTO | None
     rounds: list[RoundDTO]              # sorted by round_number
     final_summary: dict[str, Any] | None  # from last round's final_summary messages
+    follow_ups: list[FollowUpDTO] = []   # in cycle_number order
 
 
 class SessionDetailDTO(BaseModel):
@@ -138,4 +150,23 @@ class DebateListItem(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class FollowUpCreateRequest(BaseModel):
+    """Request body for POST /debates/{session_id}/follow-ups."""
+
+    question: str
+
+
+class FollowUpCreateResponse(BaseModel):
+    """Response body for POST /debates/{session_id}/follow-ups."""
+
+    follow_up_id: uuid.UUID
+    debate_id: uuid.UUID
+    turn_id: uuid.UUID
+    cycle_number: int
+    question: str
+    status: str  # always 'queued' — runs in the background
+    ws_session_url: str
+    ws_turn_url: str
 

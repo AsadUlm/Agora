@@ -10,6 +10,7 @@ import {
     resumeDebate,
     getStepState,
     nextStep as nextStepApi,
+    postFollowUp,
     startDebate as startDebateApi,
     switchToAutoRun as switchToAutoRunApi,
 } from "../api/debate.api";
@@ -78,6 +79,7 @@ interface DebateStore {
     handleWsEvent: (event: WsEvent) => void;
     requestNextStep: () => Promise<void>;
     enableAutoRun: () => Promise<void>;
+    submitFollowUp: (question: string) => Promise<void>;
     syncStepState: () => Promise<void>;
     reset: () => void;
 
@@ -323,6 +325,11 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 usePlaybackStore
                     .getState()
                     .setCurrentRound(event.round_number ?? state.currentRound);
+                // Follow-up cycles (rounds > 3): refresh canonical session so
+                // the mapper can lay out the new cycle's nodes.
+                if ((event.round_number ?? 0) > 3 && state.debateId) {
+                    void get().loadDebate(state.debateId, { silent: true });
+                }
                 break;
 
             case "turn_completed":
@@ -391,6 +398,14 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             const payload = event.payload ?? {};
             const skipGraphInference = shouldSkipGraphInference(payload);
             const rn = event.round_number ?? 1;
+
+            // Follow-up cycles (rounds > 3): defer to silent loadDebate.
+            if (rn > 3) {
+                if (state.debateId) {
+                    void get().loadDebate(state.debateId, { silent: true });
+                }
+                return;
+            }
             const rawContent =
                 typeof payload["content"] === "string"
                     ? (payload["content"] as string)
@@ -677,6 +692,36 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         } catch (err) {
             const msg = err instanceof Error ? err.message : "Failed to enable auto run";
             set({ error: msg });
+        }
+    },
+
+    submitFollowUp: async (question: string) => {
+        const { debateId, turnId, turnStatus } = get();
+        if (!debateId || !turnId) return;
+        const trimmed = question.trim();
+        if (!trimmed) return;
+        if (turnStatus !== "completed") return;
+        set({ stepBusy: true, stepError: null });
+        try {
+            const res = await postFollowUp(debateId, trimmed);
+            // Re-attach WS to the same turn (it was closed when turn completed)
+            debateWs.disconnect();
+            debateWs.connect(res.turn_id);
+            debateWs.subscribe(get().handleWsEvent);
+            set({
+                turnStatus: "queued",
+                wsConnected: true,
+                playbackMode: "auto",
+                openedAsCompleted: false,
+                staleQueuedPolls: 0,
+            });
+            // Refresh detail in background to pull new follow-up record
+            void get().loadDebate(debateId, { silent: true });
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : "Failed to start follow-up";
+            set({ stepError: msg });
+        } finally {
+            set({ stepBusy: false });
         }
     },
 

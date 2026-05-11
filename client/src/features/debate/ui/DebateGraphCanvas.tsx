@@ -26,6 +26,47 @@ import CritiqueEdge from "./edges/CritiqueEdge";
 import SupportEdge from "./edges/SupportEdge";
 import InquiryEdge from "./edges/InquiryEdge";
 
+// ── Cycle band label (decorative, non-interactive) ─────────────────────
+
+function CycleBandLabel({ data }: { data: { label: string; subLabel?: string } }) {
+    return (
+        <div
+            className="pointer-events-none select-none"
+            style={{
+                whiteSpace: "nowrap",
+                fontFamily: "ui-sans-serif, system-ui, sans-serif",
+            }}
+        >
+            <div
+                style={{
+                    fontSize: 13,
+                    fontWeight: 700,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "#a78bfa",
+                    background: "rgba(167, 139, 250, 0.10)",
+                    border: "1px solid rgba(167, 139, 250, 0.35)",
+                    padding: "4px 10px",
+                    borderRadius: 6,
+                }}
+            >
+                {data.label}
+            </div>
+            {data.subLabel ? (
+                <div
+                    style={{
+                        marginTop: 4,
+                        fontSize: 11,
+                        color: "rgba(167, 139, 250, 0.7)",
+                    }}
+                >
+                    {data.subLabel}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 // ── Node type registry ────────────────────────────────────────────────
 
 const nodeTypes = {
@@ -33,6 +74,11 @@ const nodeTypes = {
     agent: AgentNode,
     synthesis: SynthesisNode,
     intermediate: AgentNode,
+    "followup-question": QuestionNode,
+    "followup-agent": AgentNode,
+    "followup-intermediate": AgentNode,
+    "followup-synthesis": SynthesisNode,
+    "cycle-label": CycleBandLabel,
 };
 
 const edgeTypes = {
@@ -102,6 +148,68 @@ function computeLayout(graphNodes: DebateGraphNode[]): Map<string, { x: number; 
         positions.set("synthesis-node", { x: CANVAS_CENTER_X - 110, y: LEVEL_Y.synthesis });
     }
 
+    // Follow-up cycles (cycle ≥ 2): stack below the initial synthesis,
+    // one band per cycle (question → responses → critiques → updated synthesis).
+    const cycleNumbers = Array.from(
+        new Set(
+            graphNodes
+                .map((n) => n.cycle ?? 0)
+                .filter((c) => c >= 2),
+        ),
+    ).sort((a, b) => a - b);
+
+    const FOLLOWUP_BAND_HEIGHT = 720; // question + responses + critiques + synthesis
+    const FOLLOWUP_QUESTION_OFFSET = 140;
+    const FOLLOWUP_RESPONSE_OFFSET = 320;
+    const FOLLOWUP_CRITIQUE_OFFSET = 500;
+    const FOLLOWUP_SYNTHESIS_OFFSET = 680;
+
+    for (const cycle of cycleNumbers) {
+        const bandTop = LEVEL_Y.synthesis + 120 + (cycle - 2) * FOLLOWUP_BAND_HEIGHT;
+
+        // Follow-up question — center
+        const fuq = graphNodes.find(
+            (n) => n.kind === "followup-question" && n.cycle === cycle,
+        );
+        if (fuq) {
+            positions.set(fuq.id, { x: CANVAS_CENTER_X - 110, y: bandTop + FOLLOWUP_QUESTION_OFFSET });
+        }
+
+        const responses = graphNodes.filter(
+            (n) => n.kind === "followup-agent" && n.cycle === cycle,
+        );
+        const critiques = graphNodes.filter(
+            (n) => n.kind === "followup-intermediate" && n.cycle === cycle,
+        );
+
+        const responseCount = Math.max(responses.length, agentCount);
+        const respGap = Math.max(AGENT_HORIZONTAL_GAP, 800 / (responseCount + 1));
+        const respWidth = (responseCount - 1) * respGap;
+        const respStart = CANVAS_CENTER_X - respWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
+
+        responses.forEach((node, idx) => {
+            // Try to align with the original agent's x; fall back to row order.
+            const parentAgentId = node.agentId ? `agent-${node.agentId}` : null;
+            const parentPos = parentAgentId ? positions.get(parentAgentId) : undefined;
+            const x = parentPos ? parentPos.x : respStart + idx * respGap;
+            positions.set(node.id, { x, y: bandTop + FOLLOWUP_RESPONSE_OFFSET });
+        });
+
+        critiques.forEach((node, idx) => {
+            const parentAgentId = node.agentId ? `agent-${node.agentId}` : null;
+            const parentPos = parentAgentId ? positions.get(parentAgentId) : undefined;
+            const x = parentPos ? parentPos.x : respStart + idx * respGap;
+            positions.set(node.id, { x, y: bandTop + FOLLOWUP_CRITIQUE_OFFSET });
+        });
+
+        const fus = graphNodes.find(
+            (n) => n.kind === "followup-synthesis" && n.cycle === cycle,
+        );
+        if (fus) {
+            positions.set(fus.id, { x: CANVAS_CENTER_X - 110, y: bandTop + FOLLOWUP_SYNTHESIS_OFFSET });
+        }
+    }
+
     return positions;
 }
 
@@ -126,6 +234,15 @@ function isNodeRelevant(n: DebateGraphNode, selectedRound: number | null): boole
     if (n.kind === "question") return true; // question always relevant
     if (n.kind === "synthesis") return selectedRound === 3;
     if (n.kind === "intermediate") return selectedRound === 2;
+    // Follow-up nodes are always relevant when no round filter narrowed below 3.
+    if (
+        n.kind === "followup-question"
+        || n.kind === "followup-agent"
+        || n.kind === "followup-intermediate"
+        || n.kind === "followup-synthesis"
+    ) {
+        return true;
+    }
     // Agent nodes are relevant to rounds 1 and 2 (they appear in round 1)
     return selectedRound === 1 || selectedRound === 2;
 }
@@ -545,7 +662,7 @@ export default function DebateGraphCanvas() {
     const freshEdgeSet = useMemo(() => new Set(freshEdgeIds), [freshEdgeIds]);
 
     const flowNodes: Node[] = useMemo(() => {
-        return renderNodes
+        const baseNodes = renderNodes
             .filter((n) => n.status !== "hidden" && revealedNodeSet.has(n.id))
             .map((n) => {
                 const metadata = {
@@ -584,6 +701,47 @@ export default function DebateGraphCanvas() {
                     selected: n.id === selectedNodeId,
                 };
             });
+
+        // Cycle band labels: visually separate each follow-up cycle.
+        const cycleSet = Array.from(
+            new Set(
+                renderNodes
+                    .filter((n) =>
+                        (n.kind === "followup-question"
+                            || n.kind === "followup-agent"
+                            || n.kind === "followup-intermediate"
+                            || n.kind === "followup-synthesis")
+                        && revealedNodeSet.has(n.id),
+                    )
+                    .map((n) => n.cycle ?? 0)
+                    .filter((c) => c >= 2),
+            ),
+        ).sort((a, b) => a - b);
+
+        const labelNodes: Node[] = [];
+        for (const cycle of cycleSet) {
+            const fuq = renderNodes.find(
+                (n) => n.kind === "followup-question" && n.cycle === cycle,
+            );
+            const pos = fuq ? positions.get(fuq.id) : undefined;
+            if (!pos) continue;
+            labelNodes.push({
+                id: `cycle-label-${cycle}`,
+                type: "cycle-label",
+                position: { x: pos.x - 380, y: pos.y - 20 },
+                data: {
+                    label: `Follow-up #${cycle - 1}`,
+                    subLabel: "user follow-up cycle",
+                },
+                draggable: false,
+                selectable: false,
+                focusable: false,
+                deletable: false,
+                zIndex: -1,
+            });
+        }
+
+        return [...labelNodes, ...baseNodes];
     }, [
         renderNodes,
         revealedNodeSet,

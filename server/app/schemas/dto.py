@@ -28,6 +28,7 @@ from app.models.message import Message, MessageType, SenderType
 from app.models.round import Round
 from app.schemas.debate import (
     AgentDTO,
+    FollowUpDTO,
     MessageDTO,
     RoundDTO,
     SessionDetailDTO,
@@ -126,6 +127,7 @@ def serialize_round(
     return RoundDTO(
         id=round_obj.id,
         round_number=round_obj.round_number,
+        cycle_number=getattr(round_obj, "cycle_number", 1) or 1,
         round_type=round_obj.round_type.value,
         status=round_obj.status.value,
         started_at=round_obj.started_at,
@@ -137,6 +139,7 @@ def serialize_round(
 def serialize_turn(
     turn: ChatTurn,
     agents_by_id: dict[uuid.UUID, ChatAgent],
+    follow_ups: list[Any] | None = None,
 ) -> TurnDTO:
     """
     Serialize a ChatTurn ORM object to TurnOut.
@@ -184,6 +187,16 @@ def serialize_turn(
         user_message=user_message,
         rounds=rounds,
         final_summary=final_summary,
+        follow_ups=[
+            FollowUpDTO(
+                id=fu.id,
+                chat_turn_id=fu.chat_turn_id,
+                cycle_number=fu.cycle_number,
+                question=fu.question,
+                created_at=fu.created_at,
+            )
+            for fu in sorted(follow_ups or [], key=lambda x: x.cycle_number)
+        ],
     )
 
 
@@ -208,7 +221,18 @@ def serialize_session(session: ChatSession) -> SessionDetailDTO:
 
     turns = sorted(session.chat_turns, key=lambda t: t.turn_index)
     latest_turn = turns[-1] if turns else None
-    latest_turn_out = serialize_turn(latest_turn, agents_by_id) if latest_turn else None
+
+    # Follow-ups (if eagerly attached on session)
+    follow_ups_list: list[Any] = []
+    fus = session.__dict__.get("follow_ups")
+    if isinstance(fus, list):
+        follow_ups_list = [fu for fu in fus if getattr(fu, "chat_turn_id", None) == (latest_turn.id if latest_turn else None)]
+
+    latest_turn_out = (
+        serialize_turn(latest_turn, agents_by_id, follow_ups=follow_ups_list)
+        if latest_turn
+        else None
+    )
 
     # Derive question: prefer user_message content, fall back to session title
     question = ""

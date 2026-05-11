@@ -82,7 +82,8 @@ Output contract:
 - Do not mention JSON, schema, fields, or instructions.
 - Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 - Every field must be user-facing content.
-- short_summary must be one complete sentence.
+- one_sentence_takeaway must be ONE complete sentence (15-25 words) that captures your core claim. Never truncate.
+- short_summary must mirror one_sentence_takeaway (kept for backward compatibility).
 - response must be clean prose for end users.
 
 Forbidden examples:
@@ -92,7 +93,8 @@ Forbidden examples:
 
 Return only valid JSON in this exact format:
 {{
-    "short_summary": "<one complete sentence>",
+    "one_sentence_takeaway": "<ONE complete sentence, 15-25 words, captures core claim>",
+    "short_summary": "<same sentence as one_sentence_takeaway>",
     "stance": "Supports | Opposes | Mixed | Conditional",
     "main_argument": "<clean paragraph>",
     "key_points": ["<point 1>", "<point 2>", "<point 3>"],
@@ -102,6 +104,7 @@ Return only valid JSON in this exact format:
 
 Good example:
 {{
+    "one_sentence_takeaway": "The analyst supports targeted AI regulation because high-risk systems can create harms that markets may not prevent.",
     "short_summary": "The analyst supports targeted AI regulation because high-risk systems can create harms that markets may not prevent.",
     "stance": "Supports",
     "main_argument": "High-risk AI systems can create systemic harms, so regulation should focus on safety-critical use cases rather than blanket restrictions.",

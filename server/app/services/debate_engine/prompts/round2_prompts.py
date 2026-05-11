@@ -96,7 +96,12 @@ Your task: Critique the following opponents' arguments in Round 2 Cross-Examinat
 Critique style: {style_instruction}
 {depth_instruction}
 
-For each opponent, identify their weakest argument, challenge it directly, and explain the flaw.
+For each opponent, you MUST identify a SPECIFIC logical weakness and explain why
+it fails under real-world conditions. Avoid generic statements like "needs more
+evidence" or "could be stronger". Concretely, your critique MUST include:
+  - the specific assumption being attacked (assumption_attacked),
+  - why that assumption breaks down (why_it_breaks),
+  - the real-world implication if you are right (real_world_implication).
 
 Output contract:
 - Return only valid JSON.
@@ -104,7 +109,8 @@ Output contract:
 - Do not mention JSON, schema, fields, or instructions.
 - Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 - Every field must be user-facing content.
-- short_summary must be one complete sentence.
+- one_sentence_takeaway must be ONE complete sentence (15-25 words). Never truncate.
+- short_summary must mirror one_sentence_takeaway (kept for backward compatibility).
 - response must be clean prose for end users.
 - If target content is unavailable, use this sentence in challenge context:
     "The target response was unavailable, so this critique focuses on the general position."
@@ -116,9 +122,13 @@ Forbidden examples:
 
 Return only valid JSON in this exact format:
 {{
-    "short_summary": "<one complete sentence>",
+    "one_sentence_takeaway": "<ONE complete sentence, 15-25 words, naming the core flaw>",
+    "short_summary": "<same sentence as one_sentence_takeaway>",
     "target_agent": "<name or role of the agent being challenged>",
     "challenge": "<specific claim being challenged>",
+    "assumption_attacked": "<the specific assumption you are attacking>",
+    "why_it_breaks": "<why that assumption fails under real conditions>",
+    "real_world_implication": "<what changes in practice if your critique holds>",
     "weakness_found": "<why that argument is weak or incomplete>",
     "counterargument": "<clean counterargument>",
     "response": "<full user-facing critique>"

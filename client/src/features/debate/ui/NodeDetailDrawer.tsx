@@ -9,6 +9,10 @@ const kindLabels: Record<string, string> = {
     agent: "Agent Response",
     synthesis: "Synthesis",
     intermediate: "Agent Interaction",
+    "followup-question": "Follow-up Question",
+    "followup-agent": "Follow-up Response",
+    "followup-intermediate": "Follow-up Critique",
+    "followup-synthesis": "Updated Synthesis",
 };
 
 const roundLabels: Record<number, string> = {
@@ -158,9 +162,9 @@ function buildSections(args: {
     const sections: ContentSection[] = [];
     const isRound3 = round === 3 || kind === "synthesis";
 
-    const shortSummary = firstScalar(parsed, ["short_summary", "summary"]);
+    const shortSummary = firstScalar(parsed, ["one_sentence_takeaway", "short_summary", "summary"]);
     if (shortSummary && !isRound3) {
-        pushSection(sections, "Short Summary", shortSummary);
+        pushSection(sections, "Key Takeaway", shortSummary);
     }
 
     if (round === 1) {
@@ -174,14 +178,90 @@ function buildSections(args: {
     } else if (round === 2 || kind === "intermediate") {
         pushSection(sections, "Target", firstScalar(parsed, ["target_role", "target_agent"]));
         pushSection(sections, "Challenge", firstScalar(parsed, ["challenge", "critique"]));
+        pushSection(sections, "Assumption Attacked", firstScalar(parsed, ["assumption_attacked"]));
+        pushSection(sections, "Why It Breaks", firstScalar(parsed, ["why_it_breaks"]));
+        pushSection(sections, "Real-World Implication", firstScalar(parsed, ["real_world_implication"]));
         pushSection(sections, "Weakness Found", firstScalar(parsed, ["weakness_found", "weakness"]));
         pushSection(sections, "Counterargument", firstScalar(parsed, ["counterargument", "counter_evidence"]));
     } else if (isRound3) {
+        if (shortSummary) {
+            pushSection(sections, "Key Takeaway", shortSummary);
+        }
         pushSection(sections, "Final Position / Argument", firstScalar(parsed, ["final_position", "final_stance", "response", "display_content"]));
-        pushSection(sections, "Key Insight", firstScalar(parsed, ["strongest_argument"]));
+        pushSection(sections, "Key Trade-off", firstScalar(parsed, ["key_tradeoff", "tradeoff"]));
+        pushSection(sections, "Winning Argument", firstScalar(parsed, ["winning_argument", "strongest_argument"]));
+        pushSection(sections, "Losing Argument", firstScalar(parsed, ["losing_argument"]));
+        const confidence = (firstScalar(parsed, ["confidence"]) || "").toLowerCase();
+        if (confidence) {
+            pushSection(sections, "Confidence", confidence.toUpperCase());
+        }
         pushSection(sections, "What Changed", firstScalar(parsed, ["what_changed"]));
         pushSection(sections, "Concerns", firstScalar(parsed, ["remaining_concerns"]));
         pushSection(sections, "Conclusion", firstScalar(parsed, ["conclusion", "recommendation"]));
+    }
+
+    // Follow-up cycle sections (cycle ≥ 2)
+    if (kind === "followup-agent") {
+        pushSection(sections, "Quick Takeaway", firstScalar(parsed, ["one_sentence_takeaway", "quick_takeaway", "short_summary"]));
+        pushSection(sections, "Full Answer", firstScalar(parsed, ["full_answer", "answer_to_followup", "response", "display_content"]));
+
+        // Position Change — prefer structured position_evolution
+        const evolution = (parsed?.position_evolution ?? null) as Record<string, unknown> | null;
+        if (evolution && typeof evolution === "object") {
+            const prev = firstScalar(evolution, ["previous_position"]);
+            const updated = firstScalar(evolution, ["updated_position"]);
+            // Accept both ``change_type`` (legacy) and ``change`` (Step 25 simplified).
+            const changeType = firstScalar(evolution, ["change_type", "change"]);
+            const reason = firstScalar(evolution, ["reason"]);
+            const lines: string[] = [];
+            if (changeType) lines.push(`Change: ${changeType.toUpperCase()}`);
+            if (prev) lines.push(`Previous: ${prev}`);
+            if (updated) lines.push(`Updated: ${updated}`);
+            if (reason) lines.push(`Reason: ${reason}`);
+            if (lines.length > 0) {
+                pushSection(sections, "Position Change", lines.join("\n"));
+            }
+        } else {
+            pushSection(sections, "Position Change", firstScalar(parsed, ["position_change", "position_update", "what_changed"]));
+        }
+
+        const fuKeyPoints = scalarList(parsed, ["key_points", "supporting_points"]);
+        if (fuKeyPoints.length > 0) {
+            pushSection(sections, "Key Points", `• ${fuKeyPoints.join("\n• ")}`);
+        }
+    } else if (kind === "followup-synthesis") {
+        pushSection(sections, "Quick Takeaway", firstScalar(parsed, ["one_sentence_takeaway", "quick_takeaway", "short_summary"]));
+        pushSection(sections, "Updated Conclusion", firstScalar(parsed, ["updated_conclusion", "full_answer", "response", "display_content"]));
+        const changed = (firstScalar(parsed, ["conclusion_changed"]) || "").toLowerCase();
+        if (changed) {
+            pushSection(sections, "Conclusion Changed", changed === "yes" ? "YES — the follow-up shifted the conclusion." : "NO — the conclusion holds.");
+        }
+        pushSection(sections, "Why", firstScalar(parsed, ["change_reason", "what_changed"]));
+        pushSection(sections, "Key Trade-off", firstScalar(parsed, ["key_tradeoff", "tradeoff"]));
+        pushSection(sections, "Winning Argument", firstScalar(parsed, ["winning_argument", "strongest_argument"]));
+        pushSection(sections, "Losing Argument", firstScalar(parsed, ["losing_argument"]));
+        const fuConfidence = (firstScalar(parsed, ["confidence"]) || "").toLowerCase();
+        if (fuConfidence) {
+            pushSection(sections, "Confidence", fuConfidence.toUpperCase());
+        }
+        pushSection(sections, "Strongest Argument", firstScalar(parsed, ["strongest_argument"]));
+        pushSection(sections, "Remaining Disagreement", firstScalar(parsed, ["remaining_disagreement", "remaining_concerns"]));
+    } else if (kind === "followup-intermediate") {
+        const targetKind = (firstScalar(parsed, ["target_kind"]) || "").toLowerCase();
+        const targetLabel = targetKind === "strongest_argument"
+            ? "Target (strongest argument)"
+            : targetKind === "unresolved_question"
+                ? "Target (unresolved question)"
+                : "Target";
+        pushSection(sections, targetLabel, firstScalar(parsed, ["target_agent", "target_role"]));
+        pushSection(sections, "Challenge", firstScalar(parsed, ["challenge", "critique"]));
+        pushSection(sections, "Assumption Attacked", firstScalar(parsed, ["assumption_attacked"]));
+        pushSection(sections, "Why It Breaks", firstScalar(parsed, ["why_it_breaks"]));
+        pushSection(sections, "Real-World Implication", firstScalar(parsed, ["real_world_implication"]));
+        pushSection(sections, "Counterargument", firstScalar(parsed, ["counterargument"]));
+        pushSection(sections, "Impact", firstScalar(parsed, ["impact"]));
+    } else if (kind === "followup-question") {
+        pushSection(sections, "Follow-up Question", firstScalar(parsed, ["question"]) || fullResponse);
     }
 
     if (fullResponse && !isRound3) {

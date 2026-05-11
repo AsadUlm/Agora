@@ -84,13 +84,20 @@ Output contract:
 - Do NOT describe your process.
 - Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 - Every field must be user-facing content.
-- short_summary must be one complete sentence.
+- one_sentence_takeaway must be ONE complete sentence (15-25 words). Never truncate.
+- short_summary must mirror one_sentence_takeaway (kept for backward compatibility).
 - response must be clean prose for end users.
 - Write like a final conclusion for a human reader.
 - Take a strong final stance, not a process note.
 - Synthesize across the agents' strongest arguments and critiques.
 - End with a clear conclusion.
 - Synthesis must explain what changed after critique and why.
+
+Decision rule (mandatory):
+- You MUST resolve the debate by choosing a dominant position OR explicitly state
+  that no resolution is possible (and why). NO neutral, generic, hedging text.
+- You MUST identify a single key trade-off, the winning argument, the losing
+  argument, and your overall confidence (low | medium | high).
 
 Forbidden examples:
 - "I need to create a JSON object..."
@@ -99,8 +106,13 @@ Forbidden examples:
 
 Return only valid JSON in this exact format:
 {{
-    "short_summary": "<one complete sentence summarizing your final position>",
-    "final_position": "<clear final stance after considering the debate>",
+    "one_sentence_takeaway": "<ONE complete sentence, 15-25 words, capturing the final position>",
+    "short_summary": "<same sentence as one_sentence_takeaway>",
+    "final_position": "<clear final stance, OR an explicit 'no resolution because ...' statement>",
+    "key_tradeoff": "<the single key trade-off that decided this position>",
+    "winning_argument": "<the argument that prevailed and why>",
+    "losing_argument": "<the strongest argument that did NOT prevail and why>",
+    "confidence": "low | medium | high",
     "what_changed": "<what changed or was refined after Round 2>",
     "strongest_argument": "<strongest argument from the full debate>",
     "remaining_concerns": "<important unresolved concerns>",

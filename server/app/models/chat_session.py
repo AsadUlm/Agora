@@ -45,3 +45,9 @@ class ChatSession(Base):
     chat_agents: Mapped[list["ChatAgent"]] = relationship("ChatAgent", back_populates="chat_session", cascade="all, delete-orphan")
     chat_turns: Mapped[list["ChatTurn"]] = relationship("ChatTurn", back_populates="chat_session", cascade="all, delete-orphan")
     messages: Mapped[list["Message"]] = relationship("Message", back_populates="chat_session", cascade="all, delete-orphan")
+    follow_ups: Mapped[list["DebateFollowUp"]] = relationship(
+        "DebateFollowUp",
+        foreign_keys="DebateFollowUp.chat_session_id",
+        cascade="all, delete-orphan",
+        order_by="DebateFollowUp.cycle_number",
+    )
