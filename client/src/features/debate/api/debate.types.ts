@@ -130,4 +130,20 @@ export interface DocumentDTO {
     source_type: string;
     status: string;
     created_at: string;
+    /** Step 30: backend storage backend ("local" | "cloudinary"). */
+    storage_provider?: string;
+    /** Step 30: file size in bytes, when known. */
+    bytes?: number | null;
+}
+
+/** Step 30: one failed file in a batch upload. */
+export interface DocumentUploadFailureDTO {
+    filename: string;
+    error: string;
+}
+
+/** Step 30: response from POST /documents/upload-batch. */
+export interface DocumentUploadBatchResponseDTO {
+    uploaded: DocumentDTO[];
+    failed: DocumentUploadFailureDTO[];
 }

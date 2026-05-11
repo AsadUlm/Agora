@@ -33,6 +33,8 @@ from app.models.document import Document, DocumentStatus
 from app.models.document_chunk import DocumentChunk
 from app.schemas.contracts import RetrievedChunk
 from app.services.embeddings.embedding_service import get_embedding_service
+from app.services.retrieval.router import RetrievalStrategy
+from app.services.retrieval.diversity import apply_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,7 @@ class RetrievalService:
         knowledge_mode: str = "shared_session_docs",
         assigned_document_ids: list[uuid.UUID] | None = None,
         top_k: int = 3,
+        strategy: RetrievalStrategy | None = None,
     ) -> list[RetrievedChunk]:
         """
         Agent-aware retrieval — respects the agent's knowledge configuration.
@@ -89,6 +92,11 @@ class RetrievalService:
             knowledge_mode:        "no_docs" | "shared_session_docs" | "assigned_docs_only"
             assigned_document_ids: Document IDs bound to this agent (used when mode == assigned_docs_only).
             top_k:                 Max chunks to return.
+            strategy:              Step 31 — optional per-role retrieval strategy.
+                                   When provided, the candidate pool is widened
+                                   (top_k × ``candidate_multiplier``), then re-ranked
+                                   with role keyword boost + source balance + MMR
+                                   diversity, and trimmed back to ``top_k``.
         """
         if knowledge_mode == "no_docs":
             logger.debug(
@@ -110,6 +118,7 @@ class RetrievalService:
                 db=db,
                 top_k=top_k,
                 document_ids=assigned_document_ids,
+                strategy=strategy,
             )
 
         # Default: shared_session_docs — retrieve from all session documents
@@ -119,6 +128,7 @@ class RetrievalService:
             db=db,
             top_k=top_k,
             document_ids=None,
+            strategy=strategy,
         )
 
     async def _retrieve_impl(
@@ -128,6 +138,7 @@ class RetrievalService:
         db: AsyncSession,
         top_k: int,
         document_ids: list[uuid.UUID] | None,
+        strategy: RetrievalStrategy | None = None,
     ) -> list[RetrievedChunk]:
         """
         Core retrieval implementation.
@@ -178,6 +189,13 @@ class RetrievalService:
         # Cosine distance = 1 - cosine_similarity.  Lower is more similar.
         # We filter by distance < (1 - _MIN_SIMILARITY) so only genuinely
         # relevant chunks are returned.
+        # Step 31: when a strategy is provided, widen the candidate pool by
+        # ``candidate_multiplier`` so the diversity / role-bias re-ranker has
+        # something to choose from. We still cap and trim to ``top_k`` after.
+        sql_limit = top_k
+        if strategy is not None and strategy.candidate_multiplier > 1:
+            sql_limit = max(top_k, top_k * strategy.candidate_multiplier)
+
         try:
             vector_literal = f"[{','.join(str(v) for v in query_vector)}]"
             stmt = (
@@ -203,7 +221,7 @@ class RetrievalService:
             stmt = (
                 stmt
                 .order_by(text(f"document_chunks.embedding <=> '{vector_literal}'::vector"))
-                .limit(top_k)
+                .limit(sql_limit)
             )
             rows = await db.execute(stmt)
             results = rows.all()
@@ -226,11 +244,16 @@ class RetrievalService:
             for row in results
         ]
 
+        # ── 4. Step 31: apply role-aware re-ranking (when a strategy is set).
+        if strategy is not None and chunks:
+            chunks = apply_strategy(chunks, strategy, top_k=top_k)
+
         logger.info(
-            "RetrievalService: %d chunks retrieved for session %s (query=%r)",
+            "RetrievalService: %d chunks retrieved for session %s (query=%r strategy=%s)",
             len(chunks),
             session_id,
             query[:60],
+            strategy.name if strategy else "none",
         )
         return chunks
 

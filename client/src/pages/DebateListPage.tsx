@@ -5,10 +5,15 @@ import {
     listDebates,
     createSession,
     uploadDocument,
+    uploadDocumentsBatch,
     listDocuments,
     deleteDocument,
 } from "@/features/debate/api/debate.api";
-import type { DebateListItem, DocumentDTO } from "@/features/debate/api/debate.types";
+import type {
+    DebateListItem,
+    DocumentDTO,
+    DocumentUploadFailureDTO,
+} from "@/features/debate/api/debate.types";
 import { cn } from "@/shared/lib/cn";
 import { formatRelativeTime } from "@/shared/lib/dates";
 import {
@@ -107,6 +112,23 @@ export default function DebateListPage() {
         }
     };
 
+    /** Step 30: multi-file upload. Returns per-file failures so the panel can show them. */
+    const handleUploadDocumentsBatch = async (
+        files: File[],
+    ): Promise<DocumentUploadFailureDTO[] | void> => {
+        setUploading(true);
+        try {
+            const sessionId = await ensureDraftSession();
+            const res = await uploadDocumentsBatch(sessionId, files);
+            if (res.uploaded.length) {
+                setDocuments((prev) => [...res.uploaded, ...prev]);
+            }
+            return res.failed;
+        } finally {
+            setUploading(false);
+        }
+    };
+
     const handleDeleteDocument = async (documentId: string) => {
         if (!draftSessionId) return;
         try {
@@ -185,6 +207,7 @@ export default function DebateListPage() {
                 rawDocuments={documents}
                 uploading={uploading}
                 onUploadDocument={handleUploadDocument}
+                onUploadDocumentsBatch={handleUploadDocumentsBatch}
                 onDeleteDocument={handleDeleteDocument}
             />
 

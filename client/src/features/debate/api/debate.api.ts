@@ -4,6 +4,7 @@ import type {
     DebateStartRequest,
     DebateStartResponse,
     DocumentDTO,
+    DocumentUploadBatchResponseDTO,
     SessionDetailDTO,
 } from "./debate.types";
 
@@ -48,6 +49,24 @@ export async function uploadDocument(
     form.append("file", file);
     const res = await apiClient.post<DocumentDTO>(
         `/documents/upload?session_id=${sessionId}`,
+        form,
+        { headers: { "Content-Type": "multipart/form-data" } },
+    );
+    return res.data;
+}
+
+/**
+ * Step 30: upload multiple documents in one multipart request.
+ * Backend returns 207 Multi-Status with `{ uploaded, failed }`.
+ */
+export async function uploadDocumentsBatch(
+    sessionId: string,
+    files: File[],
+): Promise<DocumentUploadBatchResponseDTO> {
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    const res = await apiClient.post<DocumentUploadBatchResponseDTO>(
+        `/documents/upload-batch?session_id=${sessionId}`,
         form,
         { headers: { "Content-Type": "multipart/form-data" } },
     );

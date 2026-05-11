@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.debate_engine.prompts.quality_constraints import (
+    QUALITY_REQUIREMENTS_BLOCK,
+)
+from app.services.retrieval.evidence import (
+    EvidencePacket,
+    format_evidence_block,
+    format_evidence_usage_instructions,
+)
 
 
 def _compact_text(value: str, max_chars: int) -> str:
@@ -46,6 +54,7 @@ def build_final_synthesis_prompt(
     retrieved_chunks: list[dict] | None = None,
     knowledge_mode: str = "shared_session_docs",
     knowledge_strict: bool = False,
+    evidence_packets: list[EvidencePacket] | None = None,
 ) -> str:
     """Build the prompt for an agent's Round 3 final synthesis."""
     depth_instruction = {
@@ -61,8 +70,16 @@ def build_final_synthesis_prompt(
         "balanced": "Reflect in a balanced, nuanced way.",
     }.get(reasoning_style, "Reflect in a balanced, nuanced way.")
 
-    context_block = _format_context_block(retrieved_chunks or [])
-    knowledge_block = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(retrieved_chunks or []))
+    context_block = (
+        format_evidence_block(evidence_packets) + format_evidence_usage_instructions()
+        if evidence_packets
+        else _format_context_block(retrieved_chunks or [])
+    )
+    knowledge_block = _knowledge_instruction(
+        knowledge_mode,
+        knowledge_strict,
+        bool(evidence_packets or retrieved_chunks or []),
+    )
 
     return f"""You are a debate participant with the role: {role}.
 {persona_block(role)}
@@ -78,6 +95,17 @@ Your task: Generate your final synthesis for Round 3.
 
 Reasoning style: {style_instruction}
 {depth_instruction}
+
+{QUALITY_REQUIREMENTS_BLOCK}
+
+Round 3 objective (genuine synthesis, not averaging):
+- Treat this as an expert-committee conclusion, not a compromise summary.
+- Identify the strongest VALID arguments and reject the weakest reasoning
+  explicitly (in `losing_argument`).
+- Do not average opinions: pick a dominant position even when uncertainty
+  remains, and state the uncertainty in `risk_tradeoffs` / `unresolved_questions`.
+- Explain WHY the conclusion changed after Round 2 critique (in `what_changed`
+  and `position_shift`). "Did not change" is a valid answer if you justify it.
 
 Output contract:
 - Return only valid JSON.
@@ -126,5 +154,9 @@ Return only valid JSON in this exact format:
     "strongest_argument": "<strongest argument from the full debate>",
     "remaining_concerns": "<important unresolved concerns>",
     "conclusion": "<final concise conclusion>",
-    "response": "<full readable synthesis>"
+    "response": "<full readable synthesis>",
+    "key_evidence_used": ["<E-label or short title of evidence that drove the conclusion>"],
+    "rejected_evidence": ["<E-label of evidence you discounted, with one-line reason>"],
+    "evidence_conflicts": ["<short description of where evidence disagreed and how you resolved it>"],
+    "evidence_gaps": ["<factual question the evidence did not answer>"]
 }}"""

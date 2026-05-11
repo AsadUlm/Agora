@@ -66,6 +66,24 @@ class Settings(BaseSettings):
     # Swap this for an S3/GCS path prefix in production environments.
     UPLOAD_DIR: str = "uploads"
 
+    # ── Document storage provider (Step 30) ──────────────────────────────
+    # "local"      — write to UPLOAD_DIR (dev/test default).
+    # "cloudinary" — upload to Cloudinary as resource_type='raw'. Requires
+    #                CLOUDINARY_CLOUD_NAME / API_KEY / API_SECRET below.
+    DOCUMENT_STORAGE_PROVIDER: str = "local"
+
+    # Per-file size cap (MB) for the upload pipeline.
+    DOCUMENT_MAX_FILE_SIZE_MB: int = 20
+    # Max number of files accepted in one multi-upload request.
+    DOCUMENT_MAX_FILES_PER_UPLOAD: int = 10
+
+    # ── Cloudinary credentials (only read when provider == "cloudinary") ─
+    CLOUDINARY_CLOUD_NAME: str | None = None
+    CLOUDINARY_API_KEY: str | None = None
+    CLOUDINARY_API_SECRET: str | None = None
+    CLOUDINARY_UPLOAD_FOLDER: str = "agora/documents"
+    CLOUDINARY_RESOURCE_TYPE: str = "raw"
+
     def cors_origins_list(self) -> list[str]:
         """Split comma-separated CORS_ORIGINS into a list."""
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

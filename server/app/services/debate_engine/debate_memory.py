@@ -79,6 +79,46 @@ class FollowUpHistoryItem:
 
 
 @dataclass
+class EvolvingPosition:
+    """One semantic shift point in the synthesis history.
+
+    Step 28: tracks how the synthesis position moves across cycles so a new
+    cycle can explicitly reference the prior trajectory instead of starting
+    from scratch.
+    """
+
+    cycle_number: int
+    position: str          # one-line summary of the synthesis at this cycle
+    shift: str = ""        # what changed vs the previous cycle (or "" for cycle 1)
+    reason: str = ""       # WHY it changed (or "" if no change)
+
+
+@dataclass
+class EvidenceMemory:
+    """Persistent evidence state across cycles.
+
+    Step 29: lets follow-up prompts reference which evidence has been used,
+    which is disputed, which factual gaps remain, and which sources have
+    already been cited so the next cycle can prefer NEW evidence.
+
+    All fields are derived from optional synthesis output (`key_evidence_used`,
+    `rejected_evidence`, `evidence_conflicts`, `evidence_gaps`); they remain
+    empty when the agents do not emit those fields, so the rest of the
+    pipeline keeps working unchanged.
+    """
+
+    strongest_evidence: list[str] = field(default_factory=list)
+    disputed_evidence: list[str] = field(default_factory=list)
+    unresolved_fact_gaps: list[str] = field(default_factory=list)
+    cited_sources: list[str] = field(default_factory=list)
+    # Step 31: deeper follow-up memory. All optional, default empty so any
+    # consumer that does not know about these keys keeps working.
+    used_documents: list[str] = field(default_factory=list)
+    used_claims: list[str] = field(default_factory=list)
+    resolved_claims: list[str] = field(default_factory=list)
+
+
+@dataclass
 class DebateMemory:
     original_question: str
     previous_synthesis: str
@@ -87,6 +127,8 @@ class DebateMemory:
     disagreements: list[str]
     cycle_memories: list[CycleMemory]
     followups_history: list[FollowUpHistoryItem]
+    evolving_positions: list[EvolvingPosition] = field(default_factory=list)
+    evidence_memory: EvidenceMemory = field(default_factory=EvidenceMemory)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +173,25 @@ class DebateMemory:
                 }
                 for h in self.followups_history
             ],
+            "evolving_positions": [
+                {
+                    "cycle_number": p.cycle_number,
+                    "position": p.position,
+                    "shift": p.shift,
+                    "reason": p.reason,
+                }
+                for p in self.evolving_positions
+            ],
+            "evidence_memory": {
+                "strongest_evidence": list(self.evidence_memory.strongest_evidence),
+                "disputed_evidence": list(self.evidence_memory.disputed_evidence),
+                "unresolved_fact_gaps": list(self.evidence_memory.unresolved_fact_gaps),
+                "cited_sources": list(self.evidence_memory.cited_sources),
+                # Step 31 — additive fields. Older readers ignore them.
+                "used_documents": list(self.evidence_memory.used_documents),
+                "used_claims": list(self.evidence_memory.used_claims),
+                "resolved_claims": list(self.evidence_memory.resolved_claims),
+            },
         }
 
 
@@ -268,6 +329,89 @@ def _compact_cycle_summary(
     if remaining:
         parts.append(f"Open: {_short(remaining, 200)}")
     return " | ".join(parts)
+
+
+def _build_evidence_memory(
+    rounds: list[Round],
+    synthesis_types: set[RoundType],
+) -> EvidenceMemory:
+    """Aggregate evidence-tracking fields from every synthesis-type round.
+
+    The agent prompts emit four optional fields:
+      - key_evidence_used    → strongest_evidence
+      - rejected_evidence    → (skipped — kept only for the synthesis output)
+      - evidence_conflicts   → disputed_evidence
+      - evidence_gaps        → unresolved_fact_gaps
+    Plus any evidence label / packet id surfaced anywhere is collected into
+    ``cited_sources`` so the next cycle can prefer NEW evidence.
+
+    Empty/missing fields are silently skipped — callers must treat the
+    EvidenceMemory as best-effort metadata, not a strict contract.
+    """
+    strongest: list[str] = []
+    disputed: list[str] = []
+    gaps: list[str] = []
+    cited: list[str] = []
+    seen_strongest: set[str] = set()
+    seen_disputed: set[str] = set()
+    seen_gaps: set[str] = set()
+    seen_cited: set[str] = set()
+
+    def _push(bucket: list[str], seen: set[str], value: str, max_chars: int = 200) -> None:
+        norm = _short(value, max_chars)
+        if not norm:
+            return
+        key = norm.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        bucket.append(norm)
+
+    for r in rounds:
+        if r.round_type not in synthesis_types or not r.messages:
+            continue
+        for msg in sorted(r.messages, key=lambda m: m.sequence_no):
+            payload = _safe_json(msg.content)
+            if not payload:
+                continue
+
+            for raw in payload.get("key_evidence_used", []) or []:
+                if isinstance(raw, str):
+                    _push(strongest, seen_strongest, raw)
+                    _push(cited, seen_cited, raw, max_chars=80)
+                elif isinstance(raw, dict):
+                    label = str(raw.get("label") or raw.get("id") or "").strip()
+                    text = str(raw.get("summary") or raw.get("title") or "").strip()
+                    combined = f"{label}: {text}" if label and text else (label or text)
+                    _push(strongest, seen_strongest, combined)
+                    if label:
+                        _push(cited, seen_cited, label, max_chars=80)
+
+            for raw in payload.get("evidence_conflicts", []) or []:
+                if isinstance(raw, str):
+                    _push(disputed, seen_disputed, raw)
+
+            for raw in payload.get("evidence_gaps", []) or []:
+                if isinstance(raw, str):
+                    _push(gaps, seen_gaps, raw)
+
+            # Reject list also signals the source was considered — track for "cited".
+            for raw in payload.get("rejected_evidence", []) or []:
+                if isinstance(raw, str):
+                    label = raw.split("—", 1)[0].strip() or raw.strip()
+                    _push(cited, seen_cited, label, max_chars=80)
+
+            # New evidence introduced this cycle (followup synthesis only).
+            for raw in payload.get("new_evidence_introduced", []) or []:
+                if isinstance(raw, str):
+                    _push(cited, seen_cited, raw, max_chars=80)
+
+    return EvidenceMemory(
+        strongest_evidence=strongest[:6],
+        disputed_evidence=disputed[:6],
+        unresolved_fact_gaps=gaps[:6],
+        cited_sources=cited[:12],
+    )
 
 
 async def build_debate_memory(
@@ -437,6 +581,57 @@ async def build_debate_memory(
                 )
             )
 
+    # Step 28: derive evolving_positions trajectory from every synthesis-type
+    # round (cycle 1 final + every updated_synthesis). Lets follow-up prompts
+    # reference the position arc instead of only the latest synthesis.
+    evolving_positions: list[EvolvingPosition] = []
+    last_position = ""
+    for r in rounds:
+        if r.round_type not in synthesis_types or not r.messages:
+            continue
+        payload: dict[str, Any] = {}
+        for msg in sorted(r.messages, key=lambda m: m.sequence_no):
+            cand = _safe_json(msg.content)
+            if cand:
+                payload = cand
+                break
+        if not payload:
+            continue
+        position = _pick(
+            payload,
+            "updated_conclusion",
+            "final_position",
+            "conclusion",
+            "new_position",
+        )
+        if not position:
+            continue
+        shift = _pick(
+            payload,
+            "position_shift",
+            "what_changed",
+            "change_reason",
+        )
+        reason = _pick(payload, "change_reason", "what_changed")
+        position_short = _short(position, 240)
+        if position_short == last_position:
+            continue
+        evolving_positions.append(
+            EvolvingPosition(
+                cycle_number=int(r.cycle_number or 1),
+                position=position_short,
+                shift=_short(shift, 200),
+                reason=_short(reason, 200),
+            )
+        )
+        last_position = position_short
+
+    # Step 29: build EvidenceMemory by scanning every synthesis payload for
+    # the optional evidence-tracking fields. Order is preserved chronologically
+    # across cycles. We dedupe with a case-insensitive set so the same source
+    # cited in multiple cycles surfaces only once.
+    evidence_memory = _build_evidence_memory(rounds, synthesis_types)
+
     return DebateMemory(
         original_question=original_question,
         previous_synthesis=previous_synthesis_text,
@@ -445,6 +640,8 @@ async def build_debate_memory(
         disagreements=disagreements[:10],
         cycle_memories=cycle_memories,
         followups_history=history,
+        evolving_positions=evolving_positions,
+        evidence_memory=evidence_memory,
     )
 
 

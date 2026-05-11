@@ -3,8 +3,11 @@ Text Extraction — converts uploaded files to plain text.
 
 Supported formats:
   .txt   — read as UTF-8 / latin-1 (always available, no extra dep)
+  .md    — same as .txt; treated as plain markdown
   .pdf   — pypdf (pure-Python, no native binaries)
   .docx  — python-docx
+  .csv   — stdlib csv reader → "header: value | header: value" rows
+  .json  — stdlib json with pretty-printed flatten
 
 Extractor registry is a plain dict; add new entries as more formats are needed.
 
@@ -14,7 +17,9 @@ Usage:
 
 from __future__ import annotations
 
+import csv
 import io
+import json
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,7 +27,11 @@ logger = logging.getLogger(__name__)
 # ── Supported MIME / extension map ────────────────────────────────────────────
 
 # Maps lower-case extension → extractor function name
-_SUPPORTED_EXTENSIONS = {".txt", ".pdf", ".docx"}
+_SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".csv", ".json"}
+
+# Soft caps to keep extractor output bounded (chunker further enforces sizes).
+_CSV_MAX_ROWS = 2000
+_JSON_MAX_CHARS = 200_000
 
 
 def supported_extensions() -> frozenset[str]:
@@ -41,13 +50,17 @@ class UnsupportedFileType(ExtractionError):
 
 # ── Individual extractors ─────────────────────────────────────────────────────
 
-def _extract_txt(data: bytes) -> str:
+def _decode_text(data: bytes) -> str:
     for enc in ("utf-8", "utf-8-sig", "latin-1"):
         try:
             return data.decode(enc)
         except UnicodeDecodeError:
             continue
     raise ExtractionError("Could not decode text file with any supported encoding.")
+
+
+def _extract_txt(data: bytes) -> str:
+    return _decode_text(data)
 
 
 def _extract_pdf(data: bytes) -> str:
@@ -81,12 +94,67 @@ def _extract_docx(data: bytes) -> str:
     return result
 
 
+def _extract_csv(data: bytes) -> str:
+    """Render CSV as readable rows. Headers are kept as field labels.
+
+    Bounded by ``_CSV_MAX_ROWS`` so a 1M-row CSV does not blow the chunker.
+    """
+    text = _decode_text(data)
+    reader = csv.reader(io.StringIO(text))
+    rows = list(reader)
+    if not rows:
+        raise ExtractionError("CSV file is empty.")
+    headers = [h.strip() for h in rows[0]]
+    body = rows[1:]
+    truncated = False
+    if len(body) > _CSV_MAX_ROWS:
+        body = body[:_CSV_MAX_ROWS]
+        truncated = True
+
+    lines: list[str] = []
+    if headers:
+        lines.append("Columns: " + ", ".join(headers))
+    for row in body:
+        if not any(cell.strip() for cell in row):
+            continue
+        if headers and len(row) == len(headers):
+            cells = [f"{h}: {v.strip()}" for h, v in zip(headers, row) if v.strip()]
+            lines.append(" | ".join(cells))
+        else:
+            lines.append(" | ".join(c.strip() for c in row if c.strip()))
+    if truncated:
+        lines.append(f"… (CSV truncated to first {_CSV_MAX_ROWS} rows)")
+    result = "\n".join(lines)
+    if not result.strip():
+        raise ExtractionError("CSV contains no extractable rows.")
+    return result
+
+
+def _extract_json(data: bytes) -> str:
+    """Pretty-print JSON to a bounded text body."""
+    text = _decode_text(data)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ExtractionError(f"JSON is invalid: {exc.msg}") from exc
+
+    pretty = json.dumps(parsed, indent=2, ensure_ascii=False, sort_keys=False)
+    if len(pretty) > _JSON_MAX_CHARS:
+        pretty = pretty[:_JSON_MAX_CHARS] + "\n…(JSON truncated)…"
+    if not pretty.strip():
+        raise ExtractionError("JSON document is empty.")
+    return pretty
+
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 _EXTRACTORS = {
     ".txt":  _extract_txt,
+    ".md":   _extract_txt,
     ".pdf":  _extract_pdf,
     ".docx": _extract_docx,
+    ".csv":  _extract_csv,
+    ".json": _extract_json,
 }
 
 

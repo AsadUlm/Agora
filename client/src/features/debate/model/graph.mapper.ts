@@ -55,6 +55,27 @@ function safePayload(msg: MessageDTO): Record<string, unknown> {
     }
 }
 
+/**
+ * Find a `final_summary` message in the round and return its payload as a
+ * dict matching the shape used by `addSynthesisNode` / `addUpdatedSynthesisNode`.
+ * Mirrors the backend's serializer logic (which scans for the most recent
+ * `final_summary` message), but scoped to a specific round so the original
+ * cycle-1 synthesis can be recovered even after follow-up cycles overwrite
+ * `turn.final_summary` at the turn level.
+ */
+function extractFinalSummaryPayload(round: RoundDTO): Record<string, unknown> | null {
+    // Iterate from the last message backward to match backend semantics.
+    for (let i = round.messages.length - 1; i >= 0; i--) {
+        const msg = round.messages[i];
+        if (msg.message_type !== "final_summary") continue;
+        const payload = safePayload(msg);
+        if (Object.keys(payload).length > 0) return payload;
+        // Fall back to plain text when payload is empty.
+        if (msg.text) return { summary: msg.text };
+    }
+    return null;
+}
+
 function extractContent(msg: MessageDTO): string {
     const p = safePayload(msg);
     if (typeof p["display_content"] === "string" && String(p["display_content"]).trim()) {
@@ -139,22 +160,48 @@ export function mapSessionToGraph(session: SessionDetailDTO): DebateGraph {
             }
         }
 
-        // Final summary → synthesis node
-        if (turn.final_summary) {
-            // If the last round is an updated_synthesis, render it as the latest follow-up
-            // synthesis; otherwise render the original synthesis node.
+        // Final summary → synthesis node(s)
+        //
+        // The backend's `turn.final_summary` is sourced from the most recent
+        // `final_summary` message across all rounds, so when a follow-up cycle
+        // runs an `updated_synthesis`, that payload overwrites the original
+        // cycle-1 synthesis at the turn level. To keep the original synthesis
+        // node visible after a reload, we extract the cycle-1 synthesis
+        // directly from the cycle-1 `final` round messages, and treat
+        // `turn.final_summary` as the (possibly newer) follow-up synthesis.
+        const cycle1FinalRound = turn.rounds.find(
+            (r) => (r.cycle_number ?? 1) === 1 && r.round_type === "final",
+        );
+        const cycle1Synthesis = cycle1FinalRound
+            ? extractFinalSummaryPayload(cycle1FinalRound)
+            : null;
+        if (cycle1Synthesis) {
+            addSynthesisNode(nodes, edges, cycle1Synthesis, agents);
+        } else if (turn.final_summary) {
+            // No cycle-1 final messages were found (very old data); fall back to
+            // turn-level final_summary so the synthesis node still appears when
+            // there are no follow-ups.
             const lastRound = turn.rounds[turn.rounds.length - 1];
-            if (lastRound && lastRound.round_type === "updated_synthesis") {
-                addUpdatedSynthesisNode(
-                    nodes,
-                    edges,
-                    turn.final_summary,
-                    agents,
-                    lastRound.cycle_number ?? 2,
-                );
-            } else {
+            if (!lastRound || lastRound.round_type !== "updated_synthesis") {
                 addSynthesisNode(nodes, edges, turn.final_summary, agents);
             }
+        }
+
+        // Render the latest follow-up synthesis on top of the original one
+        // when the turn ended with an `updated_synthesis` round.
+        const lastRound = turn.rounds[turn.rounds.length - 1];
+        if (
+            lastRound &&
+            lastRound.round_type === "updated_synthesis" &&
+            turn.final_summary
+        ) {
+            addUpdatedSynthesisNode(
+                nodes,
+                edges,
+                turn.final_summary,
+                agents,
+                lastRound.cycle_number ?? 2,
+            );
         }
     }
 

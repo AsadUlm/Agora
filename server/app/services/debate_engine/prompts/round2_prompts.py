@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.debate_engine.prompts.quality_constraints import (
+    QUALITY_REQUIREMENTS_BLOCK,
+)
+from app.services.retrieval.evidence import (
+    EvidencePacket,
+    format_evidence_block,
+    format_evidence_usage_instructions,
+)
 
 
 def _compact_text(value: str, max_chars: int) -> str:
@@ -50,6 +58,7 @@ def build_critique_prompt(
     retrieved_chunks: list[dict] | None = None,
     knowledge_mode: str = "shared_session_docs",
     knowledge_strict: bool = False,
+    evidence_packets: list[EvidencePacket] | None = None,
 ) -> str:
     """
     Build the Round 2 prompt for an agent critiquing all other agents.
@@ -90,13 +99,24 @@ def build_critique_prompt(
 The debate question is: {question}
 
 Your own opening stance was: {_compact_text(own_stance, 220)}
-{_knowledge_instruction(knowledge_mode, knowledge_strict, bool(retrieved_chunks or []))}{_format_context_block(retrieved_chunks or [])}
+{_knowledge_instruction(knowledge_mode, knowledge_strict, bool(evidence_packets or retrieved_chunks or []))}{(format_evidence_block(evidence_packets or []) + format_evidence_usage_instructions()) if evidence_packets else _format_context_block(retrieved_chunks or [])}
 Your task: Critique the following opponents' arguments in Round 2 Cross-Examination.
 
 {opponents_block}
 
 Critique style: {style_instruction}
 {depth_instruction}
+
+{QUALITY_REQUIREMENTS_BLOCK}
+
+Round 2 objective (real cross-examination):
+- This is genuine cross-examination, not commentary. For every opponent you
+  challenge, you MUST quote or paraphrase a specific phrase from their
+  argument and name the agent / role you are challenging.
+- For each opponent answer the three questions: WHAT assumption is wrong,
+  WHY is it wrong, WHAT consequence follows in practice.
+- Forbidden generic critiques: "needs more evidence", "could be stronger",
+  "oversimplifies". Replace with a named mechanism that breaks the claim.
 
 MANDATORY interaction rules:
 - You MUST quote or paraphrase a specific phrase from the target's argument.

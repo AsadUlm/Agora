@@ -85,7 +85,7 @@ _CRITIC = AgentPersona(
         "Vague phrases like 'needs more evidence' — name the missing evidence.",
     ),
     feels_like="A debate prosecutor or adversarial reviewer.",
-    base_temperature=0.8,
+    base_temperature=0.7,
 )
 
 _CREATIVE = AgentPersona(
@@ -111,7 +111,7 @@ _CREATIVE = AgentPersona(
         "Restating the obvious or echoing other agents.",
     ),
     feels_like="A futurist or innovation theorist.",
-    base_temperature=1.0,
+    base_temperature=0.9,
 )
 
 _DEVIL_ADVOCATE = AgentPersona(
@@ -212,6 +212,15 @@ _ROUND_TYPE_TEMP_MULTIPLIER: dict[str, float] = {
     "updated_synthesis": 0.55,    # synthesis must be decisive
 }
 
+# Step 28: synthesis rounds (final + updated_synthesis) target an absolute
+# temperature regardless of which persona owns the round, because synthesis
+# quality benefits more from determinism than from agent personality. Aligns
+# with Step 28 spec ("Synthesis: temperature: 0.4").
+_SYNTHESIS_ABSOLUTE_TEMP: float = 0.4
+_SYNTHESIS_ROUND_TYPES: frozenset[str] = frozenset(
+    {"final", "updated_synthesis"}
+)
+
 # Hard absolute caps so temperature never escapes a sensible range.
 _TEMP_MIN = 0.2
 _TEMP_MAX = 1.1
@@ -231,6 +240,18 @@ def resolve_temperature(
       2. Otherwise use the persona base temperature × round multiplier.
     """
     persona = get_persona(role)
+    rt = (round_type or "").lower()
+
+    # Step 28: synthesis rounds use a single deterministic absolute target so
+    # the conclusion does not drift across agents/runs. User overrides are
+    # honoured but pulled toward the synthesis target.
+    if rt in _SYNTHESIS_ROUND_TYPES:
+        if user_override is None or abs(user_override - 0.7) < 1e-3:
+            return _SYNTHESIS_ABSOLUTE_TEMP
+        # When the user explicitly set a non-default temperature, blend it
+        # half-way toward the synthesis target so determinism still wins.
+        blended = (float(user_override) + _SYNTHESIS_ABSOLUTE_TEMP) / 2.0
+        return max(_TEMP_MIN, min(_TEMP_MAX, blended))
 
     # We treat 0.7 as "system default, not explicitly chosen by the user". This
     # keeps backward compat: existing agents created before this change all
@@ -240,6 +261,6 @@ def resolve_temperature(
     else:
         base = float(user_override)
 
-    multiplier = _ROUND_TYPE_TEMP_MULTIPLIER.get((round_type or "").lower(), 1.0)
+    multiplier = _ROUND_TYPE_TEMP_MULTIPLIER.get(rt, 1.0)
     effective = base * multiplier
     return max(_TEMP_MIN, min(_TEMP_MAX, effective))

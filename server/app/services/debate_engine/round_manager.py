@@ -51,6 +51,11 @@ from app.services.debate_engine.two_stage_structurer import recover_json_with_ll
 from app.services.llm.exceptions import LLMError
 from app.services.llm.service import LLMService, get_llm_service
 from app.services.retrieval.retrieval_service import RetrievalService
+from app.services.retrieval.evidence import (
+    EvidencePacket,
+    build_evidence_packets,
+)
+from app.services.retrieval.router import select_strategy
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +113,11 @@ class _AgentTaskPlan:
     message_type: MessageType
     prompt_builder: Any | None = None
     skipped_result: AgentRoundResult | None = None
+    used_evidence_ids: tuple[str, ...] = ()
+    # Step 31: hints used by the retrieval router. Defaults are safe — initial
+    # rounds (cycle 1, no prior evidence memory) get the base role strategy.
+    cycle_number: int = 1
+    evidence_memory_view: dict[str, Any] | None = None
 
 
 class RoundManager:
@@ -165,7 +175,7 @@ class RoundManager:
         for agent_index, agent_ctx in enumerate(ctx.agents):
             sequence_no = self.next_seq
 
-            def _build_prompt(chunks: list[RetrievedChunk], agent: AgentContext = agent_ctx) -> str:
+            def _build_prompt(chunks: list[RetrievedChunk], packets: list[EvidencePacket], agent: AgentContext = agent_ctx) -> str:
                 return build_opening_statement_prompt(
                     role=agent.role,
                     question=ctx.question,
@@ -174,6 +184,7 @@ class RoundManager:
                     retrieved_chunks=[c.model_dump() for c in chunks],
                     knowledge_mode=agent.knowledge_mode,
                     knowledge_strict=agent.knowledge_strict,
+                    evidence_packets=packets,
                 )
 
             plans.append(
@@ -284,6 +295,7 @@ class RoundManager:
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
                 agent: AgentContext = agent_ctx,
                 own: str = own_stance,
                 others: list[dict[str, Any]] = other_agents,
@@ -298,6 +310,7 @@ class RoundManager:
                     retrieved_chunks=[c.model_dump() for c in chunks],
                     knowledge_mode=agent.knowledge_mode,
                     knowledge_strict=agent.knowledge_strict,
+                    evidence_packets=packets,
                 )
 
             plans.append(
@@ -355,6 +368,7 @@ class RoundManager:
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
                 agent: AgentContext = agent_ctx,
                 stance: str = original_stance,
                 summary: str = debate_digest_text,
@@ -369,6 +383,7 @@ class RoundManager:
                     retrieved_chunks=[c.model_dump() for c in chunks],
                     knowledge_mode=agent.knowledge_mode,
                     knowledge_strict=agent.knowledge_strict,
+                    evidence_packets=packets,
                 )
 
             plans.append(
@@ -417,6 +432,11 @@ class RoundManager:
         original_question = memory.get("original_question", "") or ctx.question
         debate_summary = memory.get("debate_summary") or {}
         cycle_memories = memory.get("cycle_memories") or []
+        evolving_positions = memory.get("evolving_positions") or []
+        evidence_memory = memory.get("evidence_memory") or {}
+        used_evidence_tuple = tuple(
+            str(x) for x in (evidence_memory.get("cited_sources") or [])
+        )
 
         plans: list[_AgentTaskPlan] = []
         for agent_index, agent_ctx in enumerate(ctx.agents):
@@ -427,6 +447,7 @@ class RoundManager:
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
                 agent: AgentContext = agent_ctx,
                 prev_pos: str = previous_position,
                 kargs: list[str] = key_arguments,
@@ -445,6 +466,9 @@ class RoundManager:
                     knowledge_strict=agent.knowledge_strict,
                     debate_summary=debate_summary,
                     cycle_memories=cycle_memories,
+                    evolving_positions=evolving_positions,
+                    evidence_packets=packets,
+                    evidence_memory=evidence_memory,
                 )
 
             plans.append(
@@ -454,6 +478,9 @@ class RoundManager:
                     sequence_no=sequence_no,
                     message_type=MessageType.agent_response,
                     prompt_builder=_build_prompt,
+                    used_evidence_ids=used_evidence_tuple,
+                    cycle_number=cycle_number,
+                    evidence_memory_view=evidence_memory,
                 )
             )
 
@@ -504,6 +531,7 @@ class RoundManager:
         original_question = memory.get("original_question", "") or ctx.question
         debate_summary = memory.get("debate_summary") or {}
         cycle_memories = memory.get("cycle_memories") or []
+        evolving_positions = memory.get("evolving_positions") or []
 
         plans: list[_AgentTaskPlan] = []
         for agent_index, agent_ctx in enumerate(ctx.agents):
@@ -640,6 +668,11 @@ class RoundManager:
         responses_by_id = {str(r.agent_id): r for r in followup_responses}
         debate_summary = memory.get("debate_summary") or {}
         cycle_memories = memory.get("cycle_memories") or []
+        evolving_positions = memory.get("evolving_positions") or []
+        evidence_memory = memory.get("evidence_memory") or {}
+        used_evidence_tuple = tuple(
+            str(x) for x in (evidence_memory.get("cited_sources") or [])
+        )
 
         # When no peer answers are available, the critique prompt itself must
         # still produce a useful challenge by targeting the strongest argument
@@ -677,6 +710,7 @@ class RoundManager:
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
                 agent: AgentContext = agent_ctx,
                 own_text: str = own_answer,
                 others_list: list[dict[str, Any]] = other,
@@ -695,6 +729,9 @@ class RoundManager:
                     knowledge_strict=agent.knowledge_strict,
                     debate_summary=debate_summary,
                     cycle_memories=cycle_memories,
+                    evolving_positions=evolving_positions,
+                    evidence_packets=packets,
+                    evidence_memory=evidence_memory,
                 )
 
             plans.append(
@@ -704,6 +741,9 @@ class RoundManager:
                     sequence_no=sequence_no,
                     message_type=MessageType.critique,
                     prompt_builder=_build_prompt,
+                    used_evidence_ids=used_evidence_tuple,
+                    cycle_number=cycle_number,
+                    evidence_memory_view=evidence_memory,
                 )
             )
 
@@ -737,6 +777,11 @@ class RoundManager:
         previous_synthesis = memory.get("previous_synthesis", "") or ""
         debate_summary = memory.get("debate_summary") or {}
         cycle_memories = memory.get("cycle_memories") or []
+        evolving_positions = memory.get("evolving_positions") or []
+        evidence_memory = memory.get("evidence_memory") or {}
+        used_evidence_tuple = tuple(
+            str(x) for x in (evidence_memory.get("cited_sources") or [])
+        )
 
         responses_block = [
             {
@@ -773,6 +818,7 @@ class RoundManager:
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
                 agent: AgentContext = agent_ctx,
                 resp: list[dict[str, Any]] = responses_block,
                 crit: list[dict[str, Any]] = critiques_block,
@@ -791,6 +837,9 @@ class RoundManager:
                     knowledge_strict=agent.knowledge_strict,
                     debate_summary=debate_summary,
                     cycle_memories=cycle_memories,
+                    evolving_positions=evolving_positions,
+                    evidence_packets=packets,
+                    evidence_memory=evidence_memory,
                 )
 
             plans.append(
@@ -800,6 +849,9 @@ class RoundManager:
                     sequence_no=sequence_no,
                     message_type=MessageType.final_summary,
                     prompt_builder=_build_prompt,
+                    used_evidence_ids=used_evidence_tuple,
+                    cycle_number=cycle_number,
+                    evidence_memory_view=evidence_memory,
                 )
             )
 
@@ -904,8 +956,35 @@ class RoundManager:
         agent_started_perf = time.perf_counter()
 
         async with self._session_factory() as task_db:
-            chunks = await self._retrieve_for_agent(task_db, ctx, plan.agent_ctx)
-            prompt = plan.prompt_builder(chunks)
+            chunks = await self._retrieve_for_agent(
+                task_db,
+                ctx,
+                plan.agent_ctx,
+                cycle_number=plan.cycle_number,
+                evidence_memory_view=plan.evidence_memory_view,
+            )
+            # Step 29: build structured evidence packets so the prompt can
+            # cite by [E1]/[E2] labels and reason about source reliability.
+            try:
+                packets = await build_evidence_packets(
+                    task_db,
+                    chunks,
+                    used_evidence_ids=plan.used_evidence_ids or None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Evidence packet build failed (round=%d agent=%s): %s — "
+                    "falling back to raw chunks",
+                    round_record.round_number,
+                    plan.agent_ctx.agent_id,
+                    exc,
+                )
+                packets = []
+            try:
+                prompt = plan.prompt_builder(chunks, packets)
+            except TypeError:
+                # Backward compatibility: legacy single-arg builders.
+                prompt = plan.prompt_builder(chunks)
             result = await self._call_llm(
                 db=task_db,
                 agent_ctx=plan.agent_ctx,
@@ -1217,7 +1296,18 @@ class RoundManager:
         db: AsyncSession,
         ctx: TurnContext,
         agent_ctx: AgentContext,
+        *,
+        cycle_number: int = 1,
+        evidence_memory_view: dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
+        # Step 31: pick a role-aware retrieval strategy. ``select_strategy`` is
+        # pure / deterministic and free for any role string — unknown roles
+        # fall back to a balanced default strategy.
+        strategy = select_strategy(
+            agent_ctx.role,
+            cycle_number=cycle_number,
+            evidence_memory=evidence_memory_view,
+        )
         return await self._retrieval.retrieve_for_agent(
             agent_id=agent_ctx.agent_id,
             session_id=ctx.session_id,
@@ -1226,6 +1316,7 @@ class RoundManager:
             knowledge_mode=agent_ctx.knowledge_mode,
             assigned_document_ids=agent_ctx.assigned_document_ids,
             top_k=RETRIEVAL_TOP_K,
+            strategy=strategy,
         )
 
     async def _build_retrieval_summary(

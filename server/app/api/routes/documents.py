@@ -2,24 +2,30 @@
 Document routes — upload, list, and delete user documents for RAG grounding.
 
 POST /documents/upload?session_id=<uuid>
-    Upload a file and run the full ingestion pipeline (extract → chunk → embed).
-    The file must belong to a session owned by the current user.
-    Supported types: .txt, .pdf, .docx
+    Upload a single file (legacy single-file API).
+
+POST /documents/upload-batch?session_id=<uuid>
+    Step 30 — multi-file upload with partial-success semantics.
+    Each file is ingested independently; failed files do not abort the batch.
 
 GET  /documents?session_id=<uuid>
     List all documents for a session owned by the current user.
 
 DELETE /documents/{document_id}?session_id=<uuid>
-    Delete a document (and cascade-delete its chunks via FK).
+    Delete a document (and cascade-delete its chunks via FK). Also removes
+    the underlying file from the configured storage provider (local disk
+    or Cloudinary).
 
 Ownership is enforced by verifying the ChatSession.user_id == current_user.id
-before any document operation.  Users cannot read or modify each other's data.
+before any document operation. Users cannot read or modify each other's data.
 
-File size limit: 20 MB (enforced by FastAPI's UploadFile read + explicit check).
+File size limit: settings.DOCUMENT_MAX_FILE_SIZE_MB (default 20 MB).
+Batch limit: settings.DOCUMENT_MAX_FILES_PER_UPLOAD (default 10).
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -27,6 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.chat_session import ChatSession
 from app.models.document import Document
@@ -34,17 +41,27 @@ from app.models.user import User
 from app.schemas.document import (
     DocumentDeleteResponse,
     DocumentListItem,
+    DocumentUploadBatchResponse,
+    DocumentUploadFailure,
     DocumentUploadResponse,
+)
+from app.services.documents.extractor import (
+    extension_from_filename,
+    supported_extensions,
 )
 from app.services.documents.ingestion_service import (
     DocumentIngestionError,
     DocumentIngestionService,
 )
-from app.services.documents.extractor import supported_extensions
+from app.services.storage import DocumentStorageError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+
+def _max_upload_bytes() -> int:
+    return int(settings.DOCUMENT_MAX_FILE_SIZE_MB) * 1024 * 1024
 
 
 # ── Ownership guard ───────────────────────────────────────────────────────────
@@ -69,34 +86,28 @@ async def _require_session_ownership(
     return session
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+def _doc_to_response(doc: Document) -> DocumentUploadResponse:
+    return DocumentUploadResponse(
+        id=doc.id,
+        session_id=doc.chat_session_id,
+        filename=doc.filename,
+        source_type=doc.source_type,
+        status=doc.status.value,
+        created_at=doc.created_at,
+        storage_provider=doc.storage_provider or "local",
+        bytes=doc.storage_bytes,
+    )
 
-@router.post(
-    "/upload",
-    response_model=DocumentUploadResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Upload a document for RAG grounding",
-)
-async def upload_document(
-    session_id: uuid.UUID = Query(..., description="The debate session to attach this document to"),
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> DocumentUploadResponse:
-    """
-    Upload and ingest a document.
 
-    The pipeline runs synchronously (inline) — for typical documents (< 20 MB)
-    this completes in under a second with the mock embedder, or 2-5 seconds with
-    the OpenAI embedder depending on chunk count.
+def _sanitize_filename(filename: str | None) -> str:
+    """Strip path traversal hints; keep only the basename."""
+    raw = filename or "upload"
+    # Drop any directory component a malicious client may send.
+    base = raw.replace("\\", "/").rsplit("/", 1)[-1]
+    return base.strip() or "upload"
 
-    Supported file types: .txt, .pdf, .docx
-    """
-    await _require_session_ownership(session_id, db, current_user)
 
-    # Validate extension before reading the whole body
-    filename = file.filename or "upload"
-    from app.services.documents.extractor import extension_from_filename  # noqa: PLC0415
+def _validate_file_or_raise(filename: str, size: int) -> None:
     ext = extension_from_filename(filename)
     if ext not in supported_extensions():
         raise HTTPException(
@@ -106,18 +117,41 @@ async def upload_document(
                 f"Supported: {', '.join(sorted(supported_extensions()))}"
             ),
         )
-
-    file_bytes = await file.read()
-    if len(file_bytes) > _MAX_UPLOAD_BYTES:
+    if size > _max_upload_bytes():
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds the 20 MB limit ({len(file_bytes)} bytes).",
+            detail=(
+                f"File exceeds the {settings.DOCUMENT_MAX_FILE_SIZE_MB} MB limit "
+                f"({size} bytes)."
+            ),
         )
-    if not file_bytes:
+    if size == 0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Uploaded file is empty.",
         )
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/upload",
+    response_model=DocumentUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a single document for RAG grounding",
+)
+async def upload_document(
+    session_id: uuid.UUID = Query(..., description="The debate session to attach this document to"),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DocumentUploadResponse:
+    """Upload and ingest a single document (legacy single-file endpoint)."""
+    await _require_session_ownership(session_id, db, current_user)
+
+    filename = _sanitize_filename(file.filename)
+    file_bytes = await file.read()
+    _validate_file_or_raise(filename, len(file_bytes))
 
     svc = DocumentIngestionService()
     try:
@@ -126,6 +160,7 @@ async def upload_document(
             session_id=session_id,
             filename=filename,
             file_bytes=file_bytes,
+            content_type=file.content_type,
         )
     except DocumentIngestionError as exc:
         raise HTTPException(
@@ -133,14 +168,107 @@ async def upload_document(
             detail=str(exc),
         ) from exc
 
-    return DocumentUploadResponse(
-        id=doc.id,
-        session_id=doc.chat_session_id,
-        filename=doc.filename,
-        source_type=doc.source_type,
-        status=doc.status.value,
-        created_at=doc.created_at,
-    )
+    return _doc_to_response(doc)
+
+
+@router.post(
+    "/upload-batch",
+    response_model=DocumentUploadBatchResponse,
+    status_code=status.HTTP_207_MULTI_STATUS,
+    summary="Upload multiple documents in one request (partial success)",
+)
+async def upload_documents_batch(
+    session_id: uuid.UUID = Query(..., description="The debate session to attach these documents to"),
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DocumentUploadBatchResponse:
+    """
+    Step 30: ingest a batch of files. One bad file does not fail the batch.
+
+    For every file we validate the extension/size, run the full ingestion
+    pipeline, and roll back its DB rows + delete the storage blob if any
+    later step fails.
+    """
+    await _require_session_ownership(session_id, db, current_user)
+
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No files provided.",
+        )
+    max_files = int(settings.DOCUMENT_MAX_FILES_PER_UPLOAD)
+    if len(files) > max_files:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Too many files in one upload (max {max_files}).",
+        )
+
+    svc = DocumentIngestionService()
+    uploaded: list[DocumentUploadResponse] = []
+    failed: list[DocumentUploadFailure] = []
+    max_bytes = _max_upload_bytes()
+
+    for upload in files:
+        filename = _sanitize_filename(upload.filename)
+        try:
+            content = await upload.read()
+        except Exception as exc:  # noqa: BLE001
+            failed.append(DocumentUploadFailure(filename=filename, error=f"Read failed: {exc}"))
+            continue
+
+        # Pre-flight validation, mirroring _validate_file_or_raise but
+        # returning per-file errors instead of aborting.
+        ext = extension_from_filename(filename)
+        if ext not in supported_extensions():
+            failed.append(DocumentUploadFailure(
+                filename=filename,
+                error=f"Unsupported file type '{ext}'.",
+            ))
+            continue
+        if len(content) == 0:
+            failed.append(DocumentUploadFailure(filename=filename, error="File is empty."))
+            continue
+        if len(content) > max_bytes:
+            failed.append(DocumentUploadFailure(
+                filename=filename,
+                error=f"File exceeds {settings.DOCUMENT_MAX_FILE_SIZE_MB} MB limit.",
+            ))
+            continue
+
+        # Use a SAVEPOINT so a failed file rolls back its own rows but the
+        # successful files in the batch remain persisted.
+        try:
+            async with db.begin_nested():
+                doc = await svc.ingest(
+                    db=db,
+                    session_id=session_id,
+                    filename=filename,
+                    file_bytes=content,
+                    content_type=upload.content_type,
+                )
+            uploaded.append(_doc_to_response(doc))
+        except DocumentIngestionError as exc:
+            logger.warning(
+                "document_upload_failed filename=%s reason=%s",
+                filename, exc,
+            )
+            failed.append(DocumentUploadFailure(filename=filename, error=str(exc)))
+        except DocumentStorageError as exc:
+            logger.warning(
+                "document_upload_failed filename=%s reason=storage:%s",
+                filename, exc,
+            )
+            failed.append(DocumentUploadFailure(
+                filename=filename, error=f"Storage failure: {exc}",
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("document_upload_failed filename=%s", filename)
+            failed.append(DocumentUploadFailure(
+                filename=filename, error=f"Unexpected error: {exc}",
+            ))
+
+    return DocumentUploadBatchResponse(uploaded=uploaded, failed=failed)
 
 
 @router.get(
@@ -164,6 +292,8 @@ async def list_documents(
             source_type=d.source_type,
             status=d.status.value,
             created_at=d.created_at,
+            storage_provider=d.storage_provider or "local",
+            bytes=d.storage_bytes,
         )
         for d in docs
     ]
@@ -193,13 +323,42 @@ async def delete_document(
             detail=f"Document {document_id} not found.",
         )
 
-    # Remove file from disk if it exists
-    import os  # noqa: PLC0415
-    if doc.file_path:
-        try:
-            os.remove(doc.file_path)
-        except OSError:
-            pass  # file already gone — not fatal
+    logger.info("document_delete_start document=%s provider=%s", doc.id, doc.storage_provider)
+
+    # Best-effort: remove the underlying blob via the provider that wrote it.
+    # If the active provider differs (e.g. switched config), still try the
+    # row's recorded provider so we don't leak Cloudinary objects.
+    try:
+        from app.services.storage import get_storage_service  # noqa: PLC0415
+        from app.services.storage.local import LocalDocumentStorage  # noqa: PLC0415
+
+        provider_name = (doc.storage_provider or "local").lower()
+        if provider_name == "cloudinary":
+            try:
+                from app.services.storage.cloudinary_provider import (  # noqa: PLC0415
+                    CloudinaryDocumentStorage,
+                )
+                provider = CloudinaryDocumentStorage()
+            except DocumentStorageError as exc:
+                logger.warning(
+                    "document_delete: cloudinary unavailable (%s) — orphan public_id=%s",
+                    exc, doc.storage_public_id,
+                )
+                provider = None
+        else:
+            provider = LocalDocumentStorage()
+
+        if provider is not None:
+            stored = DocumentIngestionService.stored_file_from_doc(doc)
+            await provider.delete(stored)
+        # Touch get_storage_service to keep cache warm if we ever need it later.
+        _ = get_storage_service
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "document_delete: storage delete failed document=%s reason=%s",
+            doc.id, exc,
+        )
 
     await db.delete(doc)
     return DocumentDeleteResponse(id=document_id, deleted=True)
+

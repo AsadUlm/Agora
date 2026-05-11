@@ -26,6 +26,16 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.debate_engine.prompts.quality_constraints import (
+    CONTINUITY_REQUIREMENTS_BLOCK,
+    DEBUG_METADATA_BLOCK,
+    QUALITY_REQUIREMENTS_BLOCK,
+)
+from app.services.retrieval.evidence import (
+    EvidencePacket,
+    format_evidence_block,
+    format_evidence_usage_instructions,
+)
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -99,6 +109,76 @@ def _format_cycle_memories(cycle_memories: list[dict[str, Any]] | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_evolving_positions(
+    evolving_positions: list[dict[str, Any]] | None,
+) -> str:
+    """Step 28: render the position trajectory across cycles.
+
+    Lets the agent reason about HOW the synthesis moved (refinement,
+    narrowing, concession, escalation) instead of seeing only the latest
+    snapshot. Trimmed to the last 4 entries to bound token usage.
+    """
+    if not evolving_positions:
+        return ""
+    lines = ["\nPosition evolution across cycles (oldest → newest):"]
+    for p in evolving_positions[-4:]:
+        cycle = p.get("cycle_number", "?")
+        pos = _compact(str(p.get("position", "")), 220)
+        shift = _compact(str(p.get("shift", "")), 160)
+        line = f"- Cycle {cycle}: {pos}"
+        if shift:
+            line += f"  [shift: {shift}]"
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+# ── Step 29: evidence memory + selection helpers ──────────────────────────────
+
+
+def _select_context_block(
+    chunks: list[dict] | None,
+    packets: list[EvidencePacket] | None,
+) -> str:
+    """Prefer the structured evidence block when packets are available."""
+    if packets:
+        return format_evidence_block(packets) + format_evidence_usage_instructions()
+    return _format_context_block(chunks)
+
+
+def _format_evidence_memory(evidence_memory: dict[str, Any] | None) -> str:
+    """Render persistent EvidenceMemory across cycles (compact)."""
+    if not evidence_memory:
+        return ""
+    strongest = evidence_memory.get("strongest_evidence") or []
+    disputed = evidence_memory.get("disputed_evidence") or []
+    gaps = evidence_memory.get("unresolved_fact_gaps") or []
+    cited = evidence_memory.get("cited_sources") or []
+
+    if not (strongest or disputed or gaps or cited):
+        return ""
+
+    lines = ["\nEvidence memory across cycles:"]
+    if strongest:
+        lines.append("- Strongest evidence so far:")
+        for s in strongest[:4]:
+            lines.append(f"  · {_compact(str(s), 200)}")
+    if disputed:
+        lines.append("- Disputed evidence (interpretations conflicted):")
+        for d in disputed[:4]:
+            lines.append(f"  · {_compact(str(d), 200)}")
+    if gaps:
+        lines.append("- Unresolved factual gaps:")
+        for g in gaps[:4]:
+            lines.append(f"  · {_compact(str(g), 200)}")
+    if cited:
+        cited_compact = ", ".join(_compact(str(c), 60) for c in cited[:8])
+        lines.append(f"- Previously cited sources: {cited_compact}")
+        lines.append(
+            "  Prefer NEW or COMPLEMENTARY evidence in this cycle when possible."
+        )
+    return "\n".join(lines) + "\n"
+
+
 _OUTPUT_CONTRACT = """
 Output contract:
 - Return only valid JSON (single object, no markdown fences).
@@ -126,6 +206,9 @@ def build_followup_response_prompt(
     knowledge_strict: bool = False,
     debate_summary: dict[str, Any] | None = None,
     cycle_memories: list[dict[str, Any]] | None = None,
+    evolving_positions: list[dict[str, Any]] | None = None,
+    evidence_packets: list[EvidencePacket] | None = None,
+    evidence_memory: dict[str, Any] | None = None,
 ) -> str:
     depth = {
         "shallow": "Be concise. A few sentences per field.",
@@ -142,10 +225,15 @@ def build_followup_response_prompt(
 
     points = "; ".join([_compact(p, 100) for p in (own_key_arguments or [])][:3]) or "(none recorded)"
     chunks = retrieved_chunks or []
-    ctx = _format_context_block(chunks)
-    knw = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(chunks))
+    packets = evidence_packets or []
+    ctx = _select_context_block(chunks, packets)
+    knw = _knowledge_instruction(
+        knowledge_mode, knowledge_strict, bool(packets or chunks)
+    )
     summary_block = _format_debate_summary(debate_summary)
     cycles_block = _format_cycle_memories(cycle_memories)
+    evolution_block = _format_evolving_positions(evolving_positions)
+    evidence_mem_block = _format_evidence_memory(evidence_memory)
 
     return f"""You are a debate participant with the role: {role}. The debate is ongoing.
 {persona_block(role)}
@@ -153,7 +241,7 @@ Original debate question: {_compact(original_question, 280)}
 
 Previous synthesis of the debate so far:
 {_compact(previous_synthesis, 600)}
-{summary_block}{cycles_block}
+{summary_block}{cycles_block}{evolution_block}{evidence_mem_block}
 Your established position from the debate:
 {_compact(own_previous_position, 280)}
 
@@ -172,6 +260,10 @@ position survives the new question. Do not paraphrase the previous synthesis.
 
 Reasoning style: {style}
 {depth}
+
+{QUALITY_REQUIREMENTS_BLOCK}
+
+{CONTINUITY_REQUIREMENTS_BLOCK}
 {_OUTPUT_CONTRACT}
 Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) capturing your answer.
@@ -185,6 +277,8 @@ Required JSON fields:
 - position_update: one short note (kept for backward compatibility — usually equals
   position_evolution.reason; set "" if change is "no_change").
 - response: full prose answer for end users.
+
+{DEBUG_METADATA_BLOCK}
 """
 
 
@@ -204,6 +298,9 @@ def build_followup_critique_prompt(
     knowledge_strict: bool = False,
     debate_summary: dict[str, Any] | None = None,
     cycle_memories: list[dict[str, Any]] | None = None,
+    evolving_positions: list[dict[str, Any]] | None = None,
+    evidence_packets: list[EvidencePacket] | None = None,
+    evidence_memory: dict[str, Any] | None = None,
 ) -> str:
     """Critique prompt — never skips.
 
@@ -233,10 +330,15 @@ def build_followup_critique_prompt(
     ) or "(no peer follow-ups available)"
 
     chunks = retrieved_chunks or []
-    ctx = _format_context_block(chunks)
-    knw = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(chunks))
+    packets = evidence_packets or []
+    ctx = _select_context_block(chunks, packets)
+    knw = _knowledge_instruction(
+        knowledge_mode, knowledge_strict, bool(packets or chunks)
+    )
     summary_block = _format_debate_summary(debate_summary)
     cycles_block = _format_cycle_memories(cycle_memories)
+    evolution_block = _format_evolving_positions(evolving_positions)
+    evidence_mem_block = _format_evidence_memory(evidence_memory)
 
     return f"""You are a debate participant with the role: {role}. The debate is ongoing.
 {persona_block(role)}
@@ -244,7 +346,7 @@ Original debate question: {_compact(original_question, 240)}
 
 Previous synthesis (context):
 {_compact(previous_synthesis, 500)}
-{summary_block}{cycles_block}
+{summary_block}{cycles_block}{evolution_block}{evidence_mem_block}
 The user just asked: "{_compact(follow_up_question, 400)}"
 
 Your own follow-up answer:
@@ -273,6 +375,10 @@ Concretely, your critique MUST include:
 
 Reasoning style: {style}
 {depth}
+
+{QUALITY_REQUIREMENTS_BLOCK}
+
+{CONTINUITY_REQUIREMENTS_BLOCK}
 {_OUTPUT_CONTRACT}
 Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) naming the core flaw.
@@ -286,6 +392,8 @@ Required JSON fields:
 - counterargument: a stronger alternative (1–3 sentences).
 - impact: what changes if your counter is accepted (one sentence).
 - response: full prose suitable for end users.
+
+{DEBUG_METADATA_BLOCK}
 """
 
 
@@ -305,6 +413,9 @@ def build_updated_synthesis_prompt(
     knowledge_strict: bool = False,
     debate_summary: dict[str, Any] | None = None,
     cycle_memories: list[dict[str, Any]] | None = None,
+    evolving_positions: list[dict[str, Any]] | None = None,
+    evidence_packets: list[EvidencePacket] | None = None,
+    evidence_memory: dict[str, Any] | None = None,
 ) -> str:
     depth = {
         "shallow": "Be concise.",
@@ -336,10 +447,15 @@ def build_updated_synthesis_prompt(
     ) or "(no follow-up critiques available)"
 
     chunks = retrieved_chunks or []
-    ctx = _format_context_block(chunks)
-    knw = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(chunks))
+    packets = evidence_packets or []
+    ctx = _select_context_block(chunks, packets)
+    knw = _knowledge_instruction(
+        knowledge_mode, knowledge_strict, bool(packets or chunks)
+    )
     summary_block = _format_debate_summary(debate_summary)
     cycles_block = _format_cycle_memories(cycle_memories)
+    evolution_block = _format_evolving_positions(evolving_positions)
+    evidence_mem_block = _format_evidence_memory(evidence_memory)
 
     return f"""You are a debate participant with the role: {role}. The debate is ongoing.
 {persona_block(role)}
@@ -347,7 +463,7 @@ Original debate question: {_compact(original_question, 240)}
 
 Previous synthesis (the conclusion before this follow-up cycle):
 {_compact(previous_synthesis, 600)}
-{summary_block}{cycles_block}
+{summary_block}{cycles_block}{evolution_block}{evidence_mem_block}
 The user just asked a follow-up question:
 "{_compact(follow_up_question, 400)}"
 
@@ -370,6 +486,17 @@ Decision rule (mandatory):
 
 Reasoning style: {style}
 {depth}
+
+{QUALITY_REQUIREMENTS_BLOCK}
+
+Evolution intelligence (mandatory for the moderator-style synthesis):
+- `change_reason` MUST explain WHY the conclusion shifted (or did not), not
+  merely WHAT changed. Reference the specific argument, counterexample, or
+  unresolved tension that drove the shift.
+- Track the trajectory: name any consensus growth, concessions made, and
+  escalation points across the supplied position evolution.
+- If a major reframing happened (the question itself was reinterpreted), call
+  it out explicitly in `what_changed`.
 {_OUTPUT_CONTRACT}
 Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) capturing the updated conclusion.
@@ -394,4 +521,19 @@ Required JSON fields:
 - strongest_argument: the single argument that did the most work this cycle.
 - remaining_disagreement: open questions or unresolved tensions.
 - response: full prose suitable for end users.
+
+Optional (recommended) evolution-tracking fields:
+- consensus_growth: short string describing what new ground was agreed on this cycle (or "").
+- concessions_made: array of short strings naming concessions made by any agent (or []).
+- escalation_points: array of short strings naming where the debate sharpened (or []).
+- major_reframings: array of short strings naming any reinterpretation of the question (or []).
+
+Optional (recommended) evidence-tracking fields:
+- key_evidence_used: array of evidence labels (e.g. ["E1", "E3"]) that drove this updated conclusion.
+- rejected_evidence: array of "<E-label> — <one-line reason>" strings for evidence you discounted.
+- evidence_conflicts: array of short strings describing where evidence disagreed and how you resolved it.
+- evidence_gaps: array of factual questions the evidence did not answer.
+- new_evidence_introduced: array of E-labels for evidence cited THIS cycle that was not used in prior cycles (or []).
+
+{DEBUG_METADATA_BLOCK}
 """

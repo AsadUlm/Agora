@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.debate_engine.prompts.quality_constraints import (
+    QUALITY_REQUIREMENTS_BLOCK,
+)
+from app.services.retrieval.evidence import (
+    EvidencePacket,
+    format_evidence_block,
+    format_evidence_usage_instructions,
+)
 
 
 def _compact_chunk_text(text: str, max_chars: int = 260) -> str:
@@ -50,6 +58,7 @@ def build_opening_statement_prompt(
     retrieved_chunks: list[dict] | None = None,
     knowledge_mode: str = "shared_session_docs",
     knowledge_strict: bool = False,
+    evidence_packets: list[EvidencePacket] | None = None,
 ) -> str:
     """Build the prompt for an agent's Round 1 opening statement."""
     depth_instruction = {
@@ -66,8 +75,19 @@ def build_opening_statement_prompt(
     }.get(reasoning_style, "Reason in a balanced way.")
 
     chunks = retrieved_chunks or []
-    context_block = _format_context_block(chunks)
-    knowledge_block = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(chunks))
+    packets = evidence_packets or []
+    has_evidence = bool(packets) or bool(chunks)
+    # Step 29: prefer the structured evidence block when packets are supplied;
+    # fall back to the legacy raw-chunk block for backward compatibility.
+    if packets:
+        context_block = (
+            format_evidence_block(packets) + format_evidence_usage_instructions()
+        )
+    else:
+        context_block = _format_context_block(chunks)
+    knowledge_block = _knowledge_instruction(
+        knowledge_mode, knowledge_strict, has_evidence
+    )
 
     return f"""You are a debate participant with the role: {role}.
 {persona_block(role)}
@@ -78,10 +98,15 @@ Your task: Generate your opening statement for Round 1.
 Reasoning style: {style_instruction}
 {depth_instruction}
 
-Quality requirements (mandatory):
-- Use at least one CONCRETE example, domain reference, or scenario.
+{QUALITY_REQUIREMENTS_BLOCK}
+
+Round 1 objective (independent thesis):
+- This is your OPENING THESIS. You are not yet reacting to other agents.
+- State an explicit thesis (one sentence) before defending it.
+- Identify the causal MECHANISM that supports the thesis (who acts, what
+  they do, what changes).
+- Surface at least one explicit RISK or trade-off your thesis must absorb.
 - Avoid restating the question and avoid generic abstractions.
-- Anchor each key_point to a specific mechanism, actor, or outcome.
 
 Output contract:
 - Return only valid JSON.
