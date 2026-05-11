@@ -49,18 +49,18 @@ export default function SynthesisNode({
                     ease: "easeOut",
                 }}
                 className={`
-          relative px-6 py-5 rounded-2xl
-          bg-gradient-to-br from-violet-600/90 to-purple-800/90
-          border-2 border-violet-400/50
-          shadow-lg shadow-violet-500/20
-          min-w-[240px] max-w-[360px]
+          relative px-7 py-6 rounded-2xl
+          bg-gradient-to-br from-violet-600/95 via-violet-700/95 to-purple-900/95
+          border-2 border-violet-300/55
+          shadow-[0_18px_45px_-18px_rgba(139,92,246,0.55)]
+          min-w-[300px] max-w-[420px]
           text-center cursor-pointer
           transition-all duration-150
-          ${selected ? "glow-synthesis border-violet-300 scale-105" : "hover:border-violet-400/70"}
-          ${nodeStatus === "active" ? "ring-2 ring-violet-400/40" : ""}
-                    ${nodeStatus === "failed" ? "border-red-500/60 shadow-red-500/20" : ""}
-                    ${isGeneratingFocus ? "border-cyan-300 shadow-xl shadow-cyan-500/35 ring-2 ring-cyan-300/45" : ""}
-                    ${completionPulse ? "border-emerald-300 shadow-xl shadow-emerald-500/30" : ""}
+          ${selected ? "glow-synthesis border-violet-200 scale-[1.04]" : "hover:border-violet-300/75 hover:shadow-[0_22px_55px_-18px_rgba(139,92,246,0.7)]"}
+          ${nodeStatus === "active" ? "ring-2 ring-violet-300/55" : ""}
+                    ${nodeStatus === "failed" ? "border-red-400/70 shadow-red-500/30" : ""}
+                    ${isGeneratingFocus ? "border-cyan-300 shadow-xl shadow-cyan-500/40 ring-2 ring-cyan-300/45" : ""}
+                    ${completionPulse ? "border-emerald-300 shadow-xl shadow-emerald-500/35" : ""}
         `}
             >
                 <Handle
@@ -81,10 +81,10 @@ export default function SynthesisNode({
                     className="!bg-violet-400 !w-2 !h-2 !border-2 !border-violet-900"
                 />
 
-                <div className="text-[10px] uppercase tracking-widest text-violet-200/70 mb-1.5 font-semibold">
-                    ✨ Synthesis
+                <div className="text-[10px] uppercase tracking-[0.18em] text-violet-200/85 mb-2 font-bold">
+                    ✦ Final Synthesis
                 </div>
-                <div className="text-sm font-medium text-white leading-snug">
+                <div className="text-[15px] font-semibold text-white leading-snug">
                     {displayText}
                 </div>
 

@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { useEffect } from "react";
 import { usePlaybackStore } from "../model/playback.store";
 import { useDebateExecutionState } from "../model/useDebateExecutionState";
+import CycleNavigator from "./CycleNavigator";
 
 const phaseIcons: Record<string, string> = {
     initial: "💬",
@@ -60,13 +61,15 @@ export default function DebateTimeline() {
 
     return (
         <div className="w-64 h-full border-r border-agora-border bg-agora-surface/60 backdrop-blur-sm flex flex-col">
-            <div className="px-4 py-4 border-b border-agora-border">
-                <h2 className="text-xs uppercase tracking-widest text-agora-text-muted font-semibold">
-                    Debate Timeline
+            <CycleNavigator />
+
+            <div className="px-4 py-3 border-b border-agora-border">
+                <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
+                    Rounds in this cycle
                 </h2>
             </div>
 
-            <div className="flex-1 p-4 space-y-2 overflow-y-auto">
+            <div className="flex-1 p-3 space-y-1.5 overflow-y-auto">
                 {rounds.map((round, idx) => {
                     const isSelected = round.roundNumber === selectedRound;
                     const isActive = round.roundNumber === execution.activeRound && selectedRound === null;

@@ -1,7 +1,7 @@
 import TopTopicBar from "./TopTopicBar";
 import DebateTimeline from "./DebateTimeline";
 import DebateGraphCanvas from "./DebateGraphCanvas";
-import ModeratorPanel from "./ModeratorPanel";
+import RightSidebar from "./RightSidebar";
 import PlaybackBar from "./PlaybackBar";
 import NodeDetailDrawer from "./NodeDetailDrawer";
 import FollowUpInput from "./FollowUpInput";
@@ -21,14 +21,14 @@ export default function DebateLayout() {
                 <div className="flex-1 relative min-w-0 min-h-0">
                     <DebateGraphCanvas />
                     <NodeDetailDrawer />
-                    <FollowUpInput />
                 </div>
 
-                {/* Right: Moderator */}
-                <ModeratorPanel />
+                {/* Right: Unified panel (Moderator / Evolution / Raw) */}
+                <RightSidebar />
             </div>
 
-            {/* Bottom: Playback Bar */}
+            {/* Bottom: Follow-up dock + Playback Bar */}
+            <FollowUpInput />
             <PlaybackBar />
         </div>
     );

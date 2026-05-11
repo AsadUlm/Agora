@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.debate_engine.prompts.personas import persona_block
+
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -146,7 +148,7 @@ def build_followup_response_prompt(
     cycles_block = _format_cycle_memories(cycle_memories)
 
     return f"""You are a debate participant with the role: {role}. The debate is ongoing.
-
+{persona_block(role)}
 Original debate question: {_compact(original_question, 280)}
 
 Previous synthesis of the debate so far:
@@ -237,7 +239,7 @@ def build_followup_critique_prompt(
     cycles_block = _format_cycle_memories(cycle_memories)
 
     return f"""You are a debate participant with the role: {role}. The debate is ongoing.
-
+{persona_block(role)}
 Original debate question: {_compact(original_question, 240)}
 
 Previous synthesis (context):
@@ -340,7 +342,7 @@ def build_updated_synthesis_prompt(
     cycles_block = _format_cycle_memories(cycle_memories)
 
     return f"""You are a debate participant with the role: {role}. The debate is ongoing.
-
+{persona_block(role)}
 Original debate question: {_compact(original_question, 240)}
 
 Previous synthesis (the conclusion before this follow-up cycle):
@@ -375,10 +377,19 @@ Required JSON fields:
 - updated_conclusion: the refined conclusion after this follow-up cycle.
 - conclusion_changed: exactly "yes" or "no".
 - change_reason: 1–2 sentences explaining WHY the conclusion changed (or why it did not).
+- core_consensus: the single point all agents agreed on this cycle (or "").
+- major_disagreements: array of 1–3 strings naming live disagreements after this cycle.
+- risk_tradeoffs: array of 1–3 strings naming live risks / trade-offs.
+- policy_direction: one sentence describing the recommended direction now.
+- unresolved_questions: array of 1–3 open questions to investigate next.
+- position_shift: one sentence describing how the position shifted vs the previous synthesis.
+- previous_position: one sentence summarizing the synthesis BEFORE this cycle.
+- new_position: one sentence summarizing the synthesis AFTER this cycle.
 - key_tradeoff: the single key trade-off that decided this update.
 - winning_argument: the argument that prevailed and why.
 - losing_argument: the strongest argument that did NOT prevail and why.
 - confidence: one of "low", "medium", "high".
+- confidence_level: same as confidence (kept for backward compat).
 - what_changed: what the new question shifted (or confirmed) — 1–2 sentences.
 - strongest_argument: the single argument that did the most work this cycle.
 - remaining_disagreement: open questions or unresolved tensions.

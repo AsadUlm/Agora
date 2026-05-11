@@ -433,6 +433,13 @@ def _normalize_round3(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         "winning_argument": winning_argument,
         "losing_argument": losing_argument,
         "confidence": confidence,
+        "confidence_level": _pick_string(payload, ["confidence_level"]).lower() or confidence,
+        "core_consensus": _pick_string(payload, ["core_consensus", "consensus"]),
+        "major_disagreements": _pick_string_list(payload, ["major_disagreements", "disagreements"]),
+        "risk_tradeoffs": _pick_string_list(payload, ["risk_tradeoffs", "risks", "trade_offs"]),
+        "policy_direction": _pick_string(payload, ["policy_direction", "recommended_direction"]) or final_position,
+        "unresolved_questions": _pick_string_list(payload, ["unresolved_questions", "open_questions"]),
+        "position_shift": _pick_string(payload, ["position_shift"]) or what_changed,
         "response": response,
     }
 
@@ -602,6 +609,15 @@ def _normalize_updated_synthesis(payload: dict[str, Any], raw_text: str) -> dict
         "winning_argument": winning_argument,
         "losing_argument": losing_argument,
         "confidence": confidence,
+        "confidence_level": _pick_string(payload, ["confidence_level"]).lower() or confidence,
+        "core_consensus": _pick_string(payload, ["core_consensus", "consensus"]),
+        "major_disagreements": _pick_string_list(payload, ["major_disagreements", "disagreements"]),
+        "risk_tradeoffs": _pick_string_list(payload, ["risk_tradeoffs", "risks", "trade_offs"]),
+        "policy_direction": _pick_string(payload, ["policy_direction", "recommended_direction"]) or updated_conclusion,
+        "unresolved_questions": _pick_string_list(payload, ["unresolved_questions", "open_questions"]),
+        "position_shift": _pick_string(payload, ["position_shift"]) or change_reason,
+        "previous_position": _pick_string(payload, ["previous_position", "prev_position"]),
+        "new_position": _pick_string(payload, ["new_position", "current_position"]) or updated_conclusion,
         "response": response,
     }
 

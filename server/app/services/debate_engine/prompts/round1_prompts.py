@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.services.debate_engine.prompts.personas import persona_block
+
 
 def _compact_chunk_text(text: str, max_chars: int = 260) -> str:
     normalized = " ".join(str(text or "").split())
@@ -68,13 +70,18 @@ def build_opening_statement_prompt(
     knowledge_block = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(chunks))
 
     return f"""You are a debate participant with the role: {role}.
-
+{persona_block(role)}
 The debate question is: {question}
 {knowledge_block}{context_block}
 Your task: Generate your opening statement for Round 1.
 
 Reasoning style: {style_instruction}
 {depth_instruction}
+
+Quality requirements (mandatory):
+- Use at least one CONCRETE example, domain reference, or scenario.
+- Avoid restating the question and avoid generic abstractions.
+- Anchor each key_point to a specific mechanism, actor, or outcome.
 
 Output contract:
 - Return only valid JSON.

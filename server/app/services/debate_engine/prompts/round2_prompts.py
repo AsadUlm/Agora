@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.services.debate_engine.prompts.personas import persona_block
+
 
 def _compact_text(value: str, max_chars: int) -> str:
     normalized = " ".join(str(value or "").split())
@@ -84,7 +86,7 @@ def build_critique_prompt(
         )
 
     return f"""You are a debate participant with the role: {role}.
-
+{persona_block(role)}
 The debate question is: {question}
 
 Your own opening stance was: {_compact_text(own_stance, 220)}
@@ -95,6 +97,12 @@ Your task: Critique the following opponents' arguments in Round 2 Cross-Examinat
 
 Critique style: {style_instruction}
 {depth_instruction}
+
+MANDATORY interaction rules:
+- You MUST quote or paraphrase a specific phrase from the target's argument.
+- You MUST explicitly name the agent / role you are challenging.
+- You MUST NOT produce an isolated essay — every paragraph must reference a
+  concrete claim from another agent.
 
 For each opponent, you MUST identify a SPECIFIC logical weakness and explain why
 it fails under real-world conditions. Avoid generic statements like "needs more

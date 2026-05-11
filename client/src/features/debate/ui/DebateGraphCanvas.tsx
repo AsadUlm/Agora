@@ -101,114 +101,72 @@ const CANVAS_CENTER_X = 500;
 const AGENT_HORIZONTAL_GAP = 280;
 const NODE_WIDTH_ESTIMATE = 200;
 
+/**
+ * Cycle-agnostic layout. Positions four structural roles
+ * (question / responders / interactions / synthesis) on the same
+ * vertical bands regardless of which cycle is being rendered.
+ *
+ * Filtering by cycle happens upstream — this function should only ever
+ * receive a single cycle's worth of nodes (cycle 1 nodes OR a single
+ * follow-up cycle). When we want to allow comparing cycles in future,
+ * we can compose multiple band invocations side-by-side.
+ */
 function computeLayout(graphNodes: DebateGraphNode[]): Map<string, { x: number; y: number }> {
     const positions = new Map<string, { x: number; y: number }>();
-    const agents = graphNodes.filter((n) => n.kind === "agent");
-    const intermediates = graphNodes.filter((n) => n.kind === "intermediate");
-    const hasQuestion = graphNodes.some((n) => n.kind === "question");
-    const hasSynthesis = graphNodes.some((n) => n.kind === "synthesis");
 
-    // Dynamic spacing based on agent count
-    const agentCount = agents.length;
-    const gap = Math.max(AGENT_HORIZONTAL_GAP, 800 / (agentCount + 1));
+    // Group by structural role (works for both initial and follow-up kinds).
+    const questionNodes = graphNodes.filter(
+        (n) => n.kind === "question" || n.kind === "followup-question",
+    );
+    const responderNodes = graphNodes.filter(
+        (n) => n.kind === "agent" || n.kind === "followup-agent",
+    );
+    const interactionNodes = graphNodes.filter(
+        (n) => n.kind === "intermediate" || n.kind === "followup-intermediate",
+    );
+    const synthesisNodes = graphNodes.filter(
+        (n) => n.kind === "synthesis" || n.kind === "followup-synthesis",
+    );
 
-    // Question node: top center
-    if (hasQuestion) {
-        positions.set("question-node", { x: CANVAS_CENTER_X - 100, y: LEVEL_Y.question });
-    }
+    const responderCount = responderNodes.length;
+    const gap = Math.max(AGENT_HORIZONTAL_GAP, 800 / (responderCount + 1));
 
-    // Agent nodes: evenly spaced horizontal line (Round 1 level)
-    if (agentCount > 0) {
-        const totalWidth = (agentCount - 1) * gap;
-        const startX = CANVAS_CENTER_X - totalWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
-        agents.forEach((agent, index) => {
-            const x = startX + index * gap;
-            positions.set(agent.id, { x, y: LEVEL_Y.agents });
-        });
-    }
-
-    // Intermediate nodes: positioned below their parent agent (Round 2 level)
-    intermediates.forEach((node) => {
-        // Extract parent agent ID: "agent-{id}-r2" → "agent-{id}"
-        const parentId = node.id.replace(/-r\d+$/, "");
-        const parentPos = positions.get(parentId);
-        if (parentPos) {
-            positions.set(node.id, { x: parentPos.x, y: LEVEL_Y.interactions });
-        } else {
-            // Fallback: spread like agents
-            const intIdx = intermediates.indexOf(node);
-            const totalWidth = (intermediates.length - 1) * gap;
-            const startX = CANVAS_CENTER_X - totalWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
-            positions.set(node.id, { x: startX + intIdx * gap, y: LEVEL_Y.interactions });
-        }
+    // Question — top center. Always pin "question-node" if present.
+    questionNodes.forEach((q) => {
+        positions.set(q.id, { x: CANVAS_CENTER_X - 100, y: LEVEL_Y.question });
     });
 
-    // Synthesis node: bottom center
-    if (hasSynthesis) {
-        positions.set("synthesis-node", { x: CANVAS_CENTER_X - 110, y: LEVEL_Y.synthesis });
+    // Responders — evenly spaced row.
+    if (responderCount > 0) {
+        const totalWidth = (responderCount - 1) * gap;
+        const startX = CANVAS_CENTER_X - totalWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
+        responderNodes.forEach((node, index) => {
+            positions.set(node.id, { x: startX + index * gap, y: LEVEL_Y.agents });
+        });
     }
 
-    // Follow-up cycles (cycle ≥ 2): stack below the initial synthesis,
-    // one band per cycle (question → responses → critiques → updated synthesis).
-    const cycleNumbers = Array.from(
-        new Set(
-            graphNodes
-                .map((n) => n.cycle ?? 0)
-                .filter((c) => c >= 2),
-        ),
-    ).sort((a, b) => a - b);
+    // Interactions — vertically below the parent agent column.
+    interactionNodes.forEach((node, idx) => {
+        const parentAgentId = node.agentId
+            ? responderNodes.find((r) => r.agentId === node.agentId)?.id
+            : null;
+        const parentPos = parentAgentId ? positions.get(parentAgentId) : undefined;
 
-    const FOLLOWUP_BAND_HEIGHT = 720; // question + responses + critiques + synthesis
-    const FOLLOWUP_QUESTION_OFFSET = 140;
-    const FOLLOWUP_RESPONSE_OFFSET = 320;
-    const FOLLOWUP_CRITIQUE_OFFSET = 500;
-    const FOLLOWUP_SYNTHESIS_OFFSET = 680;
-
-    for (const cycle of cycleNumbers) {
-        const bandTop = LEVEL_Y.synthesis + 120 + (cycle - 2) * FOLLOWUP_BAND_HEIGHT;
-
-        // Follow-up question — center
-        const fuq = graphNodes.find(
-            (n) => n.kind === "followup-question" && n.cycle === cycle,
-        );
-        if (fuq) {
-            positions.set(fuq.id, { x: CANVAS_CENTER_X - 110, y: bandTop + FOLLOWUP_QUESTION_OFFSET });
+        if (parentPos) {
+            positions.set(node.id, { x: parentPos.x, y: LEVEL_Y.interactions });
+            return;
         }
 
-        const responses = graphNodes.filter(
-            (n) => n.kind === "followup-agent" && n.cycle === cycle,
-        );
-        const critiques = graphNodes.filter(
-            (n) => n.kind === "followup-intermediate" && n.cycle === cycle,
-        );
+        // Fallback: even spread.
+        const totalWidth = (interactionNodes.length - 1) * gap;
+        const startX = CANVAS_CENTER_X - totalWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
+        positions.set(node.id, { x: startX + idx * gap, y: LEVEL_Y.interactions });
+    });
 
-        const responseCount = Math.max(responses.length, agentCount);
-        const respGap = Math.max(AGENT_HORIZONTAL_GAP, 800 / (responseCount + 1));
-        const respWidth = (responseCount - 1) * respGap;
-        const respStart = CANVAS_CENTER_X - respWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
-
-        responses.forEach((node, idx) => {
-            // Try to align with the original agent's x; fall back to row order.
-            const parentAgentId = node.agentId ? `agent-${node.agentId}` : null;
-            const parentPos = parentAgentId ? positions.get(parentAgentId) : undefined;
-            const x = parentPos ? parentPos.x : respStart + idx * respGap;
-            positions.set(node.id, { x, y: bandTop + FOLLOWUP_RESPONSE_OFFSET });
-        });
-
-        critiques.forEach((node, idx) => {
-            const parentAgentId = node.agentId ? `agent-${node.agentId}` : null;
-            const parentPos = parentAgentId ? positions.get(parentAgentId) : undefined;
-            const x = parentPos ? parentPos.x : respStart + idx * respGap;
-            positions.set(node.id, { x, y: bandTop + FOLLOWUP_CRITIQUE_OFFSET });
-        });
-
-        const fus = graphNodes.find(
-            (n) => n.kind === "followup-synthesis" && n.cycle === cycle,
-        );
-        if (fus) {
-            positions.set(fus.id, { x: CANVAS_CENTER_X - 110, y: bandTop + FOLLOWUP_SYNTHESIS_OFFSET });
-        }
-    }
+    // Synthesis — bottom center, dominant.
+    synthesisNodes.forEach((s) => {
+        positions.set(s.id, { x: CANVAS_CENTER_X - 110, y: LEVEL_Y.synthesis });
+    });
 
     return positions;
 }
@@ -287,6 +245,8 @@ export default function DebateGraphCanvas() {
     const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
     const clearFocus = useGraphStore((s) => s.clearFocus);
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
+    const selectedCycle = usePlaybackStore((s) => s.selectedCycle);
+    const setSelectedCycle = usePlaybackStore((s) => s.setSelectedCycle);
     const execution = useDebateExecutionState();
     const playbackMode = useDebateStore((s) => s.playbackMode);
     const openedAsCompleted = useDebateStore((s) => s.openedAsCompleted);
@@ -500,16 +460,78 @@ export default function DebateGraphCanvas() {
         });
     }, [graph.nodes, graph.edges, execution, agents, isLiveExecution]);
 
+    /**
+     * All cycles available in the canonical graph (1 = original debate).
+     * Always includes 1 even before any nodes exist, so the navigator
+     * has a valid default selection.
+     */
+    const availableCycles = useMemo(() => {
+        const set = new Set<number>([1]);
+        for (const n of renderNodes) {
+            if (n.cycle && n.cycle >= 1) set.add(n.cycle);
+        }
+        return Array.from(set).sort((a, b) => a - b);
+    }, [renderNodes]);
+
+    const maxCycle = availableCycles[availableCycles.length - 1] ?? 1;
+
+    /**
+     * Auto-jump the view to the newest cycle when a follow-up arrives,
+     * and clamp the selection if the graph shrinks (e.g. on debate switch).
+     * Tracks the previous max with a ref to avoid stomping on the user's
+     * manual selection of an older cycle.
+     */
+    const prevMaxCycleRef = useRef(maxCycle);
+    useEffect(() => {
+        const prevMax = prevMaxCycleRef.current;
+        if (maxCycle > prevMax) {
+            // New follow-up cycle landed → focus on it.
+            setSelectedCycle(maxCycle);
+        } else if (selectedCycle > maxCycle) {
+            // Cycle list shrank (debate switched) → clamp.
+            setSelectedCycle(maxCycle);
+        }
+        prevMaxCycleRef.current = maxCycle;
+    }, [maxCycle, selectedCycle, setSelectedCycle]);
+
+    /**
+     * Render only nodes belonging to the currently selected cycle.
+     * Treat undefined cycle as cycle 1 (older data without cycle metadata).
+     * The CycleNavigator in the sidebar lets the user switch.
+     */
+    const visibleCycleNodes = useMemo(() => {
+        return renderNodes.filter((n) => (n.cycle ?? 1) === selectedCycle);
+    }, [renderNodes, selectedCycle]);
+
+    const visibleCycleNodeIdSet = useMemo(
+        () => new Set(visibleCycleNodes.map((n) => n.id)),
+        [visibleCycleNodes],
+    );
+
+    /**
+     * Edges belonging to this cycle: both endpoints inside the cycle.
+     * Cross-cycle continuity (e.g. cycle-1 synthesis → cycle-2 question)
+     * is intentionally hidden in single-cycle view; the cycle navigator
+     * narrates that transition explicitly.
+     */
+    const visibleCycleEdges = useMemo(() => {
+        return graph.edges.filter(
+            (e) =>
+                visibleCycleNodeIdSet.has(e.source)
+                && visibleCycleNodeIdSet.has(e.target),
+        );
+    }, [graph.edges, visibleCycleNodeIdSet]);
+
     const generatingNodeId = useMemo(() => getGeneratingNodeId(execution), [execution]);
 
     const narration = useMemo(
         () => deriveActiveNarration({
             execution,
             agents,
-            nodes: renderNodes,
-            edges: graph.edges,
+            nodes: visibleCycleNodes,
+            edges: visibleCycleEdges,
         }),
-        [execution, agents, renderNodes, graph.edges],
+        [execution, agents, visibleCycleNodes, visibleCycleEdges],
     );
 
     const agentOrder = useMemo(
@@ -520,7 +542,7 @@ export default function DebateGraphCanvas() {
     const interactionOrder = useMemo(() => {
         const order = new Map<string, number>();
         let cursor = 0;
-        for (const edge of graph.edges) {
+        for (const edge of visibleCycleEdges) {
             if (edge.round !== 2 || edge.kind === "initial") continue;
             if (!order.has(edge.source)) {
                 order.set(edge.source, cursor++);
@@ -530,10 +552,10 @@ export default function DebateGraphCanvas() {
             }
         }
         return order;
-    }, [graph.edges]);
+    }, [visibleCycleEdges]);
 
     const orderedVisibleNodes = useMemo(() => {
-        return [...renderNodes]
+        return [...visibleCycleNodes]
             .filter((n) => n.status !== "hidden")
             .sort((a, b) => {
                 const aRank = nodeRevealRank({ node: a, agentOrder, interactionOrder });
@@ -541,7 +563,7 @@ export default function DebateGraphCanvas() {
                 if (aRank !== bRank) return aRank - bRank;
                 return a.id.localeCompare(b.id);
             });
-    }, [renderNodes, agentOrder, interactionOrder]);
+    }, [visibleCycleNodes, agentOrder, interactionOrder]);
 
     const visibleNodeIdsOrdered = useMemo(
         () => orderedVisibleNodes.map((n) => n.id),
@@ -553,15 +575,15 @@ export default function DebateGraphCanvas() {
     );
 
     const visibleEdgeIndexById = useMemo(
-        () => new Map(graph.edges.map((edge, idx) => [edge.id, idx])),
-        [graph.edges],
+        () => new Map(visibleCycleEdges.map((edge, idx) => [edge.id, idx])),
+        [visibleCycleEdges],
     );
 
     const orderedVisibleEdges = useMemo(() => {
-        return [...graph.edges]
+        return [...visibleCycleEdges]
             .filter((edge) => edge.status !== "hidden")
             .sort((a, b) => edgeRevealRank(a, visibleEdgeIndexById) - edgeRevealRank(b, visibleEdgeIndexById));
-    }, [graph.edges, visibleEdgeIndexById]);
+    }, [visibleCycleEdges, visibleEdgeIndexById]);
 
     const visibleEdgeIdsOrdered = useMemo(
         () => orderedVisibleEdges.map((edge) => edge.id),
@@ -577,15 +599,21 @@ export default function DebateGraphCanvas() {
         [orderedVisibleEdges],
     );
 
-    // Memoize positions based on node STRUCTURE only (ids + kinds), not statuses
+    // Memoize positions based on node STRUCTURE only (ids + kinds), not statuses.
+    // Layout is computed for the *currently visible cycle* only; switching
+    // cycles re-runs the layout from scratch.
     const layoutKey = useMemo(() => {
-        return renderNodes
+        return visibleCycleNodes
             .map((n) => `${n.id}:${n.kind}`)
             .sort()
             .join("|");
-    }, [renderNodes]);
+    }, [visibleCycleNodes]);
 
-    const positions = useMemo(() => computeLayout(renderNodes), [layoutKey, renderNodes]);
+    const positions = useMemo(
+        () => computeLayout(visibleCycleNodes),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [layoutKey],
+    );
 
     useEffect(() => {
         const revealAllCompletedHistory = openedAsCompleted && !isLiveExecution;
@@ -632,14 +660,36 @@ export default function DebateGraphCanvas() {
     // Count visible nodes (after reveal queue)
     const visibleCount = revealedNodeIds.length;
 
-    // Re-fit view when visible node count transitions from 0 → N
+    // Re-fit view when visible node count transitions from 0 → N,
+    // or when the user switches cycles (so the new cycle starts framed).
     useEffect(() => {
         if (prevVisibleCountRef.current === 0 && visibleCount > 0) {
-            const t = setTimeout(() => rfInstance.current?.fitView({ padding: 0.3 }), 200);
+            const t = setTimeout(() => rfInstance.current?.fitView({ padding: 0.18, duration: 420 }), 200);
             return () => clearTimeout(t);
         }
         prevVisibleCountRef.current = visibleCount;
     }, [visibleCount]);
+
+    // Track which cycles have already been auto-framed. Manual cycle
+    // switching between *already-seen* cycles must feel calm: no big
+    // camera animation. We only auto-fit the FIRST time a cycle is
+    // visited (e.g. when a brand-new follow-up cycle appears).
+    const framedCyclesRef = useRef<Set<number>>(new Set([selectedCycle]));
+    const lastFittedCycleRef = useRef(selectedCycle);
+    useEffect(() => {
+        if (lastFittedCycleRef.current === selectedCycle) return;
+        lastFittedCycleRef.current = selectedCycle;
+        if (framedCyclesRef.current.has(selectedCycle)) {
+            // Already framed once — leave the camera where the user left it.
+            return;
+        }
+        framedCyclesRef.current.add(selectedCycle);
+        const t = setTimeout(
+            () => rfInstance.current?.fitView({ padding: 0.18, duration: 420 }),
+            120,
+        );
+        return () => clearTimeout(t);
+    }, [selectedCycle, visibleCycleNodes.length]);
 
     const onInit = useCallback((instance: ReactFlowInstance) => {
         rfInstance.current = instance;
@@ -662,7 +712,7 @@ export default function DebateGraphCanvas() {
     const freshEdgeSet = useMemo(() => new Set(freshEdgeIds), [freshEdgeIds]);
 
     const flowNodes: Node[] = useMemo(() => {
-        const baseNodes = renderNodes
+        const baseNodes = visibleCycleNodes
             .filter((n) => n.status !== "hidden" && revealedNodeSet.has(n.id))
             .map((n) => {
                 const metadata = {
@@ -685,6 +735,8 @@ export default function DebateGraphCanvas() {
                     && execution.debateStatus === "running"
                     && n.id === generatingNodeId,
                 );
+                const isSynthesisKind =
+                    n.kind === "synthesis" || n.kind === "followup-synthesis";
                 return {
                     id: n.id,
                     type: n.kind,
@@ -696,65 +748,32 @@ export default function DebateGraphCanvas() {
                         dimmedBySelection,
                         dimmedByGeneration,
                         isGeneratingFocus,
-                        completionPulse: completionPulse && n.id === "synthesis-node",
+                        completionPulse:
+                            completionPulse
+                            && isSynthesisKind
+                            && (n.cycle ?? 1) === selectedCycle,
                     },
                     selected: n.id === selectedNodeId,
                 };
             });
 
-        // Cycle band labels: visually separate each follow-up cycle.
-        const cycleSet = Array.from(
-            new Set(
-                renderNodes
-                    .filter((n) =>
-                        (n.kind === "followup-question"
-                            || n.kind === "followup-agent"
-                            || n.kind === "followup-intermediate"
-                            || n.kind === "followup-synthesis")
-                        && revealedNodeSet.has(n.id),
-                    )
-                    .map((n) => n.cycle ?? 0)
-                    .filter((c) => c >= 2),
-            ),
-        ).sort((a, b) => a - b);
-
-        const labelNodes: Node[] = [];
-        for (const cycle of cycleSet) {
-            const fuq = renderNodes.find(
-                (n) => n.kind === "followup-question" && n.cycle === cycle,
-            );
-            const pos = fuq ? positions.get(fuq.id) : undefined;
-            if (!pos) continue;
-            labelNodes.push({
-                id: `cycle-label-${cycle}`,
-                type: "cycle-label",
-                position: { x: pos.x - 380, y: pos.y - 20 },
-                data: {
-                    label: `Follow-up #${cycle - 1}`,
-                    subLabel: "user follow-up cycle",
-                },
-                draggable: false,
-                selectable: false,
-                focusable: false,
-                deletable: false,
-                zIndex: -1,
-            });
-        }
-
-        return [...labelNodes, ...baseNodes];
+        // Cycle band labels removed — the CycleNavigator in the sidebar
+        // is now the single source of truth for which cycle is on screen.
+        return baseNodes;
     }, [
-        renderNodes,
+        visibleCycleNodes,
         revealedNodeSet,
         execution.debateStatus,
         selectedRound,
         selectedNodeId,
+        selectedCycle,
         generatingNodeId,
         completionPulse,
         positions,
     ]);
 
     const flowEdges: Edge[] = useMemo(() => {
-        return graph.edges
+        return visibleCycleEdges
             .filter((e) =>
                 e.status !== "hidden"
                 && revealedEdgeSet.has(e.id)
@@ -793,8 +812,9 @@ export default function DebateGraphCanvas() {
                 };
             });
     }, [
-        graph.edges,
+        visibleCycleEdges,
         revealedEdgeSet,
+        revealedNodeSet,
         freshEdgeSet,
         selectedRound,
         selectedNodeId,
@@ -836,7 +856,7 @@ export default function DebateGraphCanvas() {
         clearFocus();
     }, [selectNode, clearFocus]);
 
-    // Empty state
+    // Empty state — no graph at all yet.
     if (renderNodes.length === 0) {
         return (
             <div className="absolute inset-0 flex items-center justify-center bg-agora-bg">
@@ -844,6 +864,26 @@ export default function DebateGraphCanvas() {
                     <div className="text-4xl">🌐</div>
                     <p className="text-agora-text-muted text-sm">
                         Start a debate to see the thinking graph
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
+    // Cycle exists in canonical graph but nothing inside it yet
+    // (e.g. follow-up just submitted, agents haven't responded).
+    if (visibleCycleNodes.length === 0) {
+        return (
+            <div className="absolute inset-0 flex items-center justify-center bg-agora-bg">
+                <div className="text-center space-y-3 max-w-sm px-4">
+                    <div className="text-3xl">🧭</div>
+                    <p className="text-agora-text text-sm font-medium">
+                        {selectedCycle === 1
+                            ? "Original debate cleared"
+                            : `Follow-up #${selectedCycle - 1} is preparing…`}
+                    </p>
+                    <p className="text-agora-text-muted text-xs">
+                        Switch cycles in the left sidebar to view another part of the conversation.
                     </p>
                 </div>
             </div>
@@ -881,9 +921,9 @@ export default function DebateGraphCanvas() {
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 fitView
-                fitViewOptions={{ padding: 0.35 }}
-                minZoom={0.3}
-                maxZoom={2}
+                fitViewOptions={{ padding: 0.18 }}
+                minZoom={0.25}
+                maxZoom={2.2}
                 proOptions={{ hideAttribution: true }}
                 className="bg-agora-bg"
             >

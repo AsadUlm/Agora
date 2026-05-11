@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.services.debate_engine.prompts.personas import persona_block
+
 
 def _compact_text(value: str, max_chars: int) -> str:
     normalized = " ".join(str(value or "").split())
@@ -63,7 +65,7 @@ def build_final_synthesis_prompt(
     knowledge_block = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(retrieved_chunks or []))
 
     return f"""You are a debate participant with the role: {role}.
-
+{persona_block(role)}
 The debate question is: {question}
 
 Your original opening stance was:
@@ -109,11 +111,18 @@ Return only valid JSON in this exact format:
     "one_sentence_takeaway": "<ONE complete sentence, 15-25 words, capturing the final position>",
     "short_summary": "<same sentence as one_sentence_takeaway>",
     "final_position": "<clear final stance, OR an explicit 'no resolution because ...' statement>",
+    "core_consensus": "<the single most important point all agents converged on, or '' if none>",
+    "major_disagreements": ["<disagreement 1>", "<disagreement 2>"],
+    "risk_tradeoffs": ["<risk or trade-off 1>", "<risk or trade-off 2>"],
+    "policy_direction": "<the recommended direction in one sentence>",
+    "unresolved_questions": ["<open question 1>", "<open question 2>"],
     "key_tradeoff": "<the single key trade-off that decided this position>",
     "winning_argument": "<the argument that prevailed and why>",
     "losing_argument": "<the strongest argument that did NOT prevail and why>",
     "confidence": "low | medium | high",
+    "confidence_level": "low | medium | high",
     "what_changed": "<what changed or was refined after Round 2>",
+    "position_shift": "<how the synthesis position shifted vs Round 1, in one sentence>",
     "strongest_argument": "<strongest argument from the full debate>",
     "remaining_concerns": "<important unresolved concerns>",
     "conclusion": "<final concise conclusion>",

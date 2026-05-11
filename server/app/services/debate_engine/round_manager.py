@@ -45,6 +45,7 @@ from app.services.debate_engine.prompts.followup_prompts import (
     build_followup_critique_prompt,
     build_updated_synthesis_prompt,
 )
+from app.services.debate_engine.prompts.personas import resolve_temperature
 from app.services.debate_engine.response_normalizer import normalize_round_output
 from app.services.debate_engine.two_stage_structurer import recover_json_with_llm
 from app.services.llm.exceptions import LLMError
@@ -1326,7 +1327,15 @@ class RoundManager:
             provider=agent_ctx.provider,
             model=agent_ctx.model,
             prompt=prompt,
-            temperature=agent_ctx.temperature,
+            temperature=resolve_temperature(
+                role=agent_ctx.role,
+                round_type=(
+                    round_record.round_type.value
+                    if round_record.round_type is not None
+                    else None
+                ),
+                user_override=agent_ctx.temperature,
+            ),
             max_tokens=_resolve_max_tokens(
                 round_record.round_number,
                 round_type=(
