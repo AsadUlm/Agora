@@ -29,7 +29,8 @@ export interface MessageDTO {
 export interface RoundDTO {
     id: string;
     round_number: number;
-    round_type: string; // initial | critique | final
+    cycle_number?: number;
+    round_type: string; // initial | critique | final | followup_response | followup_critique | updated_synthesis
     status: string; // queued | running | completed | failed
     started_at: string | null;
     ended_at: string | null;
@@ -38,6 +39,14 @@ export interface RoundDTO {
 
 export interface UserMessageDTO {
     content: string;
+    created_at: string;
+}
+
+export interface DebateFollowUpDTO {
+    id: string;
+    chat_turn_id: string;
+    cycle_number: number;
+    question: string;
     created_at: string;
 }
 
@@ -51,6 +60,7 @@ export interface TurnDTO {
     rounds: RoundDTO[];
     final_summary: Record<string, unknown> | null;
     execution_mode?: "auto" | "manual";
+    follow_ups?: DebateFollowUpDTO[];
 }
 
 export interface SessionDetailDTO {
@@ -120,4 +130,20 @@ export interface DocumentDTO {
     source_type: string;
     status: string;
     created_at: string;
+    /** Step 30: backend storage backend ("local" | "cloudinary"). */
+    storage_provider?: string;
+    /** Step 30: file size in bytes, when known. */
+    bytes?: number | null;
+}
+
+/** Step 30: one failed file in a batch upload. */
+export interface DocumentUploadFailureDTO {
+    filename: string;
+    error: string;
+}
+
+/** Step 30: response from POST /documents/upload-batch. */
+export interface DocumentUploadBatchResponseDTO {
+    uploaded: DocumentDTO[];
+    failed: DocumentUploadFailureDTO[];
 }

@@ -5,6 +5,7 @@ import { usePlaybackStore } from "../model/playback.store";
 import { useGraphStore } from "../model/graph.store";
 import { useAnimationStore } from "../model/animation/animation.store";
 import { useDebateStore } from "../model/debate.store";
+import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import { formatTime } from "@/shared/lib/dates";
 import type { DebateGraphNode, DebateGraphEdge } from "../model/graph.types";
 
@@ -31,16 +32,60 @@ const roundExplanations: Record<number, { title: string; description: string }> 
     },
 };
 
+/**
+ * Resolve the *effective* round for a selected node.
+ *
+ * The graph reuses the same node id (`agent-{id}`) for an agent's Round 1
+ * stance and Round 3 final position — so by the time Round 3 is written
+ * the node's `round` field is always 3, even if the user is currently
+ * focused on Round 1 in the timeline. We therefore prefer:
+ *   1. an explicit `selectedRound` from the playback store (user intent),
+ *   2. the node's intrinsic round (which is correct for intermediate /
+ *      synthesis / follow-up nodes that are NOT shared across rounds).
+ */
+function effectiveRound(
+    node: DebateGraphNode,
+    selectedRound: number | null,
+): number {
+    if (
+        selectedRound != null
+        && (node.kind === "agent" || node.kind === "followup-agent")
+    ) {
+        return selectedRound;
+    }
+    return node.round;
+}
+
+/** Human label for a (round, cycle) pair, follow-up aware. */
+function roundLabelFor(round: number, cycle: number): string {
+    const isFollowUp = cycle > 1;
+    const followUpIndex = cycle - 1;
+    if (isFollowUp) {
+        if (round === 4) return `Follow-up #${followUpIndex} response`;
+        if (round === 5) return `Follow-up #${followUpIndex} critique`;
+        if (round === 6) return `Follow-up #${followUpIndex} conclusion`;
+        return `Follow-up #${followUpIndex} — Round ${round}`;
+    }
+    if (round === 1) return "Round 1";
+    if (round === 2) return "Round 2";
+    if (round === 3) return "Round 3";
+    return `Round ${round}`;
+}
+
 /** Build an interpretive explanation of what a selected node means in the debate. */
 function buildNodeInterpretation(
     node: DebateGraphNode,
     edges: DebateGraphEdge[],
     allNodes: DebateGraphNode[],
+    selectedRound: number | null,
 ): { meaning: string; role: string; context: string[] } {
     const relatedEdges = edges.filter(
         (e) => e.source === node.id || e.target === node.id,
     );
     const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+    const cycle = node.cycle ?? 1;
+    const r = effectiveRound(node, selectedRound);
+    const roundLabel = roundLabelFor(r, cycle);
 
     if (node.kind === "question") {
         return {
@@ -50,24 +95,29 @@ function buildNodeInterpretation(
         };
     }
 
-    if (node.kind === "synthesis") {
+    if (node.kind === "synthesis" || node.kind === "followup-synthesis") {
         const incomingAgents = relatedEdges
             .filter((e) => e.target === node.id)
             .map((e) => allNodes.find((n) => n.id === e.source)?.agentRole)
             .filter((s): s is string => Boolean(s));
+        const isFollowUp = cycle > 1;
         return {
-            meaning: "This is the final synthesis — the debate's conclusion that combines the strongest arguments from all rounds.",
-            role: "Final convergence point",
+            meaning: isFollowUp
+                ? "Updated synthesis after the follow-up — combines the original conclusion with new reasoning."
+                : "This is the final synthesis — the debate's conclusion that combines the strongest arguments from all rounds.",
+            role: isFollowUp
+                ? `Updated synthesis — Follow-up #${cycle - 1} conclusion`
+                : "Final synthesis — Round 3 conclusion",
             context: incomingAgents.length > 0
                 ? [`Integrates perspectives from: ${incomingAgents.map(capitalize).join(", ")}`]
                 : ["Combines all agent perspectives into a unified conclusion."],
         };
     }
 
-    if (node.kind === "intermediate") {
-        // Round 2 interaction node
-        const outgoing = relatedEdges.filter((e) => e.source === node.id && e.round === 2);
-        const incoming = relatedEdges.filter((e) => e.target === node.id && e.round === 2);
+    if (node.kind === "intermediate" || node.kind === "followup-intermediate") {
+        // Critique node — round 2 in the original cycle, round 5 in a follow-up.
+        const outgoing = relatedEdges.filter((e) => e.source === node.id);
+        const incoming = relatedEdges.filter((e) => e.target === node.id);
         const context: string[] = [];
 
         for (const edge of outgoing) {
@@ -85,12 +135,12 @@ function buildNodeInterpretation(
 
         return {
             meaning: `This represents ${capitalize(node.agentRole ?? "an agent")}'s engagement in the debate phase — where agents challenge, support, or question each other's positions.`,
-            role: "Debate participant (Round 2)",
+            role: `${capitalize(node.agentRole ?? "Agent")} — ${roundLabel} participant`,
             context: context.length > 0 ? context : ["Participating in the agent-to-agent debate."],
         };
     }
 
-    // Regular agent node (round 1)
+    // Regular agent node (round 1, round 3, follow-up agent).
     const context: string[] = [];
     const challengeEdges = relatedEdges.filter((e) => e.kind === "challenges");
     const supportEdges = relatedEdges.filter((e) => e.kind === "supports");
@@ -101,13 +151,13 @@ function buildNodeInterpretation(
     if (supportEdges.length > 0) {
         context.push(`Involved in ${supportEdges.length} support connection${supportEdges.length > 1 ? "s" : ""}`);
     }
-    if (context.length === 0 && node.round === 1) {
+    if (context.length === 0 && r === 1) {
         context.push("Presented an initial perspective in Round 1.");
     }
 
     return {
         meaning: `${capitalize(node.agentRole ?? "Agent")} contributes a ${node.agentRole ?? "general"}-oriented perspective to the debate.`,
-        role: `${capitalize(node.agentRole ?? "Agent")} — Round ${node.round} contributor`,
+        role: `${capitalize(node.agentRole ?? "Agent")} — ${roundLabel} contributor`,
         context,
     };
 }
@@ -118,6 +168,8 @@ export default function ModeratorPanel() {
     const watchFor = useModeratorStore((s) => s.watchFor);
     const activityFeed = useModeratorStore((s) => s.activityFeed);
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
+    const selectedCycle = usePlaybackStore((s) => s.selectedCycle);
+    const setSelectedRound = usePlaybackStore((s) => s.setSelectedRound);
     const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
     const graph = useGraphStore((s) => s.graph);
     const selectNode = useGraphStore((s) => s.selectNode);
@@ -136,6 +188,7 @@ export default function ModeratorPanel() {
     const revealedNodeIds = useDebateStore((s) => s.revealedNodeIds);
     const setPlaybackMode = useDebateStore((s) => s.setPlaybackMode);
     const revealNextVisual = useDebateStore((s) => s.revealNextVisual);
+    const execution = useDebateExecutionState();
 
     const queuedForReveal = playbackQueue.length;
     const revealedStepCount = revealedNodeIds.filter((id) => id !== "question-node").length;
@@ -145,8 +198,25 @@ export default function ModeratorPanel() {
         && currentlyGenerating === null
         && (turnStatus === "queued" || turnStatus === "running");
 
+    /**
+     * roundInfo only drives the *supplementary* "Why this matters" block.
+     * It must NOT override the primary explanation — otherwise picking
+     * Round 3 in the timeline while Round 1 is executing would make the
+     * panel narrate Round 3, which is the bug we're fixing.
+     */
     const roundInfo = selectedRound ? roundExplanations[selectedRound] : null;
-    const displayExplanation = roundInfo?.description ?? explanation;
+    const displayExplanation = explanation;
+
+    /**
+     * Whether the user is "viewing" something other than the live state.
+     * In that case we show a small secondary chip in the header so they
+     * know the panel content reflects the live execution, not their pick.
+     */
+    const isLive =
+        execution.debateStatus === "queued" || execution.debateStatus === "running";
+    const viewingOlderRound =
+        selectedRound !== null && isLive && selectedRound !== execution.activeRound;
+    const viewingOlderCycle = selectedCycle > 1 && isLive;
 
     // Find selected node data for interpretation mode
     const selectedNode = selectedNodeId
@@ -156,7 +226,7 @@ export default function ModeratorPanel() {
     const isInterpretationMode = selectedNode !== null;
 
     const interpretation = selectedNode
-        ? buildNodeInterpretation(selectedNode, graph.edges, graph.nodes)
+        ? buildNodeInterpretation(selectedNode, graph.edges, graph.nodes, selectedRound)
         : null;
 
     const handleActivityClick = (relatedNodeId?: string) => {
@@ -167,30 +237,52 @@ export default function ModeratorPanel() {
     };
 
     return (
-        <div className="w-72 h-full border-l border-agora-border bg-agora-surface/60 backdrop-blur-sm flex flex-col">
+        <div className="w-full h-full bg-agora-surface/40 flex flex-col">
             {/* Header */}
-            <div className="px-4 py-4 border-b border-agora-border">
-                <div className="flex items-center justify-between">
-                    <h2 className="text-xs uppercase tracking-widest text-agora-text-muted font-semibold">
+            <div className="px-4 py-3 border-b border-agora-border space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                    <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
                         Moderator
                     </h2>
                     <span
                         className={cn(
-                            "px-2 py-0.5 rounded-full text-[10px] font-medium",
-                            selectedRound
-                                ? "bg-indigo-500/20 text-indigo-400"
-                                : status === "Live"
-                                    ? "bg-indigo-500/20 text-indigo-400"
-                                    : status === "Completed"
-                                        ? "bg-emerald-500/20 text-emerald-400"
-                                        : status === "Failed"
-                                            ? "bg-red-500/20 text-red-400"
-                                            : "bg-gray-500/20 text-gray-400",
+                            "px-2 py-0.5 rounded-full text-[10px] font-medium tracking-wide",
+                            status === "Live"
+                                ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
+                                : status === "Completed"
+                                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                    : status === "Failed"
+                                        ? "bg-red-500/20 text-red-300 border border-red-500/30"
+                                        : "bg-gray-500/20 text-gray-300 border border-gray-500/30",
                         )}
+                        title="Live debate execution status"
                     >
-                        {selectedRound ? `Round ${selectedRound}` : status}
+                        {isLive
+                            ? `Live · Round ${execution.activeRound}`
+                            : status}
                     </span>
                 </div>
+
+                {(viewingOlderRound || viewingOlderCycle) && (
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className="text-agora-text-muted/80">Viewing:</span>
+                        {viewingOlderCycle && (
+                            <span className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-200 border border-violet-500/30">
+                                Follow-up #{selectedCycle - 1}
+                            </span>
+                        )}
+                        {viewingOlderRound && (
+                            <button
+                                type="button"
+                                onClick={() => setSelectedRound(null)}
+                                className="px-1.5 py-0.5 rounded bg-agora-surface-light/60 text-agora-text hover:bg-agora-surface-light border border-agora-border"
+                                title="Clear round filter"
+                            >
+                                Round {selectedRound} ✕
+                            </button>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* ── Guided Narrator ─────────────────────────────────── */}

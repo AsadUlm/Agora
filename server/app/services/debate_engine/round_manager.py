@@ -40,26 +40,62 @@ from app.schemas.contracts import (
 from app.services.debate_engine.prompts.round1_prompts import build_opening_statement_prompt
 from app.services.debate_engine.prompts.round2_prompts import build_critique_prompt
 from app.services.debate_engine.prompts.round3_prompts import build_final_synthesis_prompt
+from app.services.debate_engine.prompts.followup_prompts import (
+    build_followup_response_prompt,
+    build_followup_critique_prompt,
+    build_updated_synthesis_prompt,
+)
+from app.services.debate_engine.prompts.personas import resolve_temperature
 from app.services.debate_engine.response_normalizer import normalize_round_output
+from app.services.debate_engine.two_stage_structurer import recover_json_with_llm
 from app.services.llm.exceptions import LLMError
 from app.services.llm.service import LLMService, get_llm_service
 from app.services.retrieval.retrieval_service import RetrievalService
+from app.services.retrieval.evidence import (
+    EvidencePacket,
+    build_evidence_packets,
+)
+from app.services.retrieval.router import select_strategy
 
 logger = logging.getLogger(__name__)
 
 # ── LLM output budget ────────────────────────────────────────────────────────
-MAX_ALLOWED_TOKENS = 1200
+MAX_ALLOWED_TOKENS = 2000
 ROUND_MAX_TOKENS: dict[int, int] = {
     1: 650,
     2: 850,
     3: 900,
 }
 DEFAULT_MAX_TOKENS = 850
+FOLLOWUP_MAX_TOKENS = 900
 RETRIEVAL_TOP_K = 3
 
+# Per-round-type token budgets (Step 25). Critique rounds get a tighter
+# budget because the new contract is short and focused (assumption / why /
+# implication). Synthesis rounds get more room because they must surface
+# winning vs losing arguments and a confidence call.
+ROUND_TYPE_MAX_TOKENS: dict[str, int] = {
+    "initial": 650,
+    "critique": 600,
+    "final": 1100,
+    "followup_response": 800,
+    "followup_critique": 600,
+    "updated_synthesis": 1000,
+}
 
-def _resolve_max_tokens(round_number: int) -> int:
-    """Return the clamped max_tokens budget for a given round."""
+
+def _resolve_max_tokens(round_number: int, round_type: str | None = None) -> int:
+    """Return the clamped max_tokens budget for a given round.
+
+    ``round_type`` (when provided) takes precedence over ``round_number`` so
+    follow-up critiques can use a tighter budget than follow-up responses.
+    """
+    if round_type:
+        rt = (round_type or "").lower()
+        if rt in ROUND_TYPE_MAX_TOKENS:
+            return min(ROUND_TYPE_MAX_TOKENS[rt], MAX_ALLOWED_TOKENS)
+    if round_number > 3:
+        return min(FOLLOWUP_MAX_TOKENS, MAX_ALLOWED_TOKENS)
     budget = ROUND_MAX_TOKENS.get(round_number, DEFAULT_MAX_TOKENS)
     return min(budget, MAX_ALLOWED_TOKENS)
 
@@ -77,6 +113,11 @@ class _AgentTaskPlan:
     message_type: MessageType
     prompt_builder: Any | None = None
     skipped_result: AgentRoundResult | None = None
+    used_evidence_ids: tuple[str, ...] = ()
+    # Step 31: hints used by the retrieval router. Defaults are safe — initial
+    # rounds (cycle 1, no prior evidence memory) get the base role strategy.
+    cycle_number: int = 1
+    evidence_memory_view: dict[str, Any] | None = None
 
 
 class RoundManager:
@@ -134,7 +175,7 @@ class RoundManager:
         for agent_index, agent_ctx in enumerate(ctx.agents):
             sequence_no = self.next_seq
 
-            def _build_prompt(chunks: list[RetrievedChunk], agent: AgentContext = agent_ctx) -> str:
+            def _build_prompt(chunks: list[RetrievedChunk], packets: list[EvidencePacket], agent: AgentContext = agent_ctx) -> str:
                 return build_opening_statement_prompt(
                     role=agent.role,
                     question=ctx.question,
@@ -143,6 +184,7 @@ class RoundManager:
                     retrieved_chunks=[c.model_dump() for c in chunks],
                     knowledge_mode=agent.knowledge_mode,
                     knowledge_strict=agent.knowledge_strict,
+                    evidence_packets=packets,
                 )
 
             plans.append(
@@ -253,6 +295,7 @@ class RoundManager:
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
                 agent: AgentContext = agent_ctx,
                 own: str = own_stance,
                 others: list[dict[str, Any]] = other_agents,
@@ -267,6 +310,7 @@ class RoundManager:
                     retrieved_chunks=[c.model_dump() for c in chunks],
                     knowledge_mode=agent.knowledge_mode,
                     knowledge_strict=agent.knowledge_strict,
+                    evidence_packets=packets,
                 )
 
             plans.append(
@@ -324,6 +368,7 @@ class RoundManager:
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
                 agent: AgentContext = agent_ctx,
                 stance: str = original_stance,
                 summary: str = debate_digest_text,
@@ -338,6 +383,7 @@ class RoundManager:
                     retrieved_chunks=[c.model_dump() for c in chunks],
                     knowledge_mode=agent.knowledge_mode,
                     knowledge_strict=agent.knowledge_strict,
+                    evidence_packets=packets,
                 )
 
             plans.append(
@@ -356,6 +402,464 @@ class RoundManager:
             await self._fail_round(round_record, reason)
             raise RuntimeError(reason)
 
+        await self._complete_round(round_record, ctx)
+        return results
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public execution methods — follow-up cycles (cycle ≥ 2)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def execute_followup_response(
+        self,
+        ctx: TurnContext,
+        cycle_number: int,
+        round_number: int,
+        follow_up_question: str,
+        memory: dict[str, Any],
+    ) -> list[AgentRoundResult]:
+        """Cycle 2+ Round A — every agent answers the new question."""
+        round_record = await self._create_round(
+            ctx,
+            round_number=round_number,
+            round_type=RoundType.followup_response,
+            cycle_number=cycle_number,
+        )
+
+        agent_states = {
+            str(s.get("agent_id")): s for s in memory.get("agent_states", [])
+        }
+        previous_synthesis = memory.get("previous_synthesis", "") or ""
+        original_question = memory.get("original_question", "") or ctx.question
+        debate_summary = memory.get("debate_summary") or {}
+        cycle_memories = memory.get("cycle_memories") or []
+        evolving_positions = memory.get("evolving_positions") or []
+        evidence_memory = memory.get("evidence_memory") or {}
+        used_evidence_tuple = tuple(
+            str(x) for x in (evidence_memory.get("cited_sources") or [])
+        )
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+            state = agent_states.get(str(agent_ctx.agent_id), {})
+            previous_position = state.get("latest_position", "") or ""
+            key_arguments = state.get("key_arguments", []) or []
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
+                agent: AgentContext = agent_ctx,
+                prev_pos: str = previous_position,
+                kargs: list[str] = key_arguments,
+            ) -> str:
+                return build_followup_response_prompt(
+                    role=agent.role,
+                    original_question=original_question,
+                    follow_up_question=follow_up_question,
+                    previous_synthesis=previous_synthesis,
+                    own_previous_position=prev_pos,
+                    own_key_arguments=kargs,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                    retrieved_chunks=[c.model_dump() for c in chunks],
+                    knowledge_mode=agent.knowledge_mode,
+                    knowledge_strict=agent.knowledge_strict,
+                    debate_summary=debate_summary,
+                    cycle_memories=cycle_memories,
+                    evolving_positions=evolving_positions,
+                    evidence_packets=packets,
+                    evidence_memory=evidence_memory,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.agent_response,
+                    prompt_builder=_build_prompt,
+                    used_evidence_ids=used_evidence_tuple,
+                    cycle_number=cycle_number,
+                    evidence_memory_view=evidence_memory,
+                )
+            )
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in follow-up response."
+            await self._fail_round(round_record, reason)
+            raise RuntimeError(reason)
+        await self._complete_round(round_record, ctx)
+        return results
+
+    async def start_followup_response_streaming(
+        self,
+        ctx: TurnContext,
+        cycle_number: int,
+        round_number: int,
+        follow_up_question: str,
+        memory: dict[str, Any],
+        min_ready: int = 2,
+    ) -> tuple[Round, "asyncio.Future[list[AgentRoundResult]]", "asyncio.Future[list[AgentRoundResult]]"]:
+        """Streaming variant of follow-up response — returns as soon as ``min_ready``
+        agents have produced a successful result. The remaining agent tasks
+        continue running in the background; both futures are awaitable separately.
+
+        Returns:
+            (round_record, ready_future, all_done_future)
+            - ``ready_future``: resolves with the partial results (≥ ``min_ready``
+              successes, plus any task that finished early — failed or skipped) as
+              soon as the threshold is reached.
+            - ``all_done_future``: resolves with the complete list of results once
+              every task finishes. The response Round is also marked ``completed``
+              (or ``failed`` if all agents failed) at this point.
+
+        Caller responsibility: always await ``all_done_future`` to ensure the
+        Round status transitions correctly and exceptions are surfaced.
+        """
+        round_record = await self._create_round(
+            ctx,
+            round_number=round_number,
+            round_type=RoundType.followup_response,
+            cycle_number=cycle_number,
+        )
+
+        agent_states = {
+            str(s.get("agent_id")): s for s in memory.get("agent_states", [])
+        }
+        previous_synthesis = memory.get("previous_synthesis", "") or ""
+        original_question = memory.get("original_question", "") or ctx.question
+        debate_summary = memory.get("debate_summary") or {}
+        cycle_memories = memory.get("cycle_memories") or []
+        evolving_positions = memory.get("evolving_positions") or []
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+            state = agent_states.get(str(agent_ctx.agent_id), {})
+            previous_position = state.get("latest_position", "") or ""
+            key_arguments = state.get("key_arguments", []) or []
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                agent: AgentContext = agent_ctx,
+                prev_pos: str = previous_position,
+                kargs: list[str] = key_arguments,
+            ) -> str:
+                return build_followup_response_prompt(
+                    role=agent.role,
+                    original_question=original_question,
+                    follow_up_question=follow_up_question,
+                    previous_synthesis=previous_synthesis,
+                    own_previous_position=prev_pos,
+                    own_key_arguments=kargs,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                    retrieved_chunks=[c.model_dump() for c in chunks],
+                    knowledge_mode=agent.knowledge_mode,
+                    knowledge_strict=agent.knowledge_strict,
+                    debate_summary=debate_summary,
+                    cycle_memories=cycle_memories,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.agent_response,
+                    prompt_builder=_build_prompt,
+                )
+            )
+
+        loop = asyncio.get_running_loop()
+        ready_future: asyncio.Future[list[AgentRoundResult]] = loop.create_future()
+        all_done_future: asyncio.Future[list[AgentRoundResult]] = loop.create_future()
+        threshold = max(1, min(min_ready, len(plans)))
+
+        concurrency = self._resolve_round_concurrency(ctx.turn_id, len(plans))
+        semaphore = asyncio.Semaphore(concurrency)
+        results_so_far: list[AgentRoundResult] = []
+        success_count = 0
+        results_lock = asyncio.Lock()
+
+        async def _run_plan(plan: _AgentTaskPlan) -> AgentRoundResult:
+            async with semaphore:
+                if plan.skipped_result is not None:
+                    return await self._persist_skipped_result(ctx, round_record, plan)
+                return await self._run_agent_task(ctx, round_record, plan)
+
+        async def _track(plan: _AgentTaskPlan) -> AgentRoundResult:
+            nonlocal success_count
+            try:
+                res = await _run_plan(plan)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Streaming response task failed: round=%d agent=%s",
+                    round_record.round_number,
+                    plan.agent_ctx.agent_id,
+                    exc_info=True,
+                )
+                res = await self._persist_unhandled_task_failure(
+                    ctx=ctx, round_record=round_record, plan=plan, error=str(exc)
+                )
+            async with results_lock:
+                results_so_far.append(res)
+                if res.generation_status == "success":
+                    success_count += 1
+                if (
+                    success_count >= threshold
+                    and not ready_future.done()
+                ):
+                    ready_future.set_result(list(results_so_far))
+            return res
+
+        async def _orchestrate() -> None:
+            tasks = [asyncio.create_task(_track(p)) for p in plans]
+            try:
+                gathered = await asyncio.gather(*tasks, return_exceptions=False)
+            except Exception as exc:
+                if not all_done_future.done():
+                    all_done_future.set_exception(exc)
+                if not ready_future.done():
+                    ready_future.set_exception(exc)
+                return
+            # Ensure ready_future fires even if the threshold was never reached
+            # (e.g. all agents failed) — the runner will see the failures and
+            # decide whether to abort.
+            if not ready_future.done():
+                ready_future.set_result(list(gathered))
+            if self._all_agents_failed(gathered):
+                reason = "All agents failed in follow-up response."
+                try:
+                    await self._fail_round(round_record, reason)
+                finally:
+                    if not all_done_future.done():
+                        all_done_future.set_exception(RuntimeError(reason))
+                return
+            try:
+                await self._complete_round(round_record, ctx)
+            finally:
+                if not all_done_future.done():
+                    all_done_future.set_result(gathered)
+
+        asyncio.create_task(_orchestrate())
+        return round_record, ready_future, all_done_future
+
+    async def execute_followup_critique(
+        self,
+        ctx: TurnContext,
+        cycle_number: int,
+        round_number: int,
+        follow_up_question: str,
+        memory: dict[str, Any],
+        followup_responses: list[AgentRoundResult],
+    ) -> list[AgentRoundResult]:
+        """Cycle 2+ Round B — agents challenge the weakest peer follow-up answer."""
+        round_record = await self._create_round(
+            ctx,
+            round_number=round_number,
+            round_type=RoundType.followup_critique,
+            cycle_number=cycle_number,
+        )
+
+        original_question = memory.get("original_question", "") or ctx.question
+        previous_synthesis = memory.get("previous_synthesis", "") or ""
+        responses_by_id = {str(r.agent_id): r for r in followup_responses}
+        debate_summary = memory.get("debate_summary") or {}
+        cycle_memories = memory.get("cycle_memories") or []
+        evolving_positions = memory.get("evolving_positions") or []
+        evidence_memory = memory.get("evidence_memory") or {}
+        used_evidence_tuple = tuple(
+            str(x) for x in (evidence_memory.get("cited_sources") or [])
+        )
+
+        # When no peer answers are available, the critique prompt itself must
+        # still produce a useful challenge by targeting the strongest argument
+        # or an unresolved question. We surface those via debate_summary so the
+        # prompt's selection rules (peer → strongest_argument → unresolved) can
+        # apply uniformly. We never "skip" anymore.
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+            own = responses_by_id.get(str(agent_ctx.agent_id))
+            own_answer = ""
+            if own is not None:
+                own_answer = _first_non_empty(
+                    [
+                        own.structured.get("answer_to_followup", ""),
+                        own.structured.get("response", ""),
+                        own.structured.get("display_content", ""),
+                    ]
+                )
+
+            other: list[dict[str, Any]] = []
+            for r in followup_responses:
+                if r.agent_id == agent_ctx.agent_id or r.generation_status != "success":
+                    continue
+                ans = _first_non_empty(
+                    [
+                        r.structured.get("answer_to_followup", ""),
+                        r.structured.get("response", ""),
+                        r.structured.get("display_content", ""),
+                    ]
+                )
+                if ans:
+                    other.append({"role": r.role, "answer": ans})
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
+                agent: AgentContext = agent_ctx,
+                own_text: str = own_answer,
+                others_list: list[dict[str, Any]] = other,
+            ) -> str:
+                return build_followup_critique_prompt(
+                    role=agent.role,
+                    original_question=original_question,
+                    follow_up_question=follow_up_question,
+                    previous_synthesis=previous_synthesis,
+                    own_followup=own_text,
+                    other_followups=others_list,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                    retrieved_chunks=[c.model_dump() for c in chunks],
+                    knowledge_mode=agent.knowledge_mode,
+                    knowledge_strict=agent.knowledge_strict,
+                    debate_summary=debate_summary,
+                    cycle_memories=cycle_memories,
+                    evolving_positions=evolving_positions,
+                    evidence_packets=packets,
+                    evidence_memory=evidence_memory,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.critique,
+                    prompt_builder=_build_prompt,
+                    used_evidence_ids=used_evidence_tuple,
+                    cycle_number=cycle_number,
+                    evidence_memory_view=evidence_memory,
+                )
+            )
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in follow-up critique."
+            await self._fail_round(round_record, reason)
+            raise RuntimeError(reason)
+        await self._complete_round(round_record, ctx)
+        return results
+
+    async def execute_updated_synthesis(
+        self,
+        ctx: TurnContext,
+        cycle_number: int,
+        round_number: int,
+        follow_up_question: str,
+        memory: dict[str, Any],
+        followup_responses: list[AgentRoundResult],
+        followup_critiques: list[AgentRoundResult],
+    ) -> list[AgentRoundResult]:
+        """Cycle 2+ Round C — updated synthesis reflecting the new debate state."""
+        round_record = await self._create_round(
+            ctx,
+            round_number=round_number,
+            round_type=RoundType.updated_synthesis,
+            cycle_number=cycle_number,
+        )
+
+        original_question = memory.get("original_question", "") or ctx.question
+        previous_synthesis = memory.get("previous_synthesis", "") or ""
+        debate_summary = memory.get("debate_summary") or {}
+        cycle_memories = memory.get("cycle_memories") or []
+        evolving_positions = memory.get("evolving_positions") or []
+        evidence_memory = memory.get("evidence_memory") or {}
+        used_evidence_tuple = tuple(
+            str(x) for x in (evidence_memory.get("cited_sources") or [])
+        )
+
+        responses_block = [
+            {
+                "role": r.role,
+                "answer": _first_non_empty(
+                    [
+                        r.structured.get("answer_to_followup", ""),
+                        r.structured.get("response", ""),
+                        r.structured.get("display_content", ""),
+                    ]
+                ),
+            }
+            for r in followup_responses
+            if r.generation_status == "success"
+        ]
+        critiques_block = [
+            {
+                "role": c.role,
+                "target": c.structured.get("target_agent", ""),
+                "challenge": _first_non_empty(
+                    [
+                        c.structured.get("challenge", ""),
+                        c.structured.get("counterargument", ""),
+                    ]
+                ),
+            }
+            for c in followup_critiques
+            if c.generation_status == "success"
+        ]
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
+                agent: AgentContext = agent_ctx,
+                resp: list[dict[str, Any]] = responses_block,
+                crit: list[dict[str, Any]] = critiques_block,
+            ) -> str:
+                return build_updated_synthesis_prompt(
+                    role=agent.role,
+                    original_question=original_question,
+                    follow_up_question=follow_up_question,
+                    previous_synthesis=previous_synthesis,
+                    followup_responses=resp,
+                    followup_critiques=crit,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                    retrieved_chunks=[c.model_dump() for c in chunks],
+                    knowledge_mode=agent.knowledge_mode,
+                    knowledge_strict=agent.knowledge_strict,
+                    debate_summary=debate_summary,
+                    cycle_memories=cycle_memories,
+                    evolving_positions=evolving_positions,
+                    evidence_packets=packets,
+                    evidence_memory=evidence_memory,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.final_summary,
+                    prompt_builder=_build_prompt,
+                    used_evidence_ids=used_evidence_tuple,
+                    cycle_number=cycle_number,
+                    evidence_memory_view=evidence_memory,
+                )
+            )
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in updated synthesis."
+            await self._fail_round(round_record, reason)
+            raise RuntimeError(reason)
         await self._complete_round(round_record, ctx)
         return results
 
@@ -452,8 +956,35 @@ class RoundManager:
         agent_started_perf = time.perf_counter()
 
         async with self._session_factory() as task_db:
-            chunks = await self._retrieve_for_agent(task_db, ctx, plan.agent_ctx)
-            prompt = plan.prompt_builder(chunks)
+            chunks = await self._retrieve_for_agent(
+                task_db,
+                ctx,
+                plan.agent_ctx,
+                cycle_number=plan.cycle_number,
+                evidence_memory_view=plan.evidence_memory_view,
+            )
+            # Step 29: build structured evidence packets so the prompt can
+            # cite by [E1]/[E2] labels and reason about source reliability.
+            try:
+                packets = await build_evidence_packets(
+                    task_db,
+                    chunks,
+                    used_evidence_ids=plan.used_evidence_ids or None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Evidence packet build failed (round=%d agent=%s): %s — "
+                    "falling back to raw chunks",
+                    round_record.round_number,
+                    plan.agent_ctx.agent_id,
+                    exc,
+                )
+                packets = []
+            try:
+                prompt = plan.prompt_builder(chunks, packets)
+            except TypeError:
+                # Backward compatibility: legacy single-arg builders.
+                prompt = plan.prompt_builder(chunks)
             result = await self._call_llm(
                 db=task_db,
                 agent_ctx=plan.agent_ctx,
@@ -613,11 +1144,13 @@ class RoundManager:
         ctx: TurnContext,
         round_number: int,
         round_type: RoundType,
+        cycle_number: int = 1,
     ) -> Round:
         """Create a Round record, mark it running, and persist before fan-out."""
         round_record = Round(
             chat_turn_id=ctx.turn_id,
             round_number=round_number,
+            cycle_number=cycle_number,
             round_type=round_type,
             status=RoundStatus.queued,
         )
@@ -683,6 +1216,14 @@ class RoundManager:
         await self.db.flush()
         await self.db.commit()
         logger.error("Round %d failed: %s", round_record.round_number, reason)
+
+    async def _raw_llm_call(self, request: LLMRequest) -> str:
+        """Lightweight LLM call wrapper used by the two-stage structurer.
+
+        Returns the raw text content. The caller is responsible for parsing.
+        """
+        response = await self._llm.generate(request)
+        return response.content or ""
 
     async def _save_message(
         self,
@@ -755,7 +1296,18 @@ class RoundManager:
         db: AsyncSession,
         ctx: TurnContext,
         agent_ctx: AgentContext,
+        *,
+        cycle_number: int = 1,
+        evidence_memory_view: dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
+        # Step 31: pick a role-aware retrieval strategy. ``select_strategy`` is
+        # pure / deterministic and free for any role string — unknown roles
+        # fall back to a balanced default strategy.
+        strategy = select_strategy(
+            agent_ctx.role,
+            cycle_number=cycle_number,
+            evidence_memory=evidence_memory_view,
+        )
         return await self._retrieval.retrieve_for_agent(
             agent_id=agent_ctx.agent_id,
             session_id=ctx.session_id,
@@ -764,6 +1316,7 @@ class RoundManager:
             knowledge_mode=agent_ctx.knowledge_mode,
             assigned_document_ids=agent_ctx.assigned_document_ids,
             top_k=RETRIEVAL_TOP_K,
+            strategy=strategy,
         )
 
     async def _build_retrieval_summary(
@@ -865,8 +1418,23 @@ class RoundManager:
             provider=agent_ctx.provider,
             model=agent_ctx.model,
             prompt=prompt,
-            temperature=agent_ctx.temperature,
-            max_tokens=_resolve_max_tokens(round_record.round_number),
+            temperature=resolve_temperature(
+                role=agent_ctx.role,
+                round_type=(
+                    round_record.round_type.value
+                    if round_record.round_type is not None
+                    else None
+                ),
+                user_override=agent_ctx.temperature,
+            ),
+            max_tokens=_resolve_max_tokens(
+                round_record.round_number,
+                round_type=(
+                    round_record.round_type.value
+                    if round_record.round_type is not None
+                    else None
+                ),
+            ),
         )
 
         retrieval_count = len(retrieved_chunks or [])
@@ -915,7 +1483,59 @@ class RoundManager:
             normalized = normalize_round_output(
                 round_number=round_record.round_number,
                 raw_text=raw_content,
+                round_type=round_record.round_type.value if round_record.round_type is not None else None,
             )
+
+            # Stage 2 recovery: if the primary call produced unparseable JSON,
+            # ask the model to convert its own RAW text into strict JSON before
+            # accepting the cheap regex fallback. This costs at most one extra
+            # short LLM call per failed agent (never per success).
+            if normalized.payload.get("is_fallback") is True:
+                round_type_value = (
+                    round_record.round_type.value
+                    if round_record.round_type is not None
+                    else None
+                )
+                try:
+                    recovered_payload = await recover_json_with_llm(
+                        raw_content,
+                        round_number=round_record.round_number,
+                        round_type=round_type_value,
+                        llm_call=self._raw_llm_call,
+                        provider=agent_ctx.provider,
+                        model=agent_ctx.model,
+                        temperature=0.0,
+                        max_tokens=700,
+                    )
+                except Exception as recovery_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Two-stage recovery raised: %s — keeping regex fallback.",
+                        recovery_exc,
+                    )
+                    recovered_payload = None
+
+                if recovered_payload is not None:
+                    try:
+                        recovered_normalized = normalize_round_output(
+                            round_number=round_record.round_number,
+                            raw_text=raw_content,
+                            parsed_payload=recovered_payload,
+                            round_type=round_type_value,
+                        )
+                    except Exception as renorm_exc:  # noqa: BLE001
+                        logger.warning(
+                            "Two-stage recovery normalization raised: %s — keeping regex fallback.",
+                            renorm_exc,
+                        )
+                    else:
+                        if recovered_normalized.payload.get("is_fallback") is False:
+                            logger.info(
+                                "Two-stage recovery succeeded for agent %s round %d.",
+                                agent_ctx.agent_id,
+                                round_record.round_number,
+                            )
+                            normalized = recovered_normalized
+
             structured = normalized.payload
             content = json.dumps(normalized.payload, ensure_ascii=False)
 

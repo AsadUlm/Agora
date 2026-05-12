@@ -1,6 +1,14 @@
 /* ── Frontend Graph Model ─────────────────────────────────────── */
 
-export type GraphNodeKind = "question" | "agent" | "synthesis" | "intermediate";
+export type GraphNodeKind =
+    | "question"
+    | "agent"
+    | "synthesis"
+    | "intermediate"
+    | "followup-question"
+    | "followup-agent"
+    | "followup-intermediate"
+    | "followup-synthesis";
 
 export type GraphEdgeKind =
     | "initial"
@@ -43,6 +51,8 @@ export interface DebateGraphNode {
         mode: "no_docs" | "shared_session_docs" | "assigned_docs_only" | string;
         docCount: number;
     };
+    /** Cycle this node belongs to (1 = initial debate, 2+ = follow-up cycles). */
+    cycle?: number;
 }
 
 export interface DebateGraphEdge {

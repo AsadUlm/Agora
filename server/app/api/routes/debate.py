@@ -49,16 +49,20 @@ from app.models.message import Message, MessageType, MessageVisibility, SenderTy
 from app.models.round import Round
 from app.models.user import User
 from app.models.agent_document_binding import AgentDocumentBinding
+from app.models.debate_follow_up import DebateFollowUp
 from app.schemas.agent_config import AgentConfig
 from app.schemas.debate import (
     DebateListItem,
     DebateStartRequest,
     DebateStartResponse,
+    FollowUpCreateRequest,
+    FollowUpCreateResponse,
     SessionDetailDTO,
     TurnDTO,
 )
 from app.schemas.dto import serialize_session, serialize_turn, _agents_index
 from app.services.execution_runner import run_turn_background
+from app.services.followup_runner import run_followup_cycle
 from app.services.ws_manager import ws_manager
 
 router = APIRouter()
@@ -77,6 +81,7 @@ def _session_load_opts():
         .selectinload(Round.messages),
         selectinload(ChatSession.chat_turns)
         .selectinload(ChatTurn.messages),
+        selectinload(ChatSession.follow_ups),
     ]
 
 
@@ -257,6 +262,113 @@ async def get_debate(
         )
 
     return serialize_session(session)
+
+
+# ── POST /debates/{id}/follow-ups ─────────────────────────────────────────────
+
+@router.post(
+    "/{debate_id}/follow-ups",
+    response_model=FollowUpCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_follow_up(
+    debate_id: uuid.UUID,
+    request: FollowUpCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    session_factory=Depends(get_session_factory),
+) -> FollowUpCreateResponse:
+    """Open a new debate cycle by asking a follow-up question.
+
+    Behavior (per spec):
+      - Validates session ownership
+      - Validates that the debate is not currently generating
+      - Determines the next ``cycle_number`` (latest existing + 1, min 2)
+      - Persists a ``DebateFollowUp`` record
+      - Schedules ``run_followup_cycle`` in the background
+      - Returns 201 immediately so the UI can subscribe over WebSocket
+    """
+    question = (request.question or "").strip()
+    if not question:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Follow-up question must not be empty.",
+        )
+
+    # 1. Ownership + load latest turn with rounds
+    session_check = await db.execute(
+        select(ChatSession.id)
+        .where(ChatSession.id == debate_id)
+        .where(ChatSession.user_id == current_user.id)
+    )
+    if session_check.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debate not found.")
+
+    turn_row = await db.execute(
+        select(ChatTurn)
+        .where(ChatTurn.chat_session_id == debate_id)
+        .options(selectinload(ChatTurn.rounds))
+        .order_by(ChatTurn.turn_index.desc())
+        .limit(1)
+    )
+    turn = turn_row.scalar_one_or_none()
+    if turn is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No debate turn exists yet for this session.",
+        )
+
+    # 2. Reject if the previous cycle is still running
+    if turn.status in (ChatTurnStatus.queued, ChatTurnStatus.running):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A debate cycle is already in progress. Wait for it to finish.",
+        )
+
+    # 3. Determine next cycle_number — must be ≥ 2 (cycle 1 is the initial debate)
+    existing_max_cycle = max(
+        (r.cycle_number or 1 for r in turn.rounds),
+        default=1,
+    )
+    cycle_number = max(existing_max_cycle + 1, 2)
+
+    # 4. Persist follow-up record
+    follow_up = DebateFollowUp(
+        chat_session_id=debate_id,
+        chat_turn_id=turn.id,
+        question=question,
+        cycle_number=cycle_number,
+    )
+    db.add(follow_up)
+    await db.flush()
+
+    # 5. Re-queue turn so the UI/back-end agree it's live again
+    turn.status = ChatTurnStatus.queued
+    turn.ended_at = None
+    await db.commit()
+
+    # 6. Background execution
+    background_tasks.add_task(
+        run_followup_cycle,
+        session_id=debate_id,
+        turn_id=turn.id,
+        cycle_number=cycle_number,
+        follow_up_question=question,
+        on_event=ws_manager.emit,
+        session_factory=session_factory,
+    )
+
+    return FollowUpCreateResponse(
+        follow_up_id=follow_up.id,
+        debate_id=debate_id,
+        turn_id=turn.id,
+        cycle_number=cycle_number,
+        question=question,
+        status="queued",
+        ws_session_url=f"/ws/chat-sessions/{debate_id}",
+        ws_turn_url=f"/ws/chat-turns/{turn.id}",
+    )
 
 
 # ── GET /debates/{id}/turns/{turn_id} ─────────────────────────────────────────

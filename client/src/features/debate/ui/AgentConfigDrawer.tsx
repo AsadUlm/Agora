@@ -4,7 +4,7 @@ import { AGENT_PRESETS, createAgentFromPreset } from "../model/agent-config.type
 import AgentConfigCard from "./AgentConfigCard";
 import type { DocumentItem } from "./AgentConfigCard";
 import DocumentUploadPanel from "./DocumentUploadPanel";
-import type { DocumentDTO } from "../api/debate.types";
+import type { DocumentDTO, DocumentUploadFailureDTO } from "../api/debate.types";
 
 interface AgentConfigDrawerProps {
     open: boolean;
@@ -18,6 +18,8 @@ interface AgentConfigDrawerProps {
     rawDocuments?: DocumentDTO[];
     uploading?: boolean;
     onUploadDocument?: (file: File) => Promise<void>;
+    /** Step 30: batch upload variant. When provided, the panel uses it. */
+    onUploadDocumentsBatch?: (files: File[]) => Promise<DocumentUploadFailureDTO[] | void>;
     onDeleteDocument?: (documentId: string) => void;
 }
 
@@ -33,6 +35,7 @@ export default function AgentConfigDrawer({
     rawDocuments = [],
     uploading = false,
     onUploadDocument,
+    onUploadDocumentsBatch,
     onDeleteDocument,
 }: AgentConfigDrawerProps) {
     const enabledCount = agents.filter((a) => a.enabled).length;
@@ -82,7 +85,7 @@ export default function AgentConfigDrawer({
                         {/* Agent list */}
                         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
                             {/* Document Management Section */}
-                            {onUploadDocument && (
+                            {(onUploadDocument || onUploadDocumentsBatch) && (
                                 <div className="mb-4 pb-4 border-b border-agora-border/30">
                                     <h3 className="text-[10px] uppercase tracking-widest text-indigo-400 font-semibold mb-3 flex items-center gap-2">
                                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -95,6 +98,7 @@ export default function AgentConfigDrawer({
                                         documents={rawDocuments}
                                         uploading={uploading}
                                         onUpload={onUploadDocument}
+                                        onUploadBatch={onUploadDocumentsBatch}
                                         onDelete={onDeleteDocument ?? (() => { })}
                                     />
                                 </div>

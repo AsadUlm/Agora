@@ -2,6 +2,7 @@ import { useMemo, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useGraphStore } from "../model/graph.store";
 import { useDebateStore } from "../model/debate.store";
+import { getPersonaMeta } from "../model/persona-meta";
 import { extractFullResponse, getTurnSummary, normalizeSummary, parseResponsePayload } from "../model/formatters";
 
 const kindLabels: Record<string, string> = {
@@ -9,6 +10,10 @@ const kindLabels: Record<string, string> = {
     agent: "Agent Response",
     synthesis: "Synthesis",
     intermediate: "Agent Interaction",
+    "followup-question": "Follow-up Question",
+    "followup-agent": "Follow-up Response",
+    "followup-intermediate": "Follow-up Critique",
+    "followup-synthesis": "Updated Synthesis",
 };
 
 const roundLabels: Record<number, string> = {
@@ -158,9 +163,9 @@ function buildSections(args: {
     const sections: ContentSection[] = [];
     const isRound3 = round === 3 || kind === "synthesis";
 
-    const shortSummary = firstScalar(parsed, ["short_summary", "summary"]);
+    const shortSummary = firstScalar(parsed, ["one_sentence_takeaway", "short_summary", "summary"]);
     if (shortSummary && !isRound3) {
-        pushSection(sections, "Short Summary", shortSummary);
+        pushSection(sections, "Key Takeaway", shortSummary);
     }
 
     if (round === 1) {
@@ -174,14 +179,90 @@ function buildSections(args: {
     } else if (round === 2 || kind === "intermediate") {
         pushSection(sections, "Target", firstScalar(parsed, ["target_role", "target_agent"]));
         pushSection(sections, "Challenge", firstScalar(parsed, ["challenge", "critique"]));
+        pushSection(sections, "Assumption Attacked", firstScalar(parsed, ["assumption_attacked"]));
+        pushSection(sections, "Why It Breaks", firstScalar(parsed, ["why_it_breaks"]));
+        pushSection(sections, "Real-World Implication", firstScalar(parsed, ["real_world_implication"]));
         pushSection(sections, "Weakness Found", firstScalar(parsed, ["weakness_found", "weakness"]));
         pushSection(sections, "Counterargument", firstScalar(parsed, ["counterargument", "counter_evidence"]));
     } else if (isRound3) {
+        if (shortSummary) {
+            pushSection(sections, "Key Takeaway", shortSummary);
+        }
         pushSection(sections, "Final Position / Argument", firstScalar(parsed, ["final_position", "final_stance", "response", "display_content"]));
-        pushSection(sections, "Key Insight", firstScalar(parsed, ["strongest_argument"]));
+        pushSection(sections, "Key Trade-off", firstScalar(parsed, ["key_tradeoff", "tradeoff"]));
+        pushSection(sections, "Winning Argument", firstScalar(parsed, ["winning_argument", "strongest_argument"]));
+        pushSection(sections, "Losing Argument", firstScalar(parsed, ["losing_argument"]));
+        const confidence = (firstScalar(parsed, ["confidence"]) || "").toLowerCase();
+        if (confidence) {
+            pushSection(sections, "Confidence", confidence.toUpperCase());
+        }
         pushSection(sections, "What Changed", firstScalar(parsed, ["what_changed"]));
         pushSection(sections, "Concerns", firstScalar(parsed, ["remaining_concerns"]));
         pushSection(sections, "Conclusion", firstScalar(parsed, ["conclusion", "recommendation"]));
+    }
+
+    // Follow-up cycle sections (cycle ≥ 2)
+    if (kind === "followup-agent") {
+        pushSection(sections, "Quick Takeaway", firstScalar(parsed, ["one_sentence_takeaway", "quick_takeaway", "short_summary"]));
+        pushSection(sections, "Full Answer", firstScalar(parsed, ["full_answer", "answer_to_followup", "response", "display_content"]));
+
+        // Position Change — prefer structured position_evolution
+        const evolution = (parsed?.position_evolution ?? null) as Record<string, unknown> | null;
+        if (evolution && typeof evolution === "object") {
+            const prev = firstScalar(evolution, ["previous_position"]);
+            const updated = firstScalar(evolution, ["updated_position"]);
+            // Accept both ``change_type`` (legacy) and ``change`` (Step 25 simplified).
+            const changeType = firstScalar(evolution, ["change_type", "change"]);
+            const reason = firstScalar(evolution, ["reason"]);
+            const lines: string[] = [];
+            if (changeType) lines.push(`Change: ${changeType.toUpperCase()}`);
+            if (prev) lines.push(`Previous: ${prev}`);
+            if (updated) lines.push(`Updated: ${updated}`);
+            if (reason) lines.push(`Reason: ${reason}`);
+            if (lines.length > 0) {
+                pushSection(sections, "Position Change", lines.join("\n"));
+            }
+        } else {
+            pushSection(sections, "Position Change", firstScalar(parsed, ["position_change", "position_update", "what_changed"]));
+        }
+
+        const fuKeyPoints = scalarList(parsed, ["key_points", "supporting_points"]);
+        if (fuKeyPoints.length > 0) {
+            pushSection(sections, "Key Points", `• ${fuKeyPoints.join("\n• ")}`);
+        }
+    } else if (kind === "followup-synthesis") {
+        pushSection(sections, "Quick Takeaway", firstScalar(parsed, ["one_sentence_takeaway", "quick_takeaway", "short_summary"]));
+        pushSection(sections, "Updated Conclusion", firstScalar(parsed, ["updated_conclusion", "full_answer", "response", "display_content"]));
+        const changed = (firstScalar(parsed, ["conclusion_changed"]) || "").toLowerCase();
+        if (changed) {
+            pushSection(sections, "Conclusion Changed", changed === "yes" ? "YES — the follow-up shifted the conclusion." : "NO — the conclusion holds.");
+        }
+        pushSection(sections, "Why", firstScalar(parsed, ["change_reason", "what_changed"]));
+        pushSection(sections, "Key Trade-off", firstScalar(parsed, ["key_tradeoff", "tradeoff"]));
+        pushSection(sections, "Winning Argument", firstScalar(parsed, ["winning_argument", "strongest_argument"]));
+        pushSection(sections, "Losing Argument", firstScalar(parsed, ["losing_argument"]));
+        const fuConfidence = (firstScalar(parsed, ["confidence"]) || "").toLowerCase();
+        if (fuConfidence) {
+            pushSection(sections, "Confidence", fuConfidence.toUpperCase());
+        }
+        pushSection(sections, "Strongest Argument", firstScalar(parsed, ["strongest_argument"]));
+        pushSection(sections, "Remaining Disagreement", firstScalar(parsed, ["remaining_disagreement", "remaining_concerns"]));
+    } else if (kind === "followup-intermediate") {
+        const targetKind = (firstScalar(parsed, ["target_kind"]) || "").toLowerCase();
+        const targetLabel = targetKind === "strongest_argument"
+            ? "Target (strongest argument)"
+            : targetKind === "unresolved_question"
+                ? "Target (unresolved question)"
+                : "Target";
+        pushSection(sections, targetLabel, firstScalar(parsed, ["target_agent", "target_role"]));
+        pushSection(sections, "Challenge", firstScalar(parsed, ["challenge", "critique"]));
+        pushSection(sections, "Assumption Attacked", firstScalar(parsed, ["assumption_attacked"]));
+        pushSection(sections, "Why It Breaks", firstScalar(parsed, ["why_it_breaks"]));
+        pushSection(sections, "Real-World Implication", firstScalar(parsed, ["real_world_implication"]));
+        pushSection(sections, "Counterargument", firstScalar(parsed, ["counterargument"]));
+        pushSection(sections, "Impact", firstScalar(parsed, ["impact"]));
+    } else if (kind === "followup-question") {
+        pushSection(sections, "Follow-up Question", firstScalar(parsed, ["question"]) || fullResponse);
     }
 
     if (fullResponse && !isRound3) {
@@ -200,10 +281,13 @@ export default function NodeDetailDrawer() {
     const graph = useGraphStore((s) => s.graph);
     const selectNode = useGraphStore((s) => s.selectNode);
     const debateQuestion = useDebateStore((s) => s.session?.question ?? "");
+    const agents = useDebateStore((s) => s.agents);
 
     const node = selectedNodeId
         ? graph.nodes.find((n) => n.id === selectedNodeId)
         : null;
+
+    const agent = node?.agentId ? agents.find((a) => a.id === node.agentId) : null;
 
     const relatedEdges = selectedNodeId
         ? graph.edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
@@ -275,18 +359,49 @@ export default function NodeDetailDrawer() {
                     className="absolute top-0 right-0 h-full w-[460px] max-w-[94vw] bg-agora-surface border-l border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col"
                 >
                     <div className="px-5 py-4 border-b border-agora-border flex items-start justify-between gap-3">
-                        <div className="space-y-1">
+                        <div className="space-y-1 min-w-0">
                             <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
                                 {kindLabels[node.kind] ?? node.kind}
                             </div>
-                            <div className="text-base font-semibold text-white leading-tight">
+                            <div className="text-base font-semibold text-white leading-tight truncate">
                                 {node.agentRole || node.label}
                             </div>
+                            {(agent || node.agentRole) && (() => {
+                                const persona = getPersonaMeta(node.agentRole);
+                                return (
+                                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                        {persona && (
+                                            <span
+                                                className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${persona.accentChip} ${persona.accentText}`}
+                                                title="Persona archetype"
+                                            >
+                                                {persona.title}
+                                            </span>
+                                        )}
+                                        {agent?.model && (
+                                            <span
+                                                className="text-[10px] px-1.5 py-0.5 rounded border border-agora-border bg-agora-surface-light/40 text-agora-text-muted font-mono truncate max-w-[200px]"
+                                                title={`${agent.provider ?? ""} · ${agent.model}`}
+                                            >
+                                                {agent.model.includes("/") ? agent.model.split("/").slice(-1)[0] : agent.model}
+                                            </span>
+                                        )}
+                                        {agent?.temperature != null && (
+                                            <span
+                                                className="text-[10px] px-1.5 py-0.5 rounded border border-agora-border bg-agora-surface-light/40 text-agora-text-muted"
+                                                title="Temperature (live or persona-resolved)"
+                                            >
+                                                t={agent.temperature.toFixed(2)}
+                                            </span>
+                                        )}
+                                    </div>
+                                );
+                            })()}
                         </div>
                         <button
                             type="button"
                             onClick={() => selectNode(null)}
-                            className="w-8 h-8 rounded-lg bg-agora-surface-light flex items-center justify-center text-agora-text-muted hover:text-white hover:bg-gray-600 transition-colors"
+                            className="w-8 h-8 rounded-lg bg-agora-surface-light flex items-center justify-center text-agora-text-muted hover:text-white hover:bg-gray-600 transition-colors shrink-0"
                             aria-label="Close details"
                         >
                             ✕
@@ -296,24 +411,29 @@ export default function NodeDetailDrawer() {
                     <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
                         <div className="flex flex-wrap items-center gap-2">
                             <Badge>{roundLabels[node.round] ?? `Round ${node.round}`}</Badge>
+                            {node.cycle && node.cycle >= 2 && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-violet-500/15 border border-violet-500/30 text-[10px] text-violet-200 font-medium">
+                                    Follow-up #{node.cycle - 1}
+                                </span>
+                            )}
                             <StatusBadge status={node.status} />
                             <Badge>{kindLabels[node.kind] ?? node.kind}</Badge>
                             {node.agentRole && <Badge>{node.agentRole}</Badge>}
                             {isFallbackFormatted && <Badge>Formatted automatically</Badge>}
                         </div>
 
-                        {node.round > 0 && (
+                        {node.round > 0 && roundGuidance[node.round] && (
                             <div className="rounded-lg border border-indigo-500/25 bg-indigo-500/8 px-3 py-2">
                                 <p className="text-xs text-indigo-100/95 leading-relaxed">
-                                    {roundGuidance[node.round] ?? "This message is part of the debate process."}
+                                    {roundGuidance[node.round]}
                                 </p>
                             </div>
                         )}
 
                         {quickTakeaway && (
-                            <div className="rounded-xl border border-agora-border bg-agora-surface-light/30 p-3">
+                            <div className="rounded-xl border border-violet-500/25 bg-gradient-to-br from-violet-500/10 to-violet-500/5 p-4">
                                 <Label>Quick Takeaway</Label>
-                                <p className="text-sm text-white leading-relaxed">
+                                <p className="text-[15px] text-white leading-relaxed font-medium">
                                     {quickTakeaway}
                                 </p>
                             </div>
@@ -368,39 +488,44 @@ export default function NodeDetailDrawer() {
                         )}
 
                         {!isLoading && retrieval && retrieval.documents.length > 0 && (
-                            <details className="rounded-lg border border-indigo-500/30 bg-indigo-500/5">
-                                <summary className="px-3 py-2 text-[11px] text-indigo-200 cursor-pointer select-none">
-                                    Sources ({retrieval.total_chunks} chunks from {retrieval.documents.length} {retrieval.documents.length === 1 ? "document" : "documents"})
-                                </summary>
-                                <div className="px-3 pb-3 space-y-3">
-                                    {retrieval.documents.map((doc) => (
-                                        <div key={doc.document_id} className="space-y-1.5">
-                                            <div className="flex items-center justify-between gap-2">
-                                                <div className="text-[11px] font-medium text-white truncate" title={doc.document_name}>
-                                                    {doc.document_name}
-                                                </div>
-                                                <div className="text-[10px] text-agora-text-muted whitespace-nowrap">
-                                                    {doc.chunks.length} {doc.chunks.length === 1 ? "chunk" : "chunks"}
-                                                </div>
-                                            </div>
-                                            <div className="space-y-1.5">
-                                                {doc.chunks.map((chunk, ci) => (
-                                                    <div key={ci} className="rounded-md bg-agora-surface-light/40 px-2.5 py-2">
-                                                        <div className="flex items-start gap-2">
-                                                            <p className="text-[11px] text-agora-text leading-relaxed flex-1 whitespace-pre-line break-words">
-                                                                {chunk.text}
-                                                            </p>
-                                                            <span className="text-[10px] font-mono text-indigo-200 bg-indigo-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
-                                                                {chunk.score.toFixed(2)}
-                                                            </span>
-                                                        </div>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    ))}
+                            <div className="pt-2 border-t border-agora-border/40">
+                                <div className="text-[10px] uppercase tracking-widest text-agora-text-muted/80 font-semibold mb-2 px-1">
+                                    Advanced
                                 </div>
-                            </details>
+                                <details className="rounded-lg border border-indigo-500/30 bg-indigo-500/5">
+                                    <summary className="px-3 py-2 text-[11px] text-indigo-200 cursor-pointer select-none">
+                                        Sources ({retrieval.total_chunks} chunks from {retrieval.documents.length} {retrieval.documents.length === 1 ? "document" : "documents"})
+                                    </summary>
+                                    <div className="px-3 pb-3 space-y-3">
+                                        {retrieval.documents.map((doc) => (
+                                            <div key={doc.document_id} className="space-y-1.5">
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <div className="text-[11px] font-medium text-white truncate" title={doc.document_name}>
+                                                        {doc.document_name}
+                                                    </div>
+                                                    <div className="text-[10px] text-agora-text-muted whitespace-nowrap">
+                                                        {doc.chunks.length} {doc.chunks.length === 1 ? "chunk" : "chunks"}
+                                                    </div>
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                    {doc.chunks.map((chunk, ci) => (
+                                                        <div key={ci} className="rounded-md bg-agora-surface-light/40 px-2.5 py-2">
+                                                            <div className="flex items-start gap-2">
+                                                                <p className="text-[11px] text-agora-text leading-relaxed flex-1 whitespace-pre-line break-words">
+                                                                    {chunk.text}
+                                                                </p>
+                                                                <span className="text-[10px] font-mono text-indigo-200 bg-indigo-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
+                                                                    {chunk.score.toFixed(2)}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </details>
+                            </div>
                         )}
 
                         {relatedEdges.length > 0 && (

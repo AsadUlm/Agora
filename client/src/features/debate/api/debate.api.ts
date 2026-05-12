@@ -4,6 +4,7 @@ import type {
     DebateStartRequest,
     DebateStartResponse,
     DocumentDTO,
+    DocumentUploadBatchResponseDTO,
     SessionDetailDTO,
 } from "./debate.types";
 
@@ -54,6 +55,24 @@ export async function uploadDocument(
     return res.data;
 }
 
+/**
+ * Step 30: upload multiple documents in one multipart request.
+ * Backend returns 207 Multi-Status with `{ uploaded, failed }`.
+ */
+export async function uploadDocumentsBatch(
+    sessionId: string,
+    files: File[],
+): Promise<DocumentUploadBatchResponseDTO> {
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    const res = await apiClient.post<DocumentUploadBatchResponseDTO>(
+        `/documents/upload-batch?session_id=${sessionId}`,
+        form,
+        { headers: { "Content-Type": "multipart/form-data" } },
+    );
+    return res.data;
+}
+
 export async function listDocuments(
     sessionId: string,
 ): Promise<DocumentDTO[]> {
@@ -70,6 +89,30 @@ export async function deleteDocument(
     await apiClient.delete(
         `/documents/${documentId}?session_id=${sessionId}`,
     );
+}
+
+// ── Follow-up debate cycles ──────────────────────────────────────────────────
+
+export interface FollowUpCreateResponse {
+    follow_up_id: string;
+    debate_id: string;
+    turn_id: string;
+    cycle_number: number;
+    question: string;
+    status: string;
+    ws_session_url: string;
+    ws_turn_url: string;
+}
+
+export async function postFollowUp(
+    debateId: string,
+    question: string,
+): Promise<FollowUpCreateResponse> {
+    const res = await apiClient.post<FollowUpCreateResponse>(
+        `/debates/${debateId}/follow-ups`,
+        { question },
+    );
+    return res.data;
 }
 
 // ── Step-by-step controls (Step 14) ──────────────────────────────────────────
