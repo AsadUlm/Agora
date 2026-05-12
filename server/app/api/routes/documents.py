@@ -29,6 +29,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +40,7 @@ from app.models.chat_session import ChatSession
 from app.models.document import Document
 from app.models.user import User
 from app.schemas.document import (
+    DocumentAllItem,
     DocumentDeleteResponse,
     DocumentListItem,
     DocumentUploadBatchResponse,
@@ -269,6 +271,85 @@ async def upload_documents_batch(
             ))
 
     return DocumentUploadBatchResponse(uploaded=uploaded, failed=failed)
+
+
+@router.get(
+    "/all",
+    response_model=list[DocumentAllItem],
+    summary="List all documents owned by the current user across all sessions",
+)
+async def list_all_documents(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[DocumentAllItem]:
+    """Return all documents for the logged-in user, newest first, with session context."""
+    rows = await DocumentIngestionService.get_all_for_user(db, current_user.id)
+    return [
+        DocumentAllItem(
+            id=doc.id,
+            session_id=doc.chat_session_id,
+            session_title=title,
+            filename=doc.filename,
+            source_type=doc.source_type,
+            status=doc.status.value,
+            created_at=doc.created_at,
+            storage_provider=doc.storage_provider or "local",
+            bytes=doc.storage_bytes,
+            storage_url=doc.storage_secure_url if doc.storage_provider == "cloudinary" else None,
+        )
+        for doc, title in rows
+    ]
+
+
+@router.get(
+    "/{document_id}/download",
+    summary="Download a document file",
+)
+async def download_document(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """Stream the raw file back to the client. Ownership is verified via session user_id."""
+    from app.models.chat_session import ChatSession  # noqa: PLC0415
+    from sqlalchemy import select as sa_select  # noqa: PLC0415
+
+    # Look up the doc and verify it belongs to the current user.
+    result = await db.execute(
+        sa_select(Document)
+        .join(ChatSession, Document.chat_session_id == ChatSession.id)
+        .where(Document.id == document_id)
+        .where(ChatSession.user_id == current_user.id)
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    if doc.storage_provider == "cloudinary" and doc.storage_secure_url:
+        # Redirect to Cloudinary CDN — no need to proxy the bytes.
+        from fastapi.responses import RedirectResponse  # noqa: PLC0415
+        return RedirectResponse(url=doc.storage_secure_url)  # type: ignore[return-value]
+
+    # Local storage — read and stream the bytes.
+    if not doc.file_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found on disk.")
+
+    from pathlib import Path  # noqa: PLC0415
+    path = Path(doc.file_path)
+    if not path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found on disk.")
+
+    from urllib.parse import quote  # noqa: PLC0415
+    content_type = doc.content_type or "application/octet-stream"
+    file_bytes = path.read_bytes()
+    # RFC 5987 encoding handles non-ASCII filenames (latin-1 headers would crash).
+    encoded_name = quote(doc.filename, safe="")
+    disposition = f"inline; filename*=UTF-8''{encoded_name}"
+    return StreamingResponse(
+        iter([file_bytes]),
+        media_type=content_type,
+        headers={"Content-Disposition": disposition},
+    )
 
 
 @router.get(

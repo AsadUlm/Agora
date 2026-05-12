@@ -8,28 +8,29 @@ import FollowUpInput from "./FollowUpInput";
 
 export default function DebateLayout() {
     return (
-        <div className="h-screen w-screen flex flex-col bg-agora-bg overflow-hidden">
+        <div className="h-screen w-full flex flex-col bg-agora-bg overflow-hidden">
             {/* Top Bar */}
             <TopTopicBar />
 
             {/* Main Area: 3-column */}
-            <div className="flex-1 flex min-h-0 relative">
+            <div className="flex-1 flex min-h-0">
                 {/* Left: Timeline */}
                 <DebateTimeline />
 
-                {/* Center: Graph Canvas */}
-                <div className="flex-1 relative min-w-0 min-h-0">
-                    <DebateGraphCanvas />
+                {/* Center: Canvas + bottom bars, drawer anchored here */}
+                <div className="flex-1 relative flex flex-col min-w-0 min-h-0 overflow-hidden">
+                    <div className="flex-1 relative min-h-0">
+                        <DebateGraphCanvas />
+                    </div>
+                    <FollowUpInput />
+                    <PlaybackBar />
+                    {/* Drawer is absolute within this column so it covers canvas + bottom bars */}
                     <NodeDetailDrawer />
                 </div>
 
                 {/* Right: Unified panel (Moderator / Evolution / Raw) */}
                 <RightSidebar />
             </div>
-
-            {/* Bottom: Follow-up dock + Playback Bar */}
-            <FollowUpInput />
-            <PlaybackBar />
         </div>
     );
 }

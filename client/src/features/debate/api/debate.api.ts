@@ -3,6 +3,7 @@ import type {
     DebateListItem,
     DebateStartRequest,
     DebateStartResponse,
+    DocumentAllItemDTO,
     DocumentDTO,
     DocumentUploadBatchResponseDTO,
     SessionDetailDTO,
@@ -80,6 +81,21 @@ export async function listDocuments(
         `/documents?session_id=${sessionId}`,
     );
     return res.data;
+}
+
+export async function listAllDocuments(): Promise<DocumentAllItemDTO[]> {
+    const res = await apiClient.get<DocumentAllItemDTO[]>("/documents/all");
+    return res.data;
+}
+
+export async function downloadDocumentBlob(documentId: string): Promise<{ blob: Blob; filename: string }> {
+    const res = await apiClient.get<Blob>(`/documents/${documentId}/download`, {
+        responseType: "blob",
+    });
+    const disposition = (res.headers as Record<string, string>)["content-disposition"] ?? "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match?.[1] ?? "document";
+    return { blob: res.data, filename };
 }
 
 export async function deleteDocument(

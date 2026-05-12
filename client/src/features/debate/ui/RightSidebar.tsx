@@ -23,12 +23,12 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
     { id: "raw", label: "Raw", icon: "{ }" },
 ];
 
-/** Per-tab pixel widths. Tuned for 1440px+ canvases. */
-const TAB_WIDTHS: Record<Tab, number> = {
-    moderator: 320,
-    evolution: 460,
-    agents: 360,
-    raw: 420,
+/** Per-tab widths as vw-based clamps so the sidebar scales with the viewport. */
+const TAB_WIDTHS: Record<Tab, string> = {
+    moderator: "clamp(150px, 21vw, 340px)",
+    evolution: "clamp(160px, 25vw, 420px)",
+    agents:    "clamp(150px, 22vw, 360px)",
+    raw:       "clamp(155px, 23vw, 380px)",
 };
 
 export default function RightSidebar() {
@@ -56,14 +56,14 @@ export default function RightSidebar() {
                         type="button"
                         onClick={() => setActive(t.id)}
                         className={cn(
-                            "flex-1 px-1.5 py-1.5 text-[11px] font-medium rounded-t-md transition-colors flex items-center justify-center gap-1",
+                            "flex-1 px-1 py-1.5 text-[10px] font-medium rounded-t-md transition-colors flex items-center justify-center gap-1",
                             active === t.id
                                 ? "bg-agora-surface/80 text-white border-t border-l border-r border-agora-border"
                                 : "text-agora-text-muted hover:text-white hover:bg-agora-surface/40",
                         )}
                         title={t.label}
                     >
-                        <span className="text-[10px] opacity-70">{t.icon}</span>
+                        <span className="opacity-70">{t.icon}</span>
                         {t.label}
                     </button>
                 ))}

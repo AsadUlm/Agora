@@ -136,6 +136,11 @@ export interface DocumentDTO {
     bytes?: number | null;
 }
 
+export interface DocumentAllItemDTO extends DocumentDTO {
+    session_title: string | null;
+    storage_url?: string | null;
+}
+
 /** Step 30: one failed file in a batch upload. */
 export interface DocumentUploadFailureDTO {
     filename: string;

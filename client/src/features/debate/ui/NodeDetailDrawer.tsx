@@ -352,11 +352,11 @@ export default function NodeDetailDrawer() {
         <AnimatePresence>
             {node && (
                 <motion.aside
-                    initial={{ x: 420, opacity: 0 }}
+                    initial={{ x: "100%", opacity: 0 }}
                     animate={{ x: 0, opacity: 1 }}
-                    exit={{ x: 420, opacity: 0 }}
+                    exit={{ x: "100%", opacity: 0 }}
                     transition={{ type: "spring", stiffness: 300, damping: 34 }}
-                    className="absolute top-0 right-0 h-full w-[460px] max-w-[94vw] bg-agora-surface border-l border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col"
+                    className="absolute top-0 right-0 h-full bg-agora-surface border-l border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col" style={{ width: "clamp(320px, 34vw, 520px)" }}
                 >
                     <div className="px-5 py-4 border-b border-agora-border flex items-start justify-between gap-3">
                         <div className="space-y-1 min-w-0">

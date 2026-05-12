@@ -60,18 +60,24 @@ export default function AppSidebar() {
                     New Debate
                 </NavLink>
 
-                {/* Placeholder items */}
                 <div className="pt-4 mt-4 border-t border-agora-border/30">
-                    <p className="px-3 mb-2 text-[9px] uppercase tracking-widest text-agora-text-muted/50 font-semibold">
-                        Coming Soon
-                    </p>
-                    <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs text-agora-text-muted/40 cursor-default">
+                    <NavLink
+                        to="/documents"
+                        className={({ isActive }) =>
+                            cn(
+                                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all",
+                                isActive
+                                    ? "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+                                    : "text-agora-text-muted hover:text-white hover:bg-agora-surface-light/40",
+                            )
+                        }
+                    >
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                             <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
                             <path d="M5 7h6M5 9.5h4" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
                         </svg>
                         Documents
-                    </div>
+                    </NavLink>
                     <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs text-agora-text-muted/40 cursor-default">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                             <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.2" />

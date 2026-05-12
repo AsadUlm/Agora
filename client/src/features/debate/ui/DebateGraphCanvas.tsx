@@ -145,23 +145,16 @@ function computeLayout(graphNodes: DebateGraphNode[]): Map<string, { x: number; 
         });
     }
 
-    // Interactions — vertically below the parent agent column.
-    interactionNodes.forEach((node, idx) => {
-        const parentAgentId = node.agentId
-            ? responderNodes.find((r) => r.agentId === node.agentId)?.id
-            : null;
-        const parentPos = parentAgentId ? positions.get(parentAgentId) : undefined;
-
-        if (parentPos) {
-            positions.set(node.id, { x: parentPos.x, y: LEVEL_Y.interactions });
-            return;
-        }
-
-        // Fallback: even spread.
-        const totalWidth = (interactionNodes.length - 1) * gap;
-        const startX = CANVAS_CENTER_X - totalWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
-        positions.set(node.id, { x: startX + idx * gap, y: LEVEL_Y.interactions });
-    });
+    // Interactions — evenly spread row, aligned under parent agent when possible.
+    const interactionCount = interactionNodes.length;
+    if (interactionCount > 0) {
+        const iGap = Math.max(AGENT_HORIZONTAL_GAP, 800 / (interactionCount + 1));
+        const totalIWidth = (interactionCount - 1) * iGap;
+        const iStartX = CANVAS_CENTER_X - totalIWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
+        interactionNodes.forEach((node, idx) => {
+            positions.set(node.id, { x: iStartX + idx * iGap, y: LEVEL_Y.interactions });
+        });
+    }
 
     // Synthesis — bottom center, dominant.
     synthesisNodes.forEach((s) => {

@@ -6,6 +6,7 @@ import NewSignupPage from "@/pages/NewSignupPage";
 import DebateListPage from "@/pages/DebateListPage";
 import DebateWorkspacePage from "@/pages/DebateWorkspacePage";
 import AppShell from "@/features/debate/ui/AppShell";
+import DocumentsPage from "@/pages/DocumentsPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -51,6 +52,7 @@ export default function App() {
                         }
                     >
                         <Route path="/debates" element={<DebateListPage />} />
+                        <Route path="/documents" element={<DocumentsPage />} />
                     </Route>
                     <Route
                         path="/debates/:debateId"

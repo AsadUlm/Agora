@@ -69,8 +69,6 @@ export default function PlaybackBar() {
             ? "from-emerald-500 to-teal-500"
             : "from-indigo-500 to-purple-500";
 
-    // Backend manual mode is dev-only. In normal flow execution_mode is
-    // "auto" and Next Step / Pause control frontend playback only.
     const showBackendManualUI = import.meta.env.DEV && executionMode === "manual";
     const canBackendNext = pendingStep !== null && !stepBusy && currentlyGenerating === null;
 
@@ -78,18 +76,17 @@ export default function PlaybackBar() {
     const showPlaybackControls = isRunning || isQueued;
 
     return (
-        <div className="h-16 px-6 border-t border-agora-border bg-agora-surface/80 backdrop-blur-sm flex items-center gap-5">
-            <div className="min-w-[310px]">
-                <div className="text-xs font-semibold text-white truncate">
-                    {stageLabel}
-                </div>
-                <div className="text-[11px] text-agora-text-muted truncate">
-                    {narration.sublabel}
-                </div>
+        <div className="h-14 px-3 border-t border-agora-border bg-agora-surface/80 backdrop-blur-sm flex items-center gap-2 overflow-hidden">
+
+            {/* Stage label — fixed left */}
+            <div className="shrink-0 w-[clamp(120px,18%,220px)] min-w-0">
+                <div className="text-xs font-semibold text-white truncate">{stageLabel}</div>
+                <div className="text-[11px] text-agora-text-muted truncate">{narration.sublabel}</div>
             </div>
 
-            <div className="flex-1">
-                <div className="h-2 bg-agora-surface-light rounded-full overflow-hidden">
+            {/* Progress bar — absorbs all remaining space */}
+            <div className="flex-1 min-w-[40px]">
+                <div className="h-1.5 bg-agora-surface-light rounded-full overflow-hidden">
                     <div
                         className={`h-full bg-gradient-to-r ${barColor} rounded-full transition-all duration-400`}
                         style={{ width: `${execution.progress.percentage}%` }}
@@ -97,128 +94,104 @@ export default function PlaybackBar() {
                 </div>
             </div>
 
-            <div className="min-w-[230px] text-right">
+            {/* Stats — fixed right of progress */}
+            <div className="shrink-0 w-[clamp(110px,17%,200px)] min-w-0 text-right">
                 {(isQueued || isRunning) && narration.relation && (
-                    <div className="text-[11px] text-indigo-300/95 truncate">
-                        {narration.relation}
-                    </div>
+                    <div className="text-[11px] text-indigo-300/95 truncate">{narration.relation}</div>
                 )}
-
                 {(isQueued || isRunning) && !narration.relation && execution.currentAgentRole && (
-                    <div className="text-[11px] text-indigo-300/90 truncate">
-                        Generating: {execution.currentAgentRole}
-                    </div>
+                    <div className="text-[11px] text-indigo-300/90 truncate">Gen: {execution.currentAgentRole}</div>
                 )}
-
                 {isCompleted && (
-                    <div className="text-[11px] text-emerald-300 truncate">
-                        Final synthesis stabilized
-                    </div>
+                    <div className="text-[11px] text-emerald-300 truncate">Synthesis stabilized</div>
                 )}
-
-                <div className="text-[10px] text-agora-text-muted mt-0.5">
-                    Generated: {generatedCount}
-                    {" · "}Shown: {revealedStepCount}
-                    {" · "}Queue: {showPlaybackControls ? playbackQueueLength : queuedCount}
-                </div>
-
                 {isFailed && (
-                    <div className="text-[11px] text-red-300 truncate mt-0.5">
-                        {execution.failureMessage || "Execution failed"}
-                    </div>
+                    <div className="text-[11px] text-red-300 truncate">{execution.failureMessage || "Execution failed"}</div>
                 )}
+                <div className="text-[10px] text-agora-text-muted mt-0.5 truncate">
+                    Gen: {generatedCount} · Shown: {revealedStepCount} · Q: {showPlaybackControls ? playbackQueueLength : queuedCount}
+                </div>
             </div>
 
-            {/* ── Frontend playback controls ─────────────────────────── */}
+            {/* Frontend playback controls — inline, fixed width */}
             {showPlaybackControls && (
-                <div className="flex flex-col items-end gap-1 pl-4 border-l border-agora-border">
-                    <div className="flex items-center gap-2">
-                        {playbackMode === "auto" ? (
-                            <button
-                                type="button"
-                                onClick={() => setPlaybackMode("paused")}
-                                className="px-3 py-1.5 rounded-md text-[11px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-400 transition-colors"
-                                title="Pause visual playback (backend continues generating)"
-                            >
-                                ⏸ Pause
-                            </button>
-                        ) : (
-                            <button
-                                type="button"
-                                onClick={() => setPlaybackMode("auto")}
-                                className="px-3 py-1.5 rounded-md text-[11px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-400 transition-colors"
-                                title="Enable Auto Run to reveal queued responses automatically"
-                            >
-                                ▶ Auto Run
-                            </button>
-                        )}
+                <div className="flex items-center gap-1.5 shrink-0 pl-3 border-l border-agora-border">
+                    {playbackMode === "auto" ? (
                         <button
                             type="button"
-                            onClick={() => revealNextVisual()}
-                            disabled={!canRevealNext}
-                            className="px-4 py-1.5 rounded-md text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                            title={canRevealNext
-                                ? "Reveal the next queued node"
-                                : "No queued responses \u2014 waiting for backend to generate"}
+                            onClick={() => setPlaybackMode("paused")}
+                            className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-400 transition-colors whitespace-nowrap"
+                            title="Pause visual playback"
                         >
-                            Next Step ▶
-                            {playbackQueueLength > 0 && (
-                                <span className="ml-1.5 text-[10px] opacity-80">
-                                    ({playbackQueueLength})
-                                </span>
-                            )}
+                            ⏸ Pause
                         </button>
-                    </div>
-
-                    {/* Backend manual gate (dev/experimental only) */}
-                    {showBackendManualUI && (
-                        <div className="flex items-center gap-2 mt-1 pt-1 border-t border-agora-border/50">
-                            <span className="text-[9px] uppercase tracking-wider text-amber-400/80">
-                                dev: backend gate
-                            </span>
-                            <button
-                                type="button"
-                                onClick={() => void requestNextStep()}
-                                disabled={!canBackendNext}
-                                className="px-2 py-1 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-200 border border-amber-500/40 hover:bg-amber-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                                {currentlyGenerating
-                                    ? "Generating…"
-                                    : pendingStep
-                                        ? `Release ${pendingStep.agent_role || "step"}`
-                                        : stepBusy
-                                            ? "Sending…"
-                                            : "Idle"}
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => void enableAutoRun()}
-                                className="px-2 py-1 rounded text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-white"
-                            >
-                                Auto
-                            </button>
-                        </div>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={() => setPlaybackMode("auto")}
+                            className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-400 transition-colors whitespace-nowrap"
+                            title="Auto reveal queued responses"
+                        >
+                            ▶ Auto
+                        </button>
                     )}
-
-                    {stepError && (
-                        <div className="text-[10px] text-red-400 max-w-[220px] text-right truncate" title={stepError}>
-                            {stepError}
-                        </div>
-                    )}
+                    <button
+                        type="button"
+                        onClick={() => revealNextVisual()}
+                        disabled={!canRevealNext}
+                        className="px-3 py-1 rounded-md text-[11px] font-semibold bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                        title={canRevealNext ? "Reveal the next queued node" : "No queued responses"}
+                    >
+                        Next ▶
+                        {playbackQueueLength > 0 && (
+                            <span className="ml-1 text-[10px] opacity-80">({playbackQueueLength})</span>
+                        )}
+                    </button>
                 </div>
             )}
 
+            {/* Backend manual gate (dev only) */}
+            {showBackendManualUI && (
+                <div className="flex items-center gap-1.5 shrink-0 pl-2 border-l border-agora-border">
+                    <span className="text-[9px] uppercase tracking-wider text-amber-400/80">dev</span>
+                    <button
+                        type="button"
+                        onClick={() => void requestNextStep()}
+                        disabled={!canBackendNext}
+                        className="px-2 py-1 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-200 border border-amber-500/40 hover:bg-amber-500/30 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                    >
+                        {currentlyGenerating
+                            ? "Gen…"
+                            : pendingStep
+                                ? `Rel ${pendingStep.agent_role || "step"}`
+                                : stepBusy
+                                    ? "Snd…"
+                                    : "Idle"}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => void enableAutoRun()}
+                        className="px-2 py-1 rounded text-[10px] border border-agora-border text-agora-text-muted hover:text-white"
+                    >
+                        Auto
+                    </button>
+                </div>
+            )}
+
+            {stepError && (
+                <div className="text-[10px] text-red-400 max-w-[140px] truncate shrink-0" title={stepError}>
+                    {stepError}
+                </div>
+            )}
+
+            {/* DEV debug — hidden on narrow viewports, compressed text */}
             {import.meta.env.DEV && (
-                <div className="text-[9px] text-agora-text-muted/70 font-mono pl-3 border-l border-agora-border whitespace-nowrap">
-                    canon {canonicalNodeCount} · rendered {renderedNodeCount} · revealed {revealedStepCount} · queue {playbackQueueLength} · pb {playbackMode}
-                    {" · "}backend {execution.debateStatus}
-                    {lastWsEventType ? <> · last {lastWsEventType}</> : null}
-                    {currentlyGenerating && (
-                        <> · gen R{currentlyGenerating.round_number} {currentlyGenerating.agent_role}</>
-                    )}
+                <div className="hidden xl:block text-[9px] text-agora-text-muted/60 font-mono pl-2 border-l border-agora-border min-w-0 overflow-hidden truncate shrink">
+                    {canonicalNodeCount}c·{renderedNodeCount}r·{revealedStepCount}v·{playbackQueueLength}q·{playbackMode}·{execution.debateStatus}
+                    {lastWsEventType ? `·${lastWsEventType}` : ""}
+                    {currentlyGenerating ? `·R${currentlyGenerating.round_number} ${currentlyGenerating.agent_role}` : ""}
                 </div>
             )}
         </div>
     );
 }
-

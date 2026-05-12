@@ -288,6 +288,22 @@ class DocumentIngestionService:
         return list(result.scalars().all())
 
     @staticmethod
+    async def get_all_for_user(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+    ) -> list[tuple[Document, str | None]]:
+        """Return (Document, session_title) tuples for all documents owned by user, newest first."""
+        from app.models.chat_session import ChatSession  # noqa: PLC0415
+        stmt = (
+            select(Document, ChatSession.title)
+            .join(ChatSession, Document.chat_session_id == ChatSession.id)
+            .where(ChatSession.user_id == user_id)
+            .order_by(Document.created_at.desc())
+        )
+        result = await db.execute(stmt)
+        return [(row.Document, row.title) for row in result.all()]
+
+    @staticmethod
     async def get_by_id(
         db: AsyncSession,
         document_id: uuid.UUID,

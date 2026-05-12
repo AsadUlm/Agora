@@ -84,10 +84,10 @@ export default function CycleNavigator() {
         // so the sidebar doesn't feel padded with empty chrome.
         return (
             <div className="px-4 py-3 border-b border-agora-border">
-                <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
+                <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold truncate">
                     Debate Cycle
                 </div>
-                <div className="mt-1 text-sm font-medium text-white">
+                <div className="mt-1 text-sm font-medium text-white truncate">
                     Original Debate
                 </div>
             </div>
@@ -165,7 +165,7 @@ export default function CycleNavigator() {
                         </div>
                         {subtitle && (
                             <div
-                                className="mt-1 text-[11px] text-agora-text-muted line-clamp-2 leading-snug"
+                                className="mt-0.5 text-[10px] text-agora-text-muted truncate leading-snug"
                                 title={subtitle}
                             >
                                 {subtitle}

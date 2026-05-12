@@ -60,11 +60,11 @@ export default function DebateTimeline() {
     };
 
     return (
-        <div className="w-64 h-full border-r border-agora-border bg-agora-surface/60 backdrop-blur-sm flex flex-col">
+        <div className="h-full border-r border-agora-border bg-agora-surface/60 backdrop-blur-sm flex flex-col shrink-0" style={{ width: "clamp(160px, 16vw, 260px)" }}>
             <CycleNavigator />
 
             <div className="px-4 py-3 border-b border-agora-border">
-                <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
+                <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold truncate">
                     Rounds in this cycle
                 </h2>
             </div>
@@ -146,7 +146,7 @@ export default function DebateTimeline() {
                                 <div className="flex-1 min-w-0">
                                     <div
                                         className={cn(
-                                            "text-xs font-semibold",
+                                            "text-xs font-semibold truncate",
                                             isSelected
                                                 ? "text-indigo-200"
                                                 : isRunning || isActive
