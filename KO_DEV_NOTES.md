@@ -1,5 +1,38 @@
 # Ko Branch — Dev Notes
-_Last updated: April 2026_
+_Last updated: May 12, 2026_
+
+---
+
+## Session Log — 2026-05-12
+
+### 1. Merged ui_lab into test_ui_branch
+Fetched `origin/ui_lab` and merged 4 new commits into `test_ui_branch`. Clean merge, zero conflicts — 67 files, 9063 insertions. Key additions from ui_lab:
+- Follow-up questions feature (new DB tables, backend routes, prompts)
+- New UI panels: `AgentsPanel`, `CycleNavigator`, `DebateEvolutionPanel`, `RawOutputPanel`, `RightSidebar`
+- Cloudinary-backed document storage layer
+- Knowledge/retrieval pipeline (`knowledge/`, `retrieval/`, `storage/` services)
+
+### 2. Fixed duplicate Alembic migrations
+The merge brought in 3 files all claiming revision `0007`. Renumbered the two conflicting ones:
+
+| Before | After |
+|---|---|
+| `0007_change_embedding_dim_to_768.py` | `0010_change_embedding_dim_to_768.py` |
+| `0007_add_document_storage_columns.py` | `0011_add_document_storage_columns.py` |
+
+Final chain: `0006 → 0007 → 0008 → 0009 → 0010 → 0011`
+
+### 3. Fixed broken DB state
+The DB was at version `0007` but the wrong `0007` had run — `debate_follow_ups` table and `cycle_number` column on `rounds` were missing. Manually applied the missing SQL via `psql`, then ran `alembic upgrade head`. All 4 pending migrations applied.
+
+### 4. Fixed follow-up question crash
+**Error:** `AttributeError: 'list' object has no attribute 'role'` — all agents failing on follow-up round.
+
+**Root cause:** `_build_prompt` closure inside `start_followup_response_streaming` in `round_manager.py` was missing `packets` as its second parameter. When `_run_agent_task` called `prompt_builder(chunks, packets)`, the packets list landed in the `agent` slot.
+
+**Fix:** Added `packets: list[EvidencePacket]` as the second parameter to the closure (line ~544 in `round_manager.py`) and passed it through to `build_followup_response_prompt` as `evidence_packets=packets`.
+
+**Status:** Follow-up questions working end to end. ✓
 
 ---
 

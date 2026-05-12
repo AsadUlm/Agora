@@ -542,6 +542,7 @@ class RoundManager:
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
                 agent: AgentContext = agent_ctx,
                 prev_pos: str = previous_position,
                 kargs: list[str] = key_arguments,
@@ -560,6 +561,7 @@ class RoundManager:
                     knowledge_strict=agent.knowledge_strict,
                     debate_summary=debate_summary,
                     cycle_memories=cycle_memories,
+                    evidence_packets=packets,
                 )
 
             plans.append(
