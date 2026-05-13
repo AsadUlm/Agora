@@ -1,0 +1,65 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Reports / docs not needed in the runtime image
+report/
+KO_DEV_NOTES.md
+CLAUDE.md
+README.md
+docs/
+test_docs/
+
+# Frontend source (only the built artefact in server/static/ is shipped)
+client/
+!client/dist  # not used directly, but make intent explicit
+
+# Node
+node_modules/
+**/node_modules/
+
+# Python build / cache
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local data / uploads
+server/uploads/
+uploads/
+
+# Build outputs we don't ship
+client/dist/
+client/build/
+client/.next/
+client/.vite/
+.vite/
+dist/
+build/
+coverage/
+
+# Env files (never bake secrets into an image)
+.env
+.env.*
+!.env.example
+client/.env
+client/.env.*
+server/.env
+server/.env.*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# CI / scripts not needed at runtime
+.github/
+scripts/

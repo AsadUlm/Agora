@@ -11,6 +11,7 @@ from app.api.routes.llm import router as llm_router
 from app.api.routes.sessions import router as sessions_router
 from app.api.routes.users import router as users_router
 from app.api.routes.ws import router as ws_router
+from app.api.static import mount_frontend
 from app.core.config import settings
 from app.db.seed import seed_default_user
 from app.db.session import AsyncSessionLocal
@@ -50,6 +51,10 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router, prefix="/sessions", tags=["Sessions"])
     app.include_router(llm_router)
     app.include_router(ws_router, prefix="/ws", tags=["WebSocket"])
+
+    # Frontend SPA must be mounted LAST so its catch-all does not shadow
+    # any API route. Safe no-op when the static bundle is absent (dev mode).
+    mount_frontend(app)
 
     return app
 
