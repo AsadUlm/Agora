@@ -233,7 +233,7 @@ export default function DebateEvolutionPanel() {
                                     <div className="text-[9px] uppercase tracking-widest text-violet-300 font-semibold mb-0.5">
                                         Conclusion
                                     </div>
-                                    <p className="text-[12px] text-white leading-relaxed">{conclusion}</p>
+                                    <p className="text-[12px] text-white leading-relaxed text-justify">{conclusion}</p>
                                 </div>
 
                                 {(previousPos || newPos) && idx > 0 && (
@@ -258,7 +258,7 @@ export default function DebateEvolutionPanel() {
                                         <div className="text-[9px] uppercase tracking-widest text-agora-text-muted font-semibold mb-0.5">
                                             Reason for shift
                                         </div>
-                                        <p className="text-[11px] text-agora-text-muted leading-relaxed">{positionShift}</p>
+                                        <p className="text-[11px] text-agora-text-muted leading-relaxed text-justify">{positionShift}</p>
                                     </div>
                                 )}
 

@@ -60,11 +60,11 @@ from app.services.retrieval.router import select_strategy
 logger = logging.getLogger(__name__)
 
 # ── LLM output budget ────────────────────────────────────────────────────────
-MAX_ALLOWED_TOKENS = 2000
+MAX_ALLOWED_TOKENS = 2500
 ROUND_MAX_TOKENS: dict[int, int] = {
     1: 650,
     2: 850,
-    3: 900,
+    3: 1400,
 }
 DEFAULT_MAX_TOKENS = 850
 FOLLOWUP_MAX_TOKENS = 900
@@ -77,10 +77,10 @@ RETRIEVAL_TOP_K = 3
 ROUND_TYPE_MAX_TOKENS: dict[str, int] = {
     "initial": 650,
     "critique": 600,
-    "final": 1100,
+    "final": 1500,
     "followup_response": 800,
     "followup_critique": 600,
-    "updated_synthesis": 1000,
+    "updated_synthesis": 1200,
 }
 
 
@@ -1469,11 +1469,24 @@ class RoundManager:
         provider_latency_ms = 0
 
         try:
-            response = await self._llm.generate(request)
-            raw_content = response.content
-            prompt_tokens = response.prompt_tokens
-            completion_tokens = response.completion_tokens
-            provider_latency_ms = response.latency_ms
+            # Retry once on empty response — common on Groq when rate-limited
+            # or when the model stalls on a complex synthesis prompt.
+            _empty_retries = 2
+            response = None
+            for _attempt in range(_empty_retries):
+                response = await self._llm.generate(request)
+                if response.content and response.content.strip():
+                    break
+                if _attempt < _empty_retries - 1:
+                    logger.warning(
+                        "Empty response on attempt %d/%d for agent=%s round=%d — retrying",
+                        _attempt + 1, _empty_retries, agent_ctx.role, round_record.round_number,
+                    )
+                    await asyncio.sleep(1.5)
+            raw_content = response.content  # type: ignore[union-attr]
+            prompt_tokens = response.prompt_tokens  # type: ignore[union-attr]
+            completion_tokens = response.completion_tokens  # type: ignore[union-attr]
+            provider_latency_ms = response.latency_ms  # type: ignore[union-attr]
 
             if not raw_content or not raw_content.strip():
                 raise LLMError(

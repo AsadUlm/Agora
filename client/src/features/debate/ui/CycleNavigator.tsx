@@ -95,8 +95,8 @@ export default function CycleNavigator() {
     }
 
     return (
-        <div className="px-3 py-3 border-b border-agora-border space-y-1.5">
-            <div className="px-1 mb-1 flex items-center justify-between">
+        <div className="px-3 py-3 border-b border-agora-border flex flex-col min-h-0">
+            <div className="px-1 mb-1.5 flex items-center justify-between shrink-0">
                 <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
                     Debate Cycles
                 </div>
@@ -105,6 +105,7 @@ export default function CycleNavigator() {
                 </div>
             </div>
 
+            <div className="overflow-y-auto space-y-1.5 max-h-[35vh] pr-0.5">
             {cycles.map((cycle, idx) => {
                 const isSelected = cycle === selectedCycle;
                 const isOriginal = cycle === 1;
@@ -174,6 +175,7 @@ export default function CycleNavigator() {
                     </motion.button>
                 );
             })}
+            </div>
         </div>
     );
 }

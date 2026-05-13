@@ -17,20 +17,21 @@ export default function DebateLayout() {
                 {/* Left: Timeline */}
                 <DebateTimeline />
 
-                {/* Center: Canvas + bottom bars, drawer anchored here */}
+                {/* Center: Canvas + follow-up input, drawer anchored here */}
                 <div className="flex-1 relative flex flex-col min-w-0 min-h-0 overflow-hidden">
                     <div className="flex-1 relative min-h-0">
                         <DebateGraphCanvas />
                     </div>
                     <FollowUpInput />
-                    <PlaybackBar />
-                    {/* Drawer is absolute within this column so it covers canvas + bottom bars */}
+                    {/* Drawer is absolute within this column so it covers canvas + follow-up */}
                     <NodeDetailDrawer />
                 </div>
 
                 {/* Right: Unified panel (Moderator / Evolution / Raw) */}
                 <RightSidebar />
             </div>
+            {/* PlaybackBar spans full width below all three columns */}
+            <PlaybackBar />
         </div>
     );
 }

@@ -1,9 +1,10 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useGraphStore } from "../model/graph.store";
 import { useDebateStore } from "../model/debate.store";
 import { getPersonaMeta } from "../model/persona-meta";
 import { extractFullResponse, getTurnSummary, normalizeSummary, parseResponsePayload } from "../model/formatters";
+import { cn } from "@/shared/lib/cn";
 
 const kindLabels: Record<string, string> = {
     question: "Question",
@@ -270,10 +271,38 @@ function buildSections(args: {
     }
 
     if (sections.length === 0 && fullResponse) {
-        pushSection(sections, isRound3 ? "Final Position / Argument" : "Response", normalizeSummary("", fullResponse, 260));
+        pushSection(sections, isRound3 ? "Final Position / Argument" : "Response", fullResponse);
     }
 
     return mergeSections(sections);
+}
+
+function QuickTakeawayBox({ text }: { text: string }) {
+    const [open, setOpen] = useState(false);
+    const isLong = text.length > 140;
+
+    return (
+        <div className="rounded-xl border border-violet-500/25 bg-gradient-to-br from-violet-500/10 to-violet-500/5 p-4">
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] uppercase tracking-widest text-violet-300 font-semibold">Quick Takeaway</span>
+                {isLong && (
+                    <button
+                        type="button"
+                        onClick={() => setOpen((v) => !v)}
+                        className="text-[10px] text-violet-300/70 hover:text-violet-200 transition-colors"
+                    >
+                        {open ? "Show less" : "Show more"}
+                    </button>
+                )}
+            </div>
+            <p className={cn(
+                "text-[15px] text-white leading-relaxed font-medium text-justify transition-all",
+                !open && isLong ? "line-clamp-2" : "",
+            )}>
+                {text}
+            </p>
+        </div>
+    );
 }
 
 export default function NodeDetailDrawer() {
@@ -430,14 +459,7 @@ export default function NodeDetailDrawer() {
                             </div>
                         )}
 
-                        {quickTakeaway && (
-                            <div className="rounded-xl border border-violet-500/25 bg-gradient-to-br from-violet-500/10 to-violet-500/5 p-4">
-                                <Label>Quick Takeaway</Label>
-                                <p className="text-[15px] text-white leading-relaxed font-medium">
-                                    {quickTakeaway}
-                                </p>
-                            </div>
-                        )}
+                        {quickTakeaway && <QuickTakeawayBox text={quickTakeaway} />}
 
                         {debateQuestion && (
                             <details className="rounded-lg border border-agora-border bg-agora-surface-light/20" open={node.kind === "question"}>
@@ -621,7 +643,7 @@ function SectionBody({ body }: { body: string }) {
         return (
             <ul className="space-y-1">
                 {lines.map((line, idx) => (
-                    <li key={idx} className="text-xs text-agora-text leading-relaxed">
+                    <li key={idx} className="text-xs text-agora-text leading-relaxed text-justify">
                         {line.replace(/^•\s*/, "")}
                     </li>
                 ))}
@@ -637,7 +659,7 @@ function SectionBody({ body }: { body: string }) {
     return (
         <div className="space-y-2">
             {(paragraphs.length > 0 ? paragraphs : [body]).map((paragraph, idx) => (
-                <p key={idx} className="text-xs text-agora-text leading-relaxed whitespace-pre-line">
+                <p key={idx} className="text-xs text-agora-text leading-relaxed whitespace-pre-line text-justify">
                     {paragraph}
                 </p>
             ))}

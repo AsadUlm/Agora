@@ -190,28 +190,6 @@ export default function DebateTimeline() {
                 })}
             </div>
 
-            {/* Legend */}
-            <div className="p-4 border-t border-agora-border space-y-2">
-                <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-2">
-                    Edge Legend
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 bg-pink-400" style={{ backgroundImage: "repeating-linear-gradient(90deg, #f472b6, #f472b6 4px, transparent 4px, transparent 7px)" }} />
-                    <span className="text-[10px] text-agora-text-muted">Challenge</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 bg-emerald-400" />
-                    <span className="text-[10px] text-agora-text-muted">Support</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 bg-indigo-400" style={{ backgroundImage: "repeating-linear-gradient(90deg, #818cf8, #818cf8 3px, transparent 3px, transparent 6px)" }} />
-                    <span className="text-[10px] text-agora-text-muted">Inquiry</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 bg-violet-400" />
-                    <span className="text-[10px] text-agora-text-muted">Summarizes</span>
-                </div>
-            </div>
         </div>
     );
 }

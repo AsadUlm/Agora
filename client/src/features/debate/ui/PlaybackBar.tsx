@@ -95,7 +95,7 @@ export default function PlaybackBar() {
             </div>
 
             {/* Stats — fixed right of progress */}
-            <div className="shrink-0 w-[clamp(110px,17%,200px)] min-w-0 text-right">
+            <div className="shrink-0 w-[clamp(80px,10%,150px)] min-w-0 text-right">
                 {(isQueued || isRunning) && narration.relation && (
                     <div className="text-[11px] text-indigo-300/95 truncate">{narration.relation}</div>
                 )}
@@ -183,6 +183,34 @@ export default function PlaybackBar() {
                     {stepError}
                 </div>
             )}
+
+            {/* Edge legend — solid color lines matching how edges look at graph scale */}
+            <div className="hidden lg:flex items-center gap-3 shrink-0 pl-3 border-l border-agora-border">
+                <div className="flex items-center gap-1.5">
+                    <svg width="22" height="4" viewBox="0 0 22 4" fill="none">
+                        <line x1="0" y1="2" x2="22" y2="2" stroke="#f472b6" strokeWidth="2" />
+                    </svg>
+                    <span className="text-[10px] text-agora-text-muted">Challenge</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                    <svg width="22" height="4" viewBox="0 0 22 4" fill="none">
+                        <line x1="0" y1="2" x2="22" y2="2" stroke="#34d399" strokeWidth="2" />
+                    </svg>
+                    <span className="text-[10px] text-agora-text-muted">Support</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                    <svg width="22" height="4" viewBox="0 0 22 4" fill="none">
+                        <line x1="0" y1="2" x2="22" y2="2" stroke="#818cf8" strokeWidth="2" />
+                    </svg>
+                    <span className="text-[10px] text-agora-text-muted">Inquiry</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                    <svg width="22" height="4" viewBox="0 0 22 4" fill="none">
+                        <line x1="0" y1="2" x2="22" y2="2" stroke="#a78bfa" strokeWidth="2" />
+                    </svg>
+                    <span className="text-[10px] text-agora-text-muted">Summarizes</span>
+                </div>
+            </div>
 
             {/* DEV debug — hidden on narrow viewports, compressed text */}
             {import.meta.env.DEV && (
