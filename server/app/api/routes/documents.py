@@ -325,10 +325,30 @@ async def download_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
+    from urllib.parse import quote  # noqa: PLC0415
+    encoded_name = quote(doc.filename, safe="")
+    disposition = f"inline; filename*=UTF-8''{encoded_name}"
+    content_type = doc.content_type or "application/octet-stream"
+
     if doc.storage_provider == "cloudinary" and doc.storage_secure_url:
-        # Redirect to Cloudinary CDN — no need to proxy the bytes.
-        from fastapi.responses import RedirectResponse  # noqa: PLC0415
-        return RedirectResponse(url=doc.storage_secure_url)  # type: ignore[return-value]
+        # Proxy through our server — Cloudinary raw uploads are not publicly
+        # accessible, so a direct redirect returns 401 in the browser.
+        import httpx  # noqa: PLC0415
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(doc.storage_secure_url)
+                resp.raise_for_status()
+                file_bytes = resp.content
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not fetch file from storage: {exc}",
+            ) from exc
+        return StreamingResponse(
+            iter([file_bytes]),
+            media_type=content_type,
+            headers={"Content-Disposition": disposition},
+        )
 
     # Local storage — read and stream the bytes.
     if not doc.file_path:
@@ -339,12 +359,7 @@ async def download_document(
     if not path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found on disk.")
 
-    from urllib.parse import quote  # noqa: PLC0415
-    content_type = doc.content_type or "application/octet-stream"
     file_bytes = path.read_bytes()
-    # RFC 5987 encoding handles non-ASCII filenames (latin-1 headers would crash).
-    encoded_name = quote(doc.filename, safe="")
-    disposition = f"inline; filename*=UTF-8''{encoded_name}"
     return StreamingResponse(
         iter([file_bytes]),
         media_type=content_type,

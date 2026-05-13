@@ -75,12 +75,7 @@ function FileIcon({ sourceType }: { sourceType: string }) {
 // ── Open / download logic ─────────────────────────────────────────────────────
 
 async function openDocument(doc: DocumentAllItemDTO): Promise<void> {
-    // Cloudinary: direct link, open in new tab.
-    if (doc.storage_url) {
-        window.open(doc.storage_url, "_blank", "noopener");
-        return;
-    }
-    // Local storage: fetch with auth then trigger download via blob URL.
+    // Always proxy through our backend — Cloudinary raw URLs require auth.
     const { blob, filename } = await downloadDocumentBlob(doc.id);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -172,7 +167,7 @@ export default function DocumentsPage() {
     return (
         <div className="flex-1 flex flex-col min-h-0 bg-agora-bg">
             {/* Header */}
-            <div className="px-8 py-6 border-b border-agora-border">
+            <div className="px-8 py-6">
                 <div className="flex items-center justify-between">
                     <div>
                         <h1 className="text-lg font-semibold text-white">Documents</h1>
@@ -447,6 +442,7 @@ export default function DocumentsPage() {
                     </>
                 )}
             </div>
+
         </div>
     );
 }

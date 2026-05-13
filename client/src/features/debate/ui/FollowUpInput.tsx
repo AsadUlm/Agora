@@ -1,70 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useDebateStore } from "../model/debate.store";
 import { usePlaybackStore } from "../model/playback.store";
 import { cn } from "@/shared/lib/cn";
-
-/** Build contextual follow-up suggestions from the latest synthesis payload. */
-function buildSuggestions(
-    syntheses: Array<Record<string, unknown> | null>,
-    question: string,
-): string[] {
-    const latest = syntheses[syntheses.length - 1] ?? null;
-    if (!latest) return [];
-
-    const out: string[] = [];
-    const pushIfNew = (s: string) => {
-        const trimmed = s.trim().replace(/\s+/g, " ");
-        if (!trimmed || trimmed.length < 8 || trimmed.length > 160) return;
-        if (out.some((x) => x.toLowerCase() === trimmed.toLowerCase())) return;
-        if (trimmed.toLowerCase() === question.trim().toLowerCase()) return;
-        out.push(trimmed);
-    };
-
-    // 1) Unresolved questions = direct follow-up candidates.
-    const unresolved = Array.isArray(latest["unresolved_questions"])
-        ? (latest["unresolved_questions"] as unknown[]).filter(
-            (x): x is string => typeof x === "string" && x.trim().length > 0,
-        )
-        : [];
-    for (const u of unresolved.slice(0, 2)) {
-        // Reword as a question if it isn't already.
-        const q = /\?$/.test(u) ? u : `What if ${u.charAt(0).toLowerCase() + u.slice(1)}?`;
-        pushIfNew(q);
-    }
-
-    // 2) Tradeoffs → "How would X react if …" framing.
-    const tradeoffs = Array.isArray(latest["risk_tradeoffs"])
-        ? (latest["risk_tradeoffs"] as unknown[]).filter(
-            (x): x is string => typeof x === "string" && x.trim().length > 0,
-        )
-        : [];
-    if (tradeoffs.length > 0) {
-        const t0 = tradeoffs[0].replace(/\.$/, "");
-        pushIfNew(`How would the conclusion change if ${t0.charAt(0).toLowerCase() + t0.slice(1)} dominated?`);
-    }
-
-    // 3) Position-shift / change-reason inspired probe.
-    const positionShift = (latest["position_shift"] ?? latest["change_reason"]) as
-        | string
-        | undefined;
-    if (typeof positionShift === "string" && positionShift.trim().length > 0) {
-        pushIfNew("What would have to happen for the synthesis to flip?");
-    }
-
-    // 4) Generic fallbacks if we still have room.
-    const fallbacks = [
-        "What would change in a wartime / crisis scenario?",
-        "How would startups and small actors respond?",
-        "Which assumption is the synthesis most fragile to?",
-        "What does the strongest opposing case look like?",
-    ];
-    for (const f of fallbacks) {
-        if (out.length >= 4) break;
-        pushIfNew(f);
-    }
-    return out.slice(0, 4);
-}
 
 /**
  * FollowUpInput — bottom continuation dock.
@@ -78,7 +16,6 @@ function buildSuggestions(
  *  - Expands on focus / click into a full composer with history.
  *  - Cmd / Ctrl + Enter submits.
  *  - On submit, switches the cycle navigator to the new follow-up.
- *  - Surfaces auto-generated continuation prompts from the latest synthesis.
  *
  * Shown only when the previous turn has fully completed.
  */
@@ -96,31 +33,6 @@ export default function FollowUpInput() {
 
     const followUpsCount = followUps.length;
     const nextFollowUpNumber = followUpsCount + 1;
-
-    // Synthesis payloads ordered by cycle (latest last).
-    const synthesisPayloads = useMemo(() => {
-        const result: Array<Record<string, unknown> | null> = [];
-        const byCycle = new Map<number, Record<string, unknown> | null>();
-        for (const r of rounds) {
-            if (r.round_type !== "final" && r.round_type !== "updated_synthesis") continue;
-            const cycle = r.cycle_number ?? 1;
-            for (const m of r.messages) {
-                if (m.payload && typeof m.payload === "object" && Object.keys(m.payload).length > 0) {
-                    byCycle.set(cycle, m.payload as Record<string, unknown>);
-                    break;
-                }
-            }
-        }
-        for (const c of Array.from(byCycle.keys()).sort((a, b) => a - b)) {
-            result.push(byCycle.get(c) ?? null);
-        }
-        return result;
-    }, [rounds]);
-
-    const suggestions = useMemo(
-        () => buildSuggestions(synthesisPayloads, originalQuestion),
-        [synthesisPayloads, originalQuestion],
-    );
 
     const [question, setQuestion] = useState("");
     const [expanded, setExpanded] = useState(false);
@@ -154,11 +66,6 @@ export default function FollowUpInput() {
         if (e.key === "Escape") {
             setExpanded(false);
         }
-    };
-
-    const useSuggestion = (s: string) => {
-        setQuestion(s);
-        requestAnimationFrame(() => textareaRef.current?.focus());
     };
 
     return (
@@ -235,27 +142,6 @@ export default function FollowUpInput() {
                                     </button>
                                 </div>
                             </form>
-
-                            {suggestions.length > 0 && (
-                                <div className="mt-3">
-                                    <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1.5">
-                                        Suggested continuations
-                                    </div>
-                                    <div className="flex flex-wrap gap-1.5">
-                                        {suggestions.map((s, i) => (
-                                            <button
-                                                key={i}
-                                                type="button"
-                                                onClick={() => useSuggestion(s)}
-                                                className="px-2.5 py-1 text-[11px] rounded-full bg-violet-500/10 text-violet-200 border border-violet-500/30 hover:bg-violet-500/20 hover:border-violet-400/50 transition-colors text-left max-w-full"
-                                                title="Use this as your follow-up"
-                                            >
-                                                {s}
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
 
                             {followUpsCount > 0 && (
                                 <div className="mt-4 pt-3 border-t border-agora-border/60">

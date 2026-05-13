@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import AgoraLogoIcon from "@/features/debate/ui/AgoraLogoIcon";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { useDebateStore } from "@/features/debate/model/debate.store";
@@ -64,11 +65,11 @@ function LoadingScreen() {
                 animate={{ opacity: 1, y: 0 }}
             >
                 <motion.div
-                    className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 mx-auto flex items-center justify-center"
+                    className="mx-auto w-fit"
                     animate={{ rotate: [0, 10, -10, 0] }}
                     transition={{ repeat: Infinity, duration: 2 }}
                 >
-                    <span className="text-2xl">🌐</span>
+                    <AgoraLogoIcon size={64} />
                 </motion.div>
                 <p className="text-agora-text-muted text-sm">
                     Loading debate workspace...

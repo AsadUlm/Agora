@@ -1,11 +1,48 @@
+import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
+import AgoraLogoIcon from "./AgoraLogoIcon";
 import { useAuthStore } from "@/features/auth/model/auth.store";
 import { cn } from "@/shared/lib/cn";
+
+function SidebarToggleIcon() {
+    return (
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <rect x="1.5" y="2.5" width="15" height="13" rx="2" stroke="currentColor" strokeWidth="1.3" />
+            <line x1="6" y1="2.5" x2="6" y2="15.5" stroke="currentColor" strokeWidth="1.3" />
+        </svg>
+    );
+}
+
+const navItems = [
+    {
+        to: "/debates",
+        end: true,
+        label: "Debates",
+        icon: (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+        ),
+    },
+    {
+        to: "/documents",
+        end: false,
+        label: "Documents",
+        icon: (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M5 7h6M5 9.5h4" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+            </svg>
+        ),
+    },
+];
 
 export default function AppSidebar() {
     const navigate = useNavigate();
     const logout = useAuthStore((s) => s.logout);
     const user = useAuthStore((s) => s.user);
+    const [collapsed, setCollapsed] = useState(false);
+    const [logoHovered, setLogoHovered] = useState(false);
 
     const handleLogout = () => {
         logout();
@@ -13,97 +50,108 @@ export default function AppSidebar() {
     };
 
     return (
-        <aside className="w-[220px] shrink-0 h-screen flex flex-col border-r border-agora-border bg-agora-surface/60 backdrop-blur-sm">
-            {/* Logo */}
-            <div className="px-5 py-5 flex items-center gap-3 border-b border-agora-border/50">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold">
-                    A
-                </div>
-                <div>
-                    <h1 className="text-sm font-semibold text-white leading-tight">AGORA</h1>
-                    <p className="text-[10px] text-agora-text-muted">AI Debate Workspace</p>
-                </div>
-            </div>
-
-            {/* Nav items */}
-            <nav className="flex-1 px-3 py-4 space-y-1">
-                <NavLink
-                    to="/debates"
-                    end
-                    className={({ isActive }) =>
-                        cn(
-                            "flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all",
-                            isActive
-                                ? "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
-                                : "text-agora-text-muted hover:text-white hover:bg-agora-surface-light/40",
-                        )
-                    }
+        <aside
+            className={cn(
+                "shrink-0 h-screen flex flex-col border-r border-agora-border bg-agora-surface/60 backdrop-blur-sm transition-all duration-200",
+                collapsed ? "w-[76px]" : "w-[220px]",
+            )}
+        >
+            {/* Header */}
+            {collapsed ? (
+                <button
+                    className="h-[60px] flex items-center justify-center cursor-pointer"
+                    onClick={() => setCollapsed(false)}
+                    onMouseEnter={() => setLogoHovered(true)}
+                    onMouseLeave={() => setLogoHovered(false)}
+                    title="Open sidebar"
                 >
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    </svg>
-                    Debates
-                </NavLink>
+                    <div className={cn("transition-all duration-150", logoHovered ? "opacity-0 scale-90 absolute" : "opacity-100 scale-100")}>
+                        <AgoraLogoIcon size={28} />
+                    </div>
+                    <div className={cn("transition-all duration-150 text-agora-text-muted", logoHovered ? "opacity-100 scale-100" : "opacity-0 scale-90 absolute")}>
+                        <SidebarToggleIcon />
+                    </div>
+                </button>
+            ) : (
+                <div className="flex items-center justify-between h-[60px] px-3">
+                    <div className="flex items-center gap-2.5">
+                        <AgoraLogoIcon size={30} />
+                        <h1 className="text-sm font-semibold text-white">AGORA</h1>
+                    </div>
+                    <button
+                        onClick={() => setCollapsed(true)}
+                        className="w-8 h-8 flex items-center justify-center rounded-lg text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all"
+                        title="Collapse sidebar"
+                    >
+                        <SidebarToggleIcon />
+                    </button>
+                </div>
+            )}
 
-                <NavLink
-                    to="/debates"
-                    className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium text-agora-text-muted hover:text-white hover:bg-agora-surface-light/40 transition-all"
-                    onClick={(e) => {
-                        e.preventDefault();
-                        // Scroll to new debate form on the debates page
-                        navigate("/debates", { state: { openNew: true } });
-                    }}
+            {/* Nav */}
+            <nav className="flex-1 px-2 space-y-0.5">
+                <button
+                    onClick={() => navigate("/debates", { state: { openNew: true } })}
+                    className={cn(
+                        "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-agora-text-muted hover:text-white hover:bg-agora-surface-light/40 transition-all",
+                        collapsed && "justify-center px-0",
+                    )}
+                    title="New Debate"
                 >
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0">
                         <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                     </svg>
-                    New Debate
-                </NavLink>
+                    {!collapsed && "New Debate"}
+                </button>
 
-                <div className="pt-4 mt-4 border-t border-agora-border/30">
+                {navItems.map((item) => (
                     <NavLink
-                        to="/documents"
+                        key={item.to}
+                        to={item.to}
+                        end={item.end}
                         className={({ isActive }) =>
                             cn(
-                                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all",
+                                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all",
+                                collapsed && "justify-center px-0",
                                 isActive
-                                    ? "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+                                    ? "bg-agora-surface-light text-white"
                                     : "text-agora-text-muted hover:text-white hover:bg-agora-surface-light/40",
                             )
                         }
+                        title={item.label}
                     >
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                            <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
-                            <path d="M5 7h6M5 9.5h4" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
-                        </svg>
-                        Documents
+                        <span className="shrink-0">{item.icon}</span>
+                        {!collapsed && item.label}
                     </NavLink>
-                    <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs text-agora-text-muted/40 cursor-default">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                            <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.2" />
-                            <path d="M8 5.5v3l2 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-                        </svg>
-                        Settings
-                    </div>
-                </div>
+                ))}
             </nav>
 
             {/* User footer */}
-            <div className="px-4 py-4 border-t border-agora-border/50">
-                <div className="flex items-center gap-2 mb-2">
-                    <div className="w-7 h-7 rounded-full bg-agora-surface-light flex items-center justify-center text-[10px] font-bold text-agora-text-muted uppercase">
+            <div className={cn("px-3 py-4", collapsed && "flex justify-center px-0")}>
+                {collapsed ? (
+                    <button
+                        onClick={handleLogout}
+                        title={user?.email ?? "Sign out"}
+                        className="w-8 h-8 rounded-full bg-agora-surface-light flex items-center justify-center text-[11px] font-bold text-agora-text-muted uppercase hover:text-white transition-colors"
+                    >
                         {user?.email?.[0] ?? "?"}
+                    </button>
+                ) : (
+                    <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-agora-surface-light flex items-center justify-center text-[11px] font-bold text-white uppercase shrink-0">
+                            {user?.email?.[0] ?? "?"}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                            <p className="text-[11px] text-agora-text-muted truncate">{user?.email}</p>
+                            <button
+                                onClick={handleLogout}
+                                className="text-[10px] text-agora-text-muted/60 hover:text-white transition-colors"
+                            >
+                                Sign out
+                            </button>
+                        </div>
                     </div>
-                    <span className="text-[11px] text-agora-text-muted truncate flex-1">
-                        {user?.email}
-                    </span>
-                </div>
-                <button
-                    onClick={handleLogout}
-                    className="w-full text-left px-2 py-1.5 rounded text-[11px] text-agora-text-muted/70 hover:text-white hover:bg-agora-surface-light/30 transition-colors"
-                >
-                    Sign out
-                </button>
+                )}
             </div>
         </aside>
     );

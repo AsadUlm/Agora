@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import AgoraLogoIcon from "./AgoraLogoIcon";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/shared/lib/cn";
 import { useDebateStore } from "../model/debate.store";
@@ -63,9 +64,7 @@ export default function TopTopicBar() {
                     <div className="h-5 w-px bg-agora-border" />
 
                     <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
-                            A
-                        </div>
+                        <AgoraLogoIcon size={32} />
                         <span className="text-sm font-semibold text-white">AGORA</span>
                     </div>
                 </div>
