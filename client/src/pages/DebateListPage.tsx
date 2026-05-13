@@ -185,6 +185,11 @@ export default function DebateListPage() {
         });
     };
 
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 10;
+    const totalPages = Math.ceil(debates.length / PAGE_SIZE);
+    const visibleDebates = debates.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
     const statusColors: Record<string, string> = {
         queued: "bg-amber-500/20 text-amber-400",
         running: "bg-indigo-500/20 text-indigo-400",
@@ -377,7 +382,7 @@ export default function DebateListPage() {
                     )}
 
                     <div className="space-y-2">
-                        {debates.map((debate, idx) => (
+                        {visibleDebates.map((debate, idx) => (
                             <motion.button
                                 key={debate.id}
                                 initial={{ opacity: 0, y: 10 }}
@@ -408,6 +413,44 @@ export default function DebateListPage() {
                             </motion.button>
                         ))}
                     </div>
+
+                    {totalPages > 1 && (
+                        <div className="mt-6 pt-4 border-t border-agora-border">
+                            <div className="flex items-center justify-center gap-1">
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => p - 1)}
+                                    disabled={page === 1}
+                                    className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    ← Prev
+                                </button>
+                                {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+                                    <button
+                                        key={p}
+                                        type="button"
+                                        onClick={() => setPage(p)}
+                                        className={cn(
+                                            "w-8 h-8 rounded-lg text-xs font-medium transition-colors border",
+                                            p === page
+                                                ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"
+                                                : "border-transparent text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50",
+                                        )}
+                                    >
+                                        {p}
+                                    </button>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => p + 1)}
+                                    disabled={page === totalPages}
+                                    className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    Next →
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </main>
         </div>

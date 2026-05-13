@@ -80,13 +80,11 @@ export default function CycleNavigator() {
     const followUps = session?.latest_turn?.follow_ups ?? [];
 
     if (cycles.length <= 1) {
-        // Only the original debate — collapse the navigator to a slim header
-        // so the sidebar doesn't feel padded with empty chrome.
         return (
             <div className="px-4 py-3 border-b border-agora-border">
-                <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold truncate">
+                <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold truncate">
                     Debate Cycle
-                </div>
+                </h2>
                 <div className="mt-1 text-sm font-medium text-white truncate">
                     Original Debate
                 </div>
@@ -95,17 +93,14 @@ export default function CycleNavigator() {
     }
 
     return (
-        <div className="px-3 py-3 border-b border-agora-border flex flex-col min-h-0">
-            <div className="px-1 mb-1.5 flex items-center justify-between shrink-0">
-                <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
+        <div className="flex flex-col min-h-0">
+            <div className="px-4 py-3 border-b border-agora-border shrink-0">
+                <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold truncate">
                     Debate Cycles
-                </div>
-                <div className="text-[10px] text-agora-text-muted/70">
-                    {cycles.length}
-                </div>
+                </h2>
             </div>
 
-            <div className="overflow-y-auto space-y-1.5 max-h-[35vh] pr-0.5">
+            <div className="overflow-y-auto space-y-1.5 max-h-[35vh] px-3 py-3 pr-0.5">
             {cycles.map((cycle, idx) => {
                 const isSelected = cycle === selectedCycle;
                 const isOriginal = cycle === 1;

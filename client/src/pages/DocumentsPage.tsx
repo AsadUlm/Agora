@@ -102,6 +102,8 @@ export default function DocumentsPage() {
     const [opening, setOpening] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     const [filter, setFilter] = useState<"all" | "ready" | "processing" | "failed">("all");
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 15;
 
     const fetchDocs = useCallback(async () => {
         try {
@@ -153,6 +155,12 @@ export default function DocumentsPage() {
     const filteredGroups = filter === "all"
         ? allGroups
         : allGroups.filter((g) => g.copies.some((c) => c.status === filter));
+
+    const totalPages = Math.ceil(filteredGroups.length / PAGE_SIZE);
+    const visibleGroups = filteredGroups.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+    // Reset to page 1 whenever filter changes
+    useEffect(() => { setPage(1); }, [filter]);
 
     const counts = {
         all:        allGroups.length,
@@ -223,9 +231,10 @@ export default function DocumentsPage() {
                         )}
                     </div>
                 ) : (
+                    <>
                     <div className="space-y-2">
                         <AnimatePresence initial={false}>
-                            {filteredGroups.map((group, idx) => {
+                            {visibleGroups.map((group, idx) => {
                                 const isExpanded = expanded.has(group.filename.toLowerCase());
                                 const multi = group.copies.length > 1;
 
@@ -397,6 +406,45 @@ export default function DocumentsPage() {
                             })}
                         </AnimatePresence>
                     </div>
+
+                    {totalPages > 1 && (
+                        <div className="mt-6 pt-4 border-t border-agora-border">
+                            <div className="flex items-center justify-center gap-1">
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => p - 1)}
+                                    disabled={page === 1}
+                                    className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    ← Prev
+                                </button>
+                                {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+                                    <button
+                                        key={p}
+                                        type="button"
+                                        onClick={() => setPage(p)}
+                                        className={cn(
+                                            "w-8 h-8 rounded-lg text-xs font-medium transition-colors border",
+                                            p === page
+                                                ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"
+                                                : "border-transparent text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50",
+                                        )}
+                                    >
+                                        {p}
+                                    </button>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => p + 1)}
+                                    disabled={page === totalPages}
+                                    className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    Next →
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    </>
                 )}
             </div>
         </div>
