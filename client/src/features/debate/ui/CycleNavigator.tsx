@@ -79,18 +79,7 @@ export default function CycleNavigator() {
     // Map each cycle to a short user-facing label.
     const followUps = session?.latest_turn?.follow_ups ?? [];
 
-    if (cycles.length <= 1) {
-        return (
-            <div className="px-4 py-3 border-b border-agora-border">
-                <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold truncate">
-                    Debate Cycle
-                </h2>
-                <div className="mt-1 text-sm font-medium text-white truncate">
-                    Original Debate
-                </div>
-            </div>
-        );
-    }
+    if (cycles.length <= 1) return null;
 
     return (
         <div className="flex flex-col min-h-0">

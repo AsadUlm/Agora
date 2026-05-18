@@ -16,7 +16,6 @@ import { cn } from "@/shared/lib/cn";
  *  - Expands on focus / click into a full composer with history.
  *  - Cmd / Ctrl + Enter submits.
  *  - On submit, switches the cycle navigator to the new follow-up.
- *  - Surfaces auto-generated continuation prompts from the latest synthesis.
  *
  * Shown only when the previous turn has fully completed.
  */
