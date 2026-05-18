@@ -40,6 +40,9 @@ from app.schemas.contracts import (
 from app.services.debate_engine.prompts.round1_prompts import build_opening_statement_prompt
 from app.services.debate_engine.prompts.round2_prompts import build_critique_prompt
 from app.services.debate_engine.prompts.round3_prompts import build_final_synthesis_prompt
+from app.services.debate_engine.prompts.synthesis_verdict_prompts import (
+    build_synthesis_verdict_prompt,
+)
 from app.services.debate_engine.prompts.followup_prompts import (
     build_followup_response_prompt,
     build_followup_critique_prompt,
@@ -60,27 +63,33 @@ from app.services.retrieval.router import select_strategy
 logger = logging.getLogger(__name__)
 
 # ── LLM output budget ────────────────────────────────────────────────────────
-MAX_ALLOWED_TOKENS = 2500
+# Step 33: token budgets were previously too tight (R1=650, R2=850, etc.),
+# which forced agents to compress analytical answers into slogans. The new
+# budgets target full structured responses while staying within typical
+# provider limits.
+MAX_ALLOWED_TOKENS = 4000
 ROUND_MAX_TOKENS: dict[int, int] = {
-    1: 650,
-    2: 850,
-    3: 1400,
+    1: 1800,
+    2: 1800,
+    3: 2000,
 }
-DEFAULT_MAX_TOKENS = 850
-FOLLOWUP_MAX_TOKENS = 900
+DEFAULT_MAX_TOKENS = 1500
+FOLLOWUP_MAX_TOKENS = 1800
 RETRIEVAL_TOP_K = 3
 
-# Per-round-type token budgets (Step 25). Critique rounds get a tighter
-# budget because the new contract is short and focused (assumption / why /
-# implication). Synthesis rounds get more room because they must surface
-# winning vs losing arguments and a confidence call.
+# Per-round-type token budgets. Critique/synthesis rounds were tightened in
+# Step 25, but observation showed that this was the dominant cause of
+# truncated analytical responses in Step 33. Budgets are now sized to fit a
+# full multi-section answer (position, reasoning, peer response, risks,
+# final stance) without clipping mid-word.
 ROUND_TYPE_MAX_TOKENS: dict[str, int] = {
-    "initial": 650,
-    "critique": 600,
-    "final": 1500,
-    "followup_response": 800,
-    "followup_critique": 600,
-    "updated_synthesis": 1200,
+    "initial": 2000,
+    "critique": 2200,
+    "final": 2500,
+    "followup_response": 2000,
+    "followup_critique": 1800,
+    "updated_synthesis": 2500,
+    "synthesis_verdict": 2000,
 }
 
 
@@ -118,6 +127,11 @@ class _AgentTaskPlan:
     # rounds (cycle 1, no prior evidence memory) get the base role strategy.
     cycle_number: int = 1
     evidence_memory_view: dict[str, Any] | None = None
+    # FIX-09: optional dict merged into the normalized structured payload
+    # before the message is saved. Used to persist `followup_question` and
+    # `followup_cycle` on every follow-up round message so downstream consumers
+    # (UI, analytics) can identify which follow-up cycle a message belongs to.
+    extra_payload_fields: dict[str, Any] | None = None
 
 
 class RoundManager:
@@ -402,6 +416,17 @@ class RoundManager:
             await self._fail_round(round_record, reason)
             raise RuntimeError(reason)
 
+        # Step 37: neutral moderator aggregation across the three syntheses.
+        # Best-effort — verdict failure must not fail the whole round.
+        await self._generate_synthesis_verdict(
+            ctx=ctx,
+            round_record=round_record,
+            cycle_number=1,
+            agent_syntheses=results,
+            followup_question=None,
+            debate_summary=None,
+        )
+
         await self._complete_round(round_record, ctx)
         return results
 
@@ -481,6 +506,10 @@ class RoundManager:
                     used_evidence_ids=used_evidence_tuple,
                     cycle_number=cycle_number,
                     evidence_memory_view=evidence_memory,
+                    extra_payload_fields={
+                        "followup_question": follow_up_question,
+                        "followup_cycle": cycle_number,
+                    },
                 )
             )
 
@@ -571,6 +600,10 @@ class RoundManager:
                     sequence_no=sequence_no,
                     message_type=MessageType.agent_response,
                     prompt_builder=_build_prompt,
+                    extra_payload_fields={
+                        "followup_question": follow_up_question,
+                        "followup_cycle": cycle_number,
+                    },
                 )
             )
 
@@ -746,6 +779,10 @@ class RoundManager:
                     used_evidence_ids=used_evidence_tuple,
                     cycle_number=cycle_number,
                     evidence_memory_view=evidence_memory,
+                    extra_payload_fields={
+                        "followup_question": follow_up_question,
+                        "followup_cycle": cycle_number,
+                    },
                 )
             )
 
@@ -854,6 +891,10 @@ class RoundManager:
                     used_evidence_ids=used_evidence_tuple,
                     cycle_number=cycle_number,
                     evidence_memory_view=evidence_memory,
+                    extra_payload_fields={
+                        "followup_question": follow_up_question,
+                        "followup_cycle": cycle_number,
+                    },
                 )
             )
 
@@ -862,6 +903,18 @@ class RoundManager:
             reason = "All agents failed in updated synthesis."
             await self._fail_round(round_record, reason)
             raise RuntimeError(reason)
+
+        # Step 37: neutral moderator aggregation across the updated syntheses
+        # for this follow-up cycle. Best-effort.
+        await self._generate_synthesis_verdict(
+            ctx=ctx,
+            round_record=round_record,
+            cycle_number=cycle_number,
+            agent_syntheses=results,
+            followup_question=follow_up_question,
+            debate_summary=debate_summary,
+        )
+
         await self._complete_round(round_record, ctx)
         return results
 
@@ -998,6 +1051,7 @@ class RoundManager:
                 sequence_no=plan.sequence_no,
                 agent_index=plan.agent_index,
                 retrieved_chunks=chunks,
+                extra_payload_fields=plan.extra_payload_fields,
             )
 
         elapsed_s = time.perf_counter() - agent_started_perf
@@ -1219,6 +1273,290 @@ class RoundManager:
         await self.db.commit()
         logger.error("Round %d failed: %s", round_record.round_number, reason)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 37 — Synthesis Verdict (neutral moderator aggregation)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _generate_synthesis_verdict(
+        self,
+        ctx: TurnContext,
+        round_record: Round,
+        cycle_number: int,
+        agent_syntheses: list[AgentRoundResult],
+        followup_question: str | None = None,
+        debate_summary: dict[str, Any] | None = None,
+    ) -> Message | None:
+        """Run a single moderator-aggregator LLM call and persist the verdict.
+
+        The verdict message is attached to the existing synthesis round
+        (round 3 for cycle 1, the updated_synthesis round for follow-ups)
+        with ``sender_type=judge``, ``message_type=final_summary`` and
+        ``chat_agent_id=NULL``. The structured payload also embeds
+        ``message_type="synthesis_verdict"`` and ``agent_role="moderator"``
+        so frontend consumers can identify it without extra schema.
+
+        Best-effort: any error is logged and swallowed so the round can
+        still complete with the per-agent summaries.
+        """
+        if not ctx.agents:
+            return None
+
+        successful = [
+            r for r in agent_syntheses
+            if r.generation_status == "success" and isinstance(r.structured, dict) and r.structured
+        ]
+        if not successful:
+            logger.info(
+                "Synthesis verdict skipped: no successful syntheses (round=%d, cycle=%d).",
+                round_record.round_number,
+                cycle_number,
+            )
+            return None
+
+        round_type_value = (
+            round_record.round_type.value
+            if round_record.round_type is not None
+            else "final"
+        )
+        is_followup_cycle = cycle_number > 1 or round_type_value == "updated_synthesis"
+
+        # Use the first agent's provider/model for stability and to avoid
+        # introducing a new "moderator" agent config. Temperature is forced
+        # low: the moderator must be deterministic and neutral.
+        moderator_agent = ctx.agents[0]
+        moderator_provider = moderator_agent.provider
+        moderator_model = moderator_agent.model
+        moderator_temperature = 0.2
+
+        agent_payload_blocks = [
+            {"role": r.role, "structured": r.structured}
+            for r in successful
+        ]
+
+        # Best-effort evidence detection — any agent payload that records
+        # cited sources flips the prompt into evidence mode.
+        has_evidence = False
+        for r in successful:
+            sources = r.structured.get("evidence_used") or r.structured.get(
+                "cited_sources"
+            )
+            if isinstance(sources, list) and sources:
+                has_evidence = True
+                break
+
+        prompt = build_synthesis_verdict_prompt(
+            original_question=ctx.question,
+            cycle_number=cycle_number,
+            round_type=round_type_value,
+            agent_syntheses=agent_payload_blocks,
+            debate_summary=debate_summary,
+            followup_question=followup_question,
+            has_evidence=has_evidence,
+        )
+
+        request = LLMRequest(
+            provider=moderator_provider,
+            model=moderator_model,
+            prompt=prompt,
+            temperature=moderator_temperature,
+            max_tokens=_resolve_max_tokens(
+                round_record.round_number,
+                round_type="synthesis_verdict",
+            ),
+        )
+
+        sequence_no = self.next_seq
+        verdict_started_at = datetime.now(timezone.utc)
+
+        raw_content = ""
+        normalized_payload: dict[str, Any] = {}
+        generation_status = "success"
+        error_msg: str | None = None
+
+        try:
+            response = await self._llm.generate(request)
+            raw_content = (response.content or "").strip()
+            if not raw_content:
+                raise LLMError("Moderator returned an empty response.")
+
+            normalized = normalize_round_output(
+                round_number=round_record.round_number,
+                raw_text=raw_content,
+                round_type="synthesis_verdict",
+            )
+
+            # Two-stage recovery if JSON parsing collapsed to fallback.
+            if normalized.payload.get("is_fallback") is True:
+                try:
+                    recovered = await recover_json_with_llm(
+                        raw_content,
+                        round_number=round_record.round_number,
+                        round_type="synthesis_verdict",
+                        llm_call=self._raw_llm_call,
+                        provider=moderator_provider,
+                        model=moderator_model,
+                        temperature=0.0,
+                        max_tokens=900,
+                    )
+                except Exception as recovery_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Synthesis verdict two-stage recovery raised: %s — keeping fallback.",
+                        recovery_exc,
+                    )
+                    recovered = None
+
+                if recovered is not None:
+                    try:
+                        recovered_normalized = normalize_round_output(
+                            round_number=round_record.round_number,
+                            raw_text=raw_content,
+                            parsed_payload=recovered,
+                            round_type="synthesis_verdict",
+                        )
+                    except Exception as renorm_exc:  # noqa: BLE001
+                        logger.warning(
+                            "Synthesis verdict recovery normalization raised: %s.",
+                            renorm_exc,
+                        )
+                    else:
+                        if recovered_normalized.payload.get("is_fallback") is False:
+                            normalized = recovered_normalized
+
+            normalized_payload = normalized.payload
+        except LLMError as exc:
+            error_msg = str(exc)
+            generation_status = "failed"
+            logger.warning(
+                "Synthesis verdict failed (round=%d cycle=%d): %s",
+                round_record.round_number,
+                cycle_number,
+                exc,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error_msg = f"Unhandled moderator error: {exc}"
+            generation_status = "failed"
+            logger.exception(
+                "Synthesis verdict crashed (round=%d cycle=%d).",
+                round_record.round_number,
+                cycle_number,
+            )
+
+        if generation_status == "failed":
+            normalized_payload = {
+                "one_sentence_takeaway": "",
+                "consensus_statement": "",
+                "main_disagreement": "",
+                "recommended_answer": "",
+                "winning_side": "mixed",
+                "confidence": "low",
+                "what_changed": "",
+                "reasoning_basis": [],
+                "unresolved_questions": [],
+                "response": "",
+                "is_fallback": True,
+                "parse_status": "fallback",
+                "parse_warnings": ["synthesis_verdict_generation_failed"],
+                "raw_content": raw_content,
+            }
+            if error_msg:
+                normalized_payload["error"] = error_msg
+
+        # Always embed the discriminator + cycle context so the frontend
+        # can identify this as the moderator verdict without a DB schema
+        # change.
+        normalized_payload["message_type"] = "synthesis_verdict"
+        normalized_payload["agent_role"] = "moderator"
+        normalized_payload["cycle_number"] = cycle_number
+        normalized_payload["round_number"] = round_record.round_number
+        if followup_question:
+            normalized_payload["followup_question"] = followup_question
+            normalized_payload["followup_cycle"] = cycle_number
+
+        content_json = json.dumps(normalized_payload, ensure_ascii=False)
+
+        try:
+            msg = await self._save_message(
+                db=self.db,
+                session_id=ctx.session_id,
+                turn_id=ctx.turn_id,
+                round_id=round_record.id,
+                agent_id=None,
+                sender_type=SenderType.judge,
+                message_type=MessageType.final_summary,
+                content=content_json,
+                sequence_no=sequence_no,
+            )
+            await self.db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to persist synthesis verdict message (round=%d cycle=%d).",
+                round_record.round_number,
+                cycle_number,
+            )
+            return None
+
+        verdict_finished_at = datetime.now(timezone.utc)
+        logger.info(
+            "Synthesis verdict persisted: round=%d cycle=%d status=%s duration_ms=%d msg=%s",
+            round_record.round_number,
+            cycle_number,
+            generation_status,
+            int((verdict_finished_at - verdict_started_at).total_seconds() * 1000),
+            msg.id,
+        )
+
+        if self._on_event is not None:
+            event_payload: dict[str, Any] = {
+                "message_id": str(msg.id),
+                "round_id": str(round_record.id),
+                "sender_type": SenderType.judge.value,
+                "message_type": MessageType.final_summary.value,
+                "content": content_json,
+                "sequence_no": sequence_no,
+                "generation_status": generation_status,
+                "agent_role": "moderator",
+                "agent_index": -1,
+                "cycle_number": cycle_number,
+                "is_synthesis_verdict": True,
+                "is_followup_cycle": is_followup_cycle,
+            }
+            short_summary = normalized_payload.get("short_summary") or normalized_payload.get(
+                "one_sentence_takeaway"
+            )
+            display_content = normalized_payload.get("display_content") or normalized_payload.get(
+                "response"
+            )
+            if isinstance(short_summary, str) and short_summary.strip():
+                event_payload["short_summary"] = short_summary
+            if isinstance(display_content, str) and display_content.strip():
+                event_payload["display_content"] = display_content
+            is_fallback = normalized_payload.get("is_fallback")
+            if isinstance(is_fallback, bool):
+                event_payload["is_fallback"] = is_fallback
+            if followup_question:
+                event_payload["followup_question"] = followup_question
+
+            try:
+                await self._on_event(
+                    ExecutionEvent(
+                        event_type=ExecutionEventType.message_created,
+                        session_id=ctx.session_id,
+                        turn_id=ctx.turn_id,
+                        round_id=round_record.id,
+                        round_number=round_record.round_number,
+                        agent_id=None,
+                        payload=event_payload,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to emit synthesis verdict WS event (round=%d cycle=%d).",
+                    round_record.round_number,
+                    cycle_number,
+                )
+
+        return msg
+
     async def _raw_llm_call(self, request: LLMRequest) -> str:
         """Lightweight LLM call wrapper used by the two-stage structurer.
 
@@ -1384,6 +1722,7 @@ class RoundManager:
         sequence_no: int,
         agent_index: int,
         retrieved_chunks: list[RetrievedChunk] | None = None,
+        extra_payload_fields: dict[str, Any] | None = None,
     ) -> AgentRoundResult:
         step_meta = {
             "round_number": round_record.round_number,
@@ -1488,6 +1827,24 @@ class RoundManager:
             completion_tokens = response.completion_tokens  # type: ignore[union-attr]
             provider_latency_ms = response.latency_ms  # type: ignore[union-attr]
 
+            # FIX-05: log when the provider truncated the response because the
+            # token budget was exhausted. ``finish_reason`` is best-effort:
+            # not every LLM client exposes it, so we read defensively.
+            finish_reason = getattr(response, "finish_reason", None) or getattr(
+                response, "stop_reason", None
+            )
+            if finish_reason == "length":
+                logger.warning(
+                    "LLM response truncated by max_tokens budget: "
+                    "turn=%s round=%d agent=%s role=%s budget=%d completion_tokens=%d",
+                    turn_id,
+                    round_record.round_number,
+                    agent_ctx.agent_id,
+                    agent_ctx.role,
+                    request.max_tokens,
+                    completion_tokens,
+                )
+
             if not raw_content or not raw_content.strip():
                 raise LLMError(
                     "Model returned an empty response. "
@@ -1552,6 +1909,14 @@ class RoundManager:
                             normalized = recovered_normalized
 
             structured = normalized.payload
+            # FIX-09: persist extra payload fields (e.g. follow-up question /
+            # cycle number) so every saved message carries the context that
+            # produced it. We use setdefault so an LLM that already returned
+            # the field wins.
+            if extra_payload_fields:
+                for key, value in extra_payload_fields.items():
+                    if key not in structured or structured[key] in (None, "", []):
+                        structured[key] = value
             content = json.dumps(normalized.payload, ensure_ascii=False)
 
         except LLMError as exc:

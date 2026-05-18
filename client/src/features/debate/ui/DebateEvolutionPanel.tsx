@@ -19,6 +19,10 @@
 import { useMemo } from "react";
 import { useDebateStore } from "../model/debate.store";
 import { cn } from "@/shared/lib/cn";
+import SynthesisVerdictCard, {
+    isSynthesisVerdictPayload,
+    type SynthesisVerdictPayload,
+} from "./SynthesisVerdictCard";
 
 type SynthesisPayload = Record<string, unknown>;
 
@@ -27,6 +31,8 @@ interface CycleEvolutionItem {
     label: string;
     question: string;
     payload: SynthesisPayload | null;
+    verdict: SynthesisVerdictPayload | null;
+    followupQuestion: string;
 }
 
 function pickString(payload: SynthesisPayload | null, keys: string[]): string {
@@ -101,17 +107,29 @@ export default function DebateEvolutionPanel() {
             const synthesisRound =
                 roundsInCycle.find((r) => r.round_type === "final" || r.round_type === "updated_synthesis") ??
                 null;
-            // Representative payload: first agent's structured payload.
+            // Step 37: extract the moderator's synthesis verdict (judge
+            // message with embedded `message_type:"synthesis_verdict"`).
+            // Representative per-agent payload: first non-verdict structured
+            // payload — the verdict is rendered separately above.
             let payload: SynthesisPayload | null = null;
+            let verdict: SynthesisVerdictPayload | null = null;
             if (synthesisRound) {
                 for (const m of synthesisRound.messages) {
-                    if (m.payload && typeof m.payload === "object" && Object.keys(m.payload).length > 0) {
-                        payload = m.payload as SynthesisPayload;
-                        break;
+                    if (!m.payload || typeof m.payload !== "object") continue;
+                    const p = m.payload as SynthesisPayload;
+                    if (Object.keys(p).length === 0) continue;
+                    if (isSynthesisVerdictPayload(p)) {
+                        if (verdict === null) verdict = p;
+                        continue;
                     }
+                    if (payload === null) payload = p;
                 }
             }
 
+            const followupQuestion =
+                cycle === 1
+                    ? ""
+                    : followUps.find((f) => f.cycle_number === cycle)?.question ?? "";
             const label =
                 cycle === 1
                     ? "Original Debate"
@@ -119,9 +137,9 @@ export default function DebateEvolutionPanel() {
             const question =
                 cycle === 1
                     ? turn.user_message?.content ?? session?.question ?? ""
-                    : followUps.find((f) => f.cycle_number === cycle)?.question ?? "";
+                    : followupQuestion;
 
-            result.push({ cycleNumber: cycle, label, question, payload });
+            result.push({ cycleNumber: cycle, label, question, payload, verdict, followupQuestion });
         }
         return result;
     }, [turn, session]);
@@ -227,6 +245,14 @@ export default function DebateEvolutionPanel() {
                                     <p className="text-[11px] text-agora-text-muted line-clamp-2 italic">
                                         &ldquo;{item.question}&rdquo;
                                     </p>
+                                )}
+
+                                {item.verdict && (
+                                    <SynthesisVerdictCard
+                                        payload={item.verdict}
+                                        cycleNumber={item.cycleNumber}
+                                        followupQuestion={item.followupQuestion || undefined}
+                                    />
                                 )}
 
                                 <div className="rounded-md bg-violet-500/10 border border-violet-500/20 px-2.5 py-2">

@@ -50,6 +50,7 @@ def _agent_to_ctx(agent: ChatAgent, doc_ids: list[uuid.UUID]) -> AgentContext:
         model=agent.model,
         temperature=float(agent.temperature) if agent.temperature is not None else 0.7,
         reasoning_style=agent.reasoning_style or "balanced",
+        reasoning_depth=getattr(agent, "reasoning_depth", None) or "normal",
         knowledge_mode=agent.knowledge_mode or "shared_session_docs",
         knowledge_strict=agent.knowledge_strict if agent.knowledge_strict is not None else False,
         assigned_document_ids=doc_ids,
@@ -129,6 +130,11 @@ async def run_followup_cycle(
                         "follow_up": True,
                         "cycle_number": cycle_number,
                         "follow_up_question": follow_up_question,
+                        # FIX-12: surface RAG state for follow-up cycles too.
+                        "rag_active": any(bindings_by_agent.get(a.id) for a in agents),
+                        "document_count": len(
+                            {d for ids in bindings_by_agent.values() for d in ids}
+                        ),
                     },
                 )
             )
@@ -140,6 +146,9 @@ async def run_followup_cycle(
                 question=memory.get("original_question") or follow_up_question,
                 agents=[_agent_to_ctx(a, bindings_by_agent.get(a.id, [])) for a in agents],
                 turn_index=turn.turn_index,
+                # FIX-12: surface RAG state so follow-up cycles also expose it.
+                rag_active=any(bindings_by_agent.get(a.id) for a in agents),
+                document_count=len({d for ids in bindings_by_agent.values() for d in ids}),
             )
 
             round_manager = RoundManager(

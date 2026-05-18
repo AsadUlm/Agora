@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { useNavigate } from "react-router-dom";
 import { cn } from "@/shared/lib/cn";
+import { toast } from "@/shared/ui/toast";
 import type { AgentConfig } from "../model/agent-config.types";
 import {
     MODEL_OPTIONS,
@@ -9,9 +11,21 @@ import {
     REASONING_STYLES,
     REASONING_DEPTHS,
     KNOWLEDGE_MODES,
-    AGENT_PRESETS,
+    AGENT_COLOR_PALETTE,
 } from "../model/agent-config.types";
 import { useLLMCatalog } from "../model/useLLMCatalog";
+import { useAgentPresets, useAgentPresetCache } from "@/features/agent-presets/model/useAgentPresets";
+import {
+    applyPresetToAgentConfig,
+    createPresetFromAgentConfig,
+    hasPresetChanges,
+    isSystemPreset,
+} from "@/features/agent-presets/model/agent-preset.types";
+import {
+    createAgentPreset,
+    updateAgentPreset,
+} from "@/features/agent-presets/api/agent-preset.api";
+import AgentPresetFormModal from "@/features/agent-presets/ui/AgentPresetFormModal";
 
 export interface DocumentItem {
     id: string;
@@ -42,6 +56,18 @@ export default function AgentConfigCard({
 }: AgentConfigCardProps) {
     const [expanded, setExpanded] = useState(false);
     const { providers: catalog } = useLLMCatalog();
+    const { presets } = useAgentPresets();
+    const upsertPreset = useAgentPresetCache((s) => s.upsert);
+    const navigate = useNavigate();
+    const [savingNew, setSavingNew] = useState(false);
+
+    const selectedPreset = useMemo(
+        () => (agent.preset ? presets.find((p) => p.id === agent.preset) ?? null : null),
+        [presets, agent.preset],
+    );
+    const isDirty = selectedPreset ? hasPresetChanges(selectedPreset, agent) : false;
+    const systemPresets = presets.filter((p) => p.type === "system");
+    const userPresets = presets.filter((p) => p.type === "user");
 
     // Build provider/model lookups from the live catalog with a static fallback.
     const providerIds: string[] = catalog.length
@@ -105,10 +131,22 @@ export default function AgentConfigCard({
                     </button>
                 </div>
 
-                {/* Role badge */}
-                <div className="w-8 h-8 rounded-lg bg-indigo-500/15 flex items-center justify-center text-indigo-400 text-xs font-bold uppercase">
-                    {agent.role[0]}
-                </div>
+                {/* Role badge — color-coded */}
+                {(() => {
+                    const entry = AGENT_COLOR_PALETTE.find((c) => c.key === agent.color) ?? AGENT_COLOR_PALETTE[0];
+                    return (
+                        <div
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold uppercase shrink-0"
+                            style={{
+                                backgroundColor: entry.hex + "25",
+                                color: entry.hex,
+                                border: `1px solid ${entry.hex}44`,
+                            }}
+                        >
+                            {agent.role[0]}
+                        </div>
+                    );
+                })()}
 
                 {/* Role input */}
                 <input
@@ -178,11 +216,42 @@ export default function AgentConfigCard({
                         className="border-t border-agora-border/50"
                     >
                         <div className="px-4 pb-4 pt-1">
+                            {/* Node Color */}
+                            <div className="mt-3 mb-3">
+                                <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-2 block">
+                                    Node Color
+                                </label>
+                                <div className="flex gap-2 flex-wrap">
+                                    {AGENT_COLOR_PALETTE.map((entry) => (
+                                        <button
+                                            key={entry.key}
+                                            type="button"
+                                            title={entry.key}
+                                            onClick={() => onUpdate({ color: entry.key })}
+                                            className={cn(
+                                                "w-5 h-5 rounded-full transition-all duration-150",
+                                                agent.color === entry.key
+                                                    ? "ring-2 ring-white ring-offset-1 ring-offset-agora-surface scale-125"
+                                                    : "opacity-60 hover:opacity-90 hover:scale-110",
+                                            )}
+                                            style={{ backgroundColor: entry.hex }}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+
                             {/* Preset selector */}
                             <div className="mt-3 mb-3">
-                                <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-1 block">
-                                    Agent Preset
-                                </label>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
+                                        Agent Preset
+                                    </label>
+                                    {selectedPreset && isDirty && (
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                            Modified
+                                        </span>
+                                    )}
+                                </div>
                                 <select
                                     value={agent.preset ?? "custom"}
                                     onChange={(e) => {
@@ -191,26 +260,77 @@ export default function AgentConfigCard({
                                             onUpdate({ preset: null });
                                             return;
                                         }
-                                        const preset = AGENT_PRESETS.find((p) => p.key === key);
+                                        const preset = presets.find((p) => p.id === key);
                                         if (preset) {
-                                            onUpdate({
-                                                preset: preset.key,
-                                                role: preset.role,
-                                                roleDescription: preset.roleDescription,
-                                                reasoningStyle: preset.reasoningStyle,
-                                                reasoningDepth: preset.reasoningDepth,
-                                                knowledgeMode: preset.knowledgeMode,
-                                                knowledgeStrict: preset.knowledgeStrict,
-                                            });
+                                            onUpdate(applyPresetToAgentConfig(preset, agent));
                                         }
                                     }}
                                     className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                                 >
-                                    <option value="custom">Custom</option>
-                                    {AGENT_PRESETS.map((p) => (
-                                        <option key={p.key} value={p.key}>{p.label}</option>
-                                    ))}
+                                    <option value="custom">Custom (no preset)</option>
+                                    {systemPresets.length > 0 && (
+                                        <optgroup label="System Presets">
+                                            {systemPresets.map((p) => (
+                                                <option key={p.id} value={p.id}>{p.name}</option>
+                                            ))}
+                                        </optgroup>
+                                    )}
+                                    {userPresets.length > 0 && (
+                                        <optgroup label="My Presets">
+                                            {userPresets.map((p) => (
+                                                <option key={p.id} value={p.id}>{p.name}</option>
+                                            ))}
+                                        </optgroup>
+                                    )}
                                 </select>
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => setSavingNew(true)}
+                                        className="px-2.5 py-1 rounded-md text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/30 transition-colors"
+                                    >
+                                        Save as new preset
+                                    </button>
+                                    {selectedPreset && !isSystemPreset(selectedPreset) && (
+                                        <button
+                                            type="button"
+                                            disabled={!isDirty}
+                                            onClick={async () => {
+                                                try {
+                                                    const payload = createPresetFromAgentConfig(
+                                                        agent,
+                                                        selectedPreset.name,
+                                                        selectedPreset.description ?? undefined,
+                                                    );
+                                                    const updated = await updateAgentPreset(selectedPreset.id, payload);
+                                                    upsertPreset(updated);
+                                                    toast.success("Preset updated.");
+                                                } catch {
+                                                    toast.error("Failed to save changes.");
+                                                }
+                                            }}
+                                            className="px-2.5 py-1 rounded-md text-[10px] font-medium border border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                        >
+                                            Save changes to "{selectedPreset.name}"
+                                        </button>
+                                    )}
+                                    {selectedPreset && isDirty && (
+                                        <button
+                                            type="button"
+                                            onClick={() => onUpdate(applyPresetToAgentConfig(selectedPreset, agent))}
+                                            className="px-2.5 py-1 rounded-md text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/30 transition-colors"
+                                        >
+                                            Reset to preset
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => navigate("/agent-presets")}
+                                        className="ml-auto px-2.5 py-1 rounded-md text-[10px] font-medium text-indigo-400 hover:text-indigo-300 transition-colors"
+                                    >
+                                        Manage presets →
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Model preset selector */}
@@ -256,8 +376,8 @@ export default function AgentConfigCard({
                                     value={agent.roleDescription}
                                     onChange={(e) => onUpdate({ roleDescription: e.target.value, preset: null })}
                                     placeholder="Describe the agent's role and mission..."
-                                    rows={2}
-                                    className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50 resize-none"
+                                    rows={3}
+                                    className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50 resize-y min-h-[56px]"
                                 />
                             </div>
 
@@ -533,6 +653,39 @@ export default function AgentConfigCard({
                     </motion.div>
                 )}
             </AnimatePresence>
+            <AgentPresetFormModal
+                open={savingNew}
+                onClose={() => setSavingNew(false)}
+                initial={{
+                    id: "",
+                    user_id: null,
+                    type: "user",
+                    visibility: "private",
+                    name: agent.role || "My Preset",
+                    description: "",
+                    role_description: agent.roleDescription,
+                    reasoning_style: agent.reasoningStyle,
+                    reasoning_depth: agent.reasoningDepth,
+                    provider: agent.provider,
+                    model: agent.model,
+                    model_preset: agent.modelPreset ?? null,
+                    temperature: agent.temperature,
+                    rag_mode: agent.knowledgeMode,
+                    document_ids: [...agent.documentIds],
+                    strict_grounding: agent.knowledgeStrict,
+                    is_default: false,
+                    is_archived: false,
+                    created_at: null,
+                    updated_at: null,
+                }}
+                submitLabel="Save Preset"
+                onSubmit={async (payload) => {
+                    const created = await createAgentPreset(payload);
+                    upsertPreset(created);
+                    onUpdate({ preset: created.id });
+                    toast.success(`Preset "${created.name}" saved.`);
+                }}
+            />
         </motion.div>
     );
 }

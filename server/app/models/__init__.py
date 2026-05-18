@@ -10,6 +10,7 @@ from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.agent_document_binding import AgentDocumentBinding
 from app.models.debate_follow_up import DebateFollowUp
+from app.models.agent_preset import AgentPreset
 
 __all__ = [
     "User",
@@ -23,4 +24,5 @@ __all__ = [
     "DocumentChunk",
     "AgentDocumentBinding",
     "DebateFollowUp",
+    "AgentPreset",
 ]

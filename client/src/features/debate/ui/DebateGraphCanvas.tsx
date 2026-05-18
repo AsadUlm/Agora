@@ -18,6 +18,7 @@ import { useDebateStore } from "../model/debate.store";
 import type { DebateGraphNode, DebateGraphEdge, GraphEdgeKind } from "../model/graph.types";
 import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import { deriveActiveNarration, getGeneratingNodeId, getLoadingCopy, inferRound2Relation } from "../model/execution-ux";
+import { AGENT_COLOR_PALETTE } from "../model/agent-config.types";
 
 import QuestionNode from "./nodes/QuestionNode";
 import AgentNode from "./nodes/AgentNode";
@@ -234,6 +235,7 @@ function edgeRevealRank(edge: DebateGraphEdge, indexById: Map<string, number>): 
 export default function DebateGraphCanvas() {
     const graph = useGraphStore((s) => s.graph);
     const agents = useDebateStore((s) => s.agents);
+    const agentColorsByPosition = useDebateStore((s) => s.agentColorsByPosition);
     const selectNode = useGraphStore((s) => s.selectNode);
     const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
     const clearFocus = useGraphStore((s) => s.clearFocus);
@@ -532,6 +534,20 @@ export default function DebateGraphCanvas() {
         [agents],
     );
 
+    // Color map: agentId → palette key.
+    // Uses stored colors from the creation form; falls back to palette cycling
+    // by position_order (e.g. when viewing a debate loaded from history).
+    const agentColorById = useMemo(() => {
+        const map: Record<string, string> = {};
+        for (const agent of agents) {
+            const pos = agent.position_order ?? 0;
+            map[agent.id] =
+                agentColorsByPosition[pos] ??
+                AGENT_COLOR_PALETTE[pos % AGENT_COLOR_PALETTE.length].key;
+        }
+        return map;
+    }, [agents, agentColorsByPosition]);
+
     const interactionOrder = useMemo(() => {
         const order = new Map<string, number>();
         let cursor = 0;
@@ -737,6 +753,7 @@ export default function DebateGraphCanvas() {
                     data: {
                         ...n,
                         metadata,
+                        agentColor: n.agentId ? agentColorById[n.agentId] : undefined,
                         dimmedByRound,
                         dimmedBySelection,
                         dimmedByGeneration,
@@ -763,6 +780,7 @@ export default function DebateGraphCanvas() {
         generatingNodeId,
         completionPulse,
         positions,
+        agentColorById,
     ]);
 
     const flowEdges: Edge[] = useMemo(() => {

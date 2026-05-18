@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
+    ASSUMPTION_LABELING_BLOCK,
+    FACTUALITY_BLOCK,
+    FIELD_DIFFERENTIATION_BLOCK,
     QUALITY_REQUIREMENTS_BLOCK,
+    evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
     EvidencePacket,
@@ -63,12 +68,7 @@ def build_final_synthesis_prompt(
         "deep": "Be exhaustive. Detailed analysis per field.",
     }.get(reasoning_depth, "Be thorough. A short paragraph per field.")
 
-    style_instruction = {
-        "analytical": "Reason analytically based on the evidence presented.",
-        "creative": "Reflect creatively and consider unexpected insights.",
-        "devil_advocate": "Acknowledge what challenged your position most.",
-        "balanced": "Reflect in a balanced, nuanced way.",
-    }.get(reasoning_style, "Reflect in a balanced, nuanced way.")
+    style_instruction = _style_instruction("synthesize", reasoning_style)
 
     context_block = (
         format_evidence_block(evidence_packets) + format_evidence_usage_instructions()
@@ -96,7 +96,15 @@ Your task: Generate your final synthesis for Round 3.
 Reasoning style: {style_instruction}
 {depth_instruction}
 
+{evidence_mode_block(bool(evidence_packets or retrieved_chunks or []))}
+
 {QUALITY_REQUIREMENTS_BLOCK}
+
+{FACTUALITY_BLOCK}
+
+{FIELD_DIFFERENTIATION_BLOCK}
+
+{ASSUMPTION_LABELING_BLOCK}
 
 Round 3 objective (genuine synthesis, not averaging):
 - Treat this as an expert-committee conclusion, not a compromise summary.
@@ -129,6 +137,22 @@ Decision rule (mandatory):
 - You MUST identify a single key trade-off, the winning argument, the losing
   argument, and your overall confidence (low | medium | high).
 
+Length & substance bar (mandatory):
+- The `response` field MUST be a full synthesis essay, not a slogan. Target
+  450-800 words across 5-7 short paragraphs.
+- Structure (in order):
+    1. Restate the question and the dominant position you are taking.
+    2. Why it won (winning argument + supporting mechanism).
+    3. Why the losing argument lost (concrete failure mode).
+    4. The single key trade-off you accepted to take this position.
+    5. Risks and unresolved questions you are leaving open.
+    6. Concrete recommendation or policy direction.
+- Do NOT compress this synthesis into a one-paragraph summary. The detail
+  panel renders `response` verbatim.
+- Refined position must still carry the persona's voice (Analyst stays
+  structural, Critic stays adversarial about the losing argument, Creative
+  reframes the trade-off in unconventional terms).
+
 Forbidden examples:
 - "I need to create a JSON object..."
 - "Generating JSON synthesis..."
@@ -154,7 +178,7 @@ Return only valid JSON in this exact format:
     "strongest_argument": "<strongest argument from the full debate>",
     "remaining_concerns": "<important unresolved concerns>",
     "conclusion": "<final concise conclusion>",
-    "response": "<full readable synthesis>",
+    "response": "<FULL multi-paragraph synthesis essay (450-800 words) covering: 1) Question + dominant position, 2) Winning argument, 3) Why losing argument lost, 4) Key trade-off, 5) Risks / open questions, 6) Recommendation. This is the body shown to the user \u2014 do NOT shorten it.>",
     "key_evidence_used": ["<E-label or short title of evidence that drove the conclusion>"],
     "rejected_evidence": ["<E-label of evidence you discounted, with one-line reason>"],
     "evidence_conflicts": ["<short description of where evidence disagreed and how you resolved it>"],

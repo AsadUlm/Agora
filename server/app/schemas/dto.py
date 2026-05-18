@@ -79,6 +79,7 @@ def serialize_agent(agent: ChatAgent) -> AgentDTO:
         model=agent.model,
         temperature=agent.temperature,
         reasoning_style=agent.reasoning_style,
+        reasoning_depth=getattr(agent, "reasoning_depth", None),
         position_order=agent.position_order,
         knowledge_mode=agent.knowledge_mode,
         knowledge_strict=agent.knowledge_strict if agent.knowledge_strict is not None else False,
@@ -117,11 +118,16 @@ def serialize_round(
     """
     Serialize a Round ORM object to RoundOut.
 
-    Only agent messages are included (user/system messages live at the turn
-    level and are not duplicated here).  Messages are ordered by sequence_no.
+    Includes both agent messages and moderator (judge) messages — the latter
+    carry the Step 37 synthesis verdict that aggregates the cycle's three
+    agent syntheses. User/system messages live at the turn level and are
+    not duplicated here. Messages are ordered by sequence_no.
     """
     agent_messages = sorted(
-        [m for m in round_obj.messages if m.sender_type == SenderType.agent],
+        [
+            m for m in round_obj.messages
+            if m.sender_type in (SenderType.agent, SenderType.judge)
+        ],
         key=lambda m: m.sequence_no,
     )
     return RoundDTO(

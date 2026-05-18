@@ -7,6 +7,8 @@ import DebateListPage from "@/pages/DebateListPage";
 import DebateWorkspacePage from "@/pages/DebateWorkspacePage";
 import AppShell from "@/features/debate/ui/AppShell";
 import DocumentsPage from "@/pages/DocumentsPage";
+import AgentPresetsPage from "@/pages/AgentPresetsPage";
+import { Toaster } from "@/shared/ui/toast";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -53,6 +55,7 @@ export default function App() {
                     >
                         <Route path="/debates" element={<DebateListPage />} />
                         <Route path="/documents" element={<DocumentsPage />} />
+                        <Route path="/agent-presets" element={<AgentPresetsPage />} />
                     </Route>
                     <Route
                         path="/debates/:debateId"
@@ -66,6 +69,7 @@ export default function App() {
                     <Route path="*" element={<Navigate to="/debates" replace />} />
                 </Routes>
             </SessionRestorer>
+            <Toaster />
         </BrowserRouter>
     );
 }

@@ -68,6 +68,15 @@ interface DebateStore {
     renderedNodeCount: number;
     renderedEdgeCount: number;
     lastWsEventType: string | null;
+    /**
+     * FIX-12: Whether retrieval-augmented generation is active for the
+     * current turn. ``null`` means the backend has not yet reported, ``false``
+     * is a normal state (reasoning-only mode) — never an error.
+     */
+    ragActive: boolean | null;
+    documentCount: number;
+    /** Position-index → color key, set when a debate is started from the form. */
+    agentColorsByPosition: Record<number, string>;
 
     startDebate: (
         question: string,
@@ -82,6 +91,9 @@ interface DebateStore {
     submitFollowUp: (question: string) => Promise<void>;
     syncStepState: () => Promise<void>;
     reset: () => void;
+
+    /** Store agent colors by position (frontend-only, set from AgentConfig before start). */
+    setAgentColors: (colors: Record<number, string>) => void;
 
     /** Toggle visual reveal mode (frontend only). */
     setPlaybackMode: (mode: PlaybackMode) => void;
@@ -126,6 +138,9 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
     renderedNodeCount: 0,
     renderedEdgeCount: 0,
     lastWsEventType: null,
+    ragActive: null,
+    documentCount: 0,
+    agentColorsByPosition: {},
 
     startDebate: async (question, agents, executionMode = "auto", options) => {
         set({ loading: true, error: null, executionMode });
@@ -316,9 +331,23 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         }
 
         switch (event.type) {
-            case "turn_started":
-                set({ turnStatus: "running" });
+            case "turn_started": {
+                // FIX-12: hydrate RAG mode flags from the backend so the UI
+                // can render a neutral indicator. Reasoning-only is normal.
+                const payload = event.payload ?? {};
+                const ragActive = typeof payload.rag_active === "boolean"
+                    ? payload.rag_active
+                    : null;
+                const documentCount = typeof payload.document_count === "number"
+                    ? payload.document_count
+                    : 0;
+                set({
+                    turnStatus: "running",
+                    ragActive,
+                    documentCount,
+                });
                 break;
+            }
 
             case "round_started":
                 set({ currentRound: event.round_number ?? state.currentRound });
@@ -942,12 +971,17 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             renderedNodeCount: 0,
             renderedEdgeCount: 0,
             lastWsEventType: null,
+            ragActive: null,
+            documentCount: 0,
+            agentColorsByPosition: {},
         });
         useGraphStore.getState().reset();
         useModeratorStore.getState().reset();
         usePlaybackStore.getState().reset();
         useAnimationStore.getState().reset();
     },
+
+    setAgentColors: (colors) => set({ agentColorsByPosition: colors }),
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────

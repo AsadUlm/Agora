@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
+    ANTI_STRAWMAN_BLOCK,
+    ASSUMPTION_LABELING_BLOCK,
+    FACTUALITY_BLOCK,
+    FIELD_DIFFERENTIATION_BLOCK,
     QUALITY_REQUIREMENTS_BLOCK,
+    evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
     EvidencePacket,
@@ -77,12 +83,7 @@ def build_critique_prompt(
         "deep": "Be rigorous. Dissect each argument thoroughly, cite logical fallacies or missing evidence.",
     }.get(reasoning_depth, "Be substantive.")
 
-    style_instruction = {
-        "analytical": "Critique analytically — focus on logical consistency and evidence gaps.",
-        "creative": "Challenge creatively — expose hidden assumptions and alternative framings.",
-        "devil_advocate": "Challenge aggressively — find the sharpest weakness in each argument.",
-        "balanced": "Critique fairly — acknowledge strengths before identifying weaknesses.",
-    }.get(reasoning_style, "Critique fairly.")
+    style_instruction = _style_instruction("critique", reasoning_style)
 
     # Format other agents' stances
     opponents_block = ""
@@ -107,7 +108,17 @@ Your task: Critique the following opponents' arguments in Round 2 Cross-Examinat
 Critique style: {style_instruction}
 {depth_instruction}
 
+{evidence_mode_block(bool(evidence_packets or retrieved_chunks or []))}
+
 {QUALITY_REQUIREMENTS_BLOCK}
+
+{FACTUALITY_BLOCK}
+
+{FIELD_DIFFERENTIATION_BLOCK}
+
+{ASSUMPTION_LABELING_BLOCK}
+
+{ANTI_STRAWMAN_BLOCK}
 
 Round 2 objective (real cross-examination):
 - This is genuine cross-examination, not commentary. For every opponent you
@@ -131,6 +142,21 @@ evidence" or "could be stronger". Concretely, your critique MUST include:
   - why that assumption breaks down (why_it_breaks),
   - the real-world implication if you are right (real_world_implication).
 
+Length & substance bar (mandatory):
+- The `response` field MUST be a full adversarial cross-examination, not a
+  one-liner. Target 350-650 words across 4-6 short paragraphs.
+- Structure (in order):
+    1. Restate the target's strongest claim in your own words.
+    2. Name the specific assumption you are attacking.
+    3. Show why it breaks (mechanism, counter-example, or numeric anchor).
+    4. State the real-world consequence if you are right.
+    5. Concede the smallest part of the opponent's argument that survives,
+       then reaffirm your overall challenge.
+- The persona's voice must dominate. A Critic sounds adversarial; an
+  Analyst critiques structurally; a Creative critiques by reframing.
+- DO NOT compress this into a slogan. The detail panel renders `response`
+  verbatim.
+
 Output contract:
 - Return only valid JSON.
 - Do not use markdown fences.
@@ -139,7 +165,7 @@ Output contract:
 - Every field must be user-facing content.
 - one_sentence_takeaway must be ONE complete sentence (15-25 words). Never truncate.
 - short_summary must mirror one_sentence_takeaway (kept for backward compatibility).
-- response must be clean prose for end users.
+- response must be the FULL adversarial critique (not a summary).
 - If target content is unavailable, use this sentence in challenge context:
     "The target response was unavailable, so this critique focuses on the general position."
 
@@ -159,5 +185,5 @@ Return only valid JSON in this exact format:
     "real_world_implication": "<what changes in practice if your critique holds>",
     "weakness_found": "<why that argument is weak or incomplete>",
     "counterargument": "<clean counterargument>",
-    "response": "<full user-facing critique>"
+    "response": "<FULL multi-paragraph adversarial critique (350-650 words) covering: 1) Restated target claim, 2) Assumption attacked, 3) Why it breaks, 4) Real-world consequence, 5) Smallest concession + reaffirmed challenge. This is the body shown to the user \u2014 do NOT shorten it.>"
 }}"""

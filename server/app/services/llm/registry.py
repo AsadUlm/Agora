@@ -48,7 +48,7 @@ MODEL_PRESETS: tuple[ModelPresetInfo, ...] = (
         id="fast",
         name="Fast",
         model=OpenRouterModel.GROK_4_1_FAST.value,
-        temperature=0.6,
+        temperature=0.5,
     ),
     ModelPresetInfo(
         id="balanced",
@@ -61,6 +61,42 @@ MODEL_PRESETS: tuple[ModelPresetInfo, ...] = (
         name="High Quality",
         model=OpenRouterModel.GPT_5_5.value,
         temperature=0.5,
+    ),
+    ModelPresetInfo(
+        id="deep_reasoning",
+        name="Deep Reasoning",
+        model=OpenRouterModel.GROK_4_THINKING.value,
+        temperature=0.5,
+    ),
+    ModelPresetInfo(
+        id="creative",
+        name="Creative",
+        model=OpenRouterModel.GPT_5_5.value,
+        temperature=0.85,
+    ),
+    ModelPresetInfo(
+        id="cost_efficient",
+        name="Cost Efficient",
+        model=OpenRouterModel.GPT_4_1_MINI.value,
+        temperature=0.6,
+    ),
+    ModelPresetInfo(
+        id="rag_optimized",
+        name="RAG Optimized",
+        model=OpenRouterModel.CLAUDE_SONNET_4_5.value,
+        temperature=0.4,
+    ),
+    ModelPresetInfo(
+        id="strict_grounded",
+        name="Strict Grounded",
+        model=OpenRouterModel.CLAUDE_SONNET_4_5.value,
+        temperature=0.3,
+    ),
+    ModelPresetInfo(
+        id="presentation_demo",
+        name="Presentation Demo",
+        model=OpenRouterModel.CLAUDE_SONNET_4_5.value,
+        temperature=0.55,
     ),
 )
 

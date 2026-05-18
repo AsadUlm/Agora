@@ -23,6 +23,9 @@ class ChatAgent(Base):
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasoning_style: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reasoning_depth: Mapped[str | None] = mapped_column(
+        String(40), nullable=True, default="normal", server_default="normal"
+    )
     position_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     knowledge_mode: Mapped[str | None] = mapped_column(String(50), nullable=True, default="shared_session_docs")

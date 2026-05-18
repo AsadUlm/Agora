@@ -45,6 +45,22 @@ _STRONG_CLAIM_KEYWORDS = (
     "key",
     "evidence",
 )
+
+# FIX-11: target_roles enumeration. Used by round 2 + follow-up critique
+# normalizers to expose a structured list of roles a critique points at,
+# instead of relying on the free-text ``target_agent`` field downstream.
+_ROLE_ORDER = ("analyst", "critic", "creative", "moderator")
+
+
+def _parse_target_roles(raw_target: str) -> list[str]:
+    """Extract a normalized list of target roles from a critique's free-text
+    ``target_agent`` field. Falls back to ``["general"]`` when no known role
+    is mentioned (e.g. "General position", "Strongest argument").
+    """
+    lowered = (raw_target or "").lower()
+    found = [role for role in _ROLE_ORDER if role in lowered]
+    return found or ["general"]
+
 _CONCERN_KEYWORDS = (
     "concern",
     "risks",
@@ -85,6 +101,9 @@ def normalize_round_output(
     dispatching, so follow-up cycles (round_number ≥ 4) can route to the
     follow-up normalizers without being mistaken for unsupported rounds.
     """
+    parse_status: str = "parsed"
+    parse_warnings: list[str] = []
+
     if parsed_payload is None:
         try:
             parsed_payload = parse_json_from_llm(raw_text)
@@ -104,6 +123,8 @@ def normalize_round_output(
             payload = _normalize_followup_critique(parsed_payload, raw_text)
         elif dispatch == "updated_synthesis":
             payload = _normalize_updated_synthesis(parsed_payload, raw_text)
+        elif dispatch == "synthesis_verdict":
+            payload = _normalize_synthesis_verdict(parsed_payload, raw_text)
         elif round_number == 1:
             payload = _normalize_round1(parsed_payload, raw_text)
         elif round_number == 2:
@@ -121,11 +142,79 @@ def normalize_round_output(
         _pick_string(payload, ["one_sentence_takeaway", "short_summary"]),
         _pick_string(payload, ["response", "main_argument", "conclusion"]),
     )
-    display_content = _sanitize_text(_pick_string(payload, ["response", "main_argument", "conclusion"]))
+    # Preserve paragraphs in display_content so the detail panel can render
+    # the full multi-paragraph analytical response verbatim. Previously this
+    # was sanitized with default settings and collapsed every newline into a
+    # single space, which produced wall-of-text answers in the UI.
+    display_content = _pick_long_text(payload, ["response", "main_argument", "conclusion"])
+    if not display_content:
+        display_content = _sanitize_text(
+            _pick_string(payload, ["response", "main_argument", "conclusion"]),
+            preserve_paragraphs=True,
+        )
 
     if not display_content:
         logger.warning("JSON parse failed -> fallback mode used: normalized output has no readable response")
         return fallback_parse(raw_text, round_number=round_number)
+
+    # Anti-repetition guard: if `response` collapsed to the same text as
+    # the takeaway (a common low-quality output), try to recover a richer
+    # body from raw_content. Mark a warning either way so the Raw tab can
+    # surface the issue.
+    if _texts_too_similar(display_content, short_summary, threshold=0.92):
+        recovered_body = _recover_full_response_from_raw(raw_text)
+        if recovered_body and not _texts_too_similar(
+            recovered_body, short_summary, threshold=0.92
+        ):
+            display_content = recovered_body
+            payload["response"] = recovered_body
+            parse_warnings.append("response_was_duplicate_of_takeaway_recovered_from_raw")
+            parse_status = "recovered"
+        else:
+            parse_warnings.append("response_duplicates_takeaway")
+            parse_status = "partial" if parse_status == "parsed" else parse_status
+
+    # FIX-06: detect when `response` is just a concatenation of the other
+    # JSON fields (one_sentence_takeaway + short_summary + key_points).
+    # That's a quality failure — the LLM produced a stitched-together prose
+    # body instead of a fresh analytical answer. Try to recover a richer
+    # body from the raw text; otherwise emit a parse warning.
+    concat_probe = " ".join(
+        str(x or "")
+        for x in (
+            payload.get("one_sentence_takeaway", ""),
+            payload.get("short_summary", ""),
+            *(payload.get("key_points") or []),
+            payload.get("answer_to_followup", ""),
+        )
+    ).strip()
+    if concat_probe and _texts_too_similar(display_content, concat_probe, threshold=0.85):
+        recovered_body = _recover_full_response_from_raw(raw_text)
+        if recovered_body and not _texts_too_similar(
+            recovered_body, concat_probe, threshold=0.85
+        ):
+            display_content = recovered_body
+            payload["response"] = recovered_body
+            parse_warnings.append("response_field_concatenation_recovered_from_raw")
+            parse_status = "recovered"
+        else:
+            parse_warnings.append("response_looks_like_field_concatenation")
+            parse_status = "partial" if parse_status == "parsed" else parse_status
+
+    # FIX-07: enforce field differentiation between one_sentence_takeaway
+    # and short_summary. They MUST add distinct information; if they are
+    # essentially identical, emit a warning so the UI can surface it.
+    raw_short_summary = str(payload.get("short_summary", "") or "").strip()
+    raw_takeaway = str(payload.get("one_sentence_takeaway", "") or "").strip()
+    if (
+        raw_short_summary
+        and raw_takeaway
+        and (
+            raw_short_summary == raw_takeaway
+            or _texts_too_similar(raw_short_summary, raw_takeaway, threshold=0.90)
+        )
+    ):
+        parse_warnings.append("short_summary_duplicates_takeaway")
 
     # Mirror one_sentence_takeaway ↔ short_summary so back-compat consumers
     # (and existing tests) still see ``short_summary`` while new UIs can
@@ -135,6 +224,9 @@ def normalize_round_output(
     payload["display_content"] = display_content
     payload["raw_content"] = raw_text
     payload["is_fallback"] = False
+    payload["parse_status"] = parse_status
+    if parse_warnings:
+        payload["parse_warnings"] = parse_warnings
 
     return NormalizedRoundOutput(
         payload=payload,
@@ -162,6 +254,8 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
         "display_content": cleaned_text,
         "is_fallback": True,
         "raw_content": raw_text,
+        "parse_status": "fallback",
+        "parse_warnings": ["json_parse_failed_used_text_fallback"],
     }
 
     rt = (round_type or "").lower()
@@ -184,6 +278,7 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
         payload.update(
             {
                 "target_agent": "General position",
+                "target_roles": ["general"],
                 "target_kind": "unresolved_question",
                 "challenge": short_summary,
                 "counterargument": cleaned_text,
@@ -194,21 +289,56 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
             }
         )
     elif rt == "updated_synthesis":
+        # FIX-04: do NOT fabricate generic synthesis text. Leave the fields
+        # blank when the model output cannot be parsed; emit warnings so the
+        # UI / debug panel can surface that fields were unavailable.
         payload.update(
             {
                 "updated_conclusion": _first_sentence(cleaned_text) or short_summary,
                 "conclusion_changed": "no",
-                "change_reason": "Synthesis could not be parsed; assumed conclusion unchanged.",
-                "what_changed": _keyword_sentence(cleaned_text, _CHANGE_KEYWORDS) or "The follow-up refined the previous synthesis.",
-                "strongest_argument": _strongest_claim_sentence(cleaned_text) or short_summary,
+                "change_reason": "",
+                "what_changed": "",
+                "strongest_argument": _strongest_claim_sentence(cleaned_text) or "",
                 "remaining_disagreement": _keyword_sentence(cleaned_text, _CONCERN_KEYWORDS) or "",
-                "key_tradeoff": _keyword_sentence(cleaned_text, _CONCERN_KEYWORDS) or "The dominant trade-off could not be isolated from the unstructured response.",
-                "winning_argument": _strongest_claim_sentence(cleaned_text) or short_summary,
-                "losing_argument": "The unparsed response did not separate the losing argument explicitly.",
+                "key_tradeoff": "",
+                "winning_argument": _strongest_claim_sentence(cleaned_text) or "",
+                "losing_argument": "",
                 "confidence": "low",
             }
         )
-    elif round_number == 1:
+        payload.setdefault("parse_warnings", []).extend(
+            [
+                "updated_synthesis_change_reason_missing",
+                "updated_synthesis_what_changed_missing",
+                "updated_synthesis_losing_argument_missing",
+                "updated_synthesis_key_tradeoff_missing",
+            ]
+        )
+    elif rt == "synthesis_verdict":
+        # Step 37: do NOT fabricate aggregation. Leave aggregation fields
+        # blank when the model output cannot be parsed and surface every
+        # missing field as a parse warning so the UI can show it honestly.
+        payload.update(
+            {
+                "one_sentence_takeaway": short_summary,
+                "consensus_statement": "",
+                "main_disagreement": "",
+                "recommended_answer": _first_sentence(cleaned_text) or short_summary,
+                "winning_side": "mixed",
+                "confidence": "low",
+                "what_changed": "",
+                "reasoning_basis": [],
+                "unresolved_questions": [],
+                "response": cleaned_text,
+            }
+        )
+        payload.setdefault("parse_warnings", []).extend(
+            [
+                "synthesis_verdict_consensus_missing",
+                "synthesis_verdict_main_disagreement_missing",
+                "synthesis_verdict_reasoning_basis_missing",
+            ]
+        )
         payload.update(
             {
                 "stance": "Mixed",
@@ -221,6 +351,7 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
         payload.update(
             {
                 "target_agent": "General position",
+                "target_roles": ["general"],
                 "challenge": short_summary,
                 "weakness_found": "The response was not structured, so the critique was formatted from the available text.",
                 "counterargument": cleaned_text,
@@ -230,7 +361,11 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
             }
         )
     elif round_number == 3:
-        payload.update(_build_round3_fallback_fields(cleaned_text, paragraph_text))
+        round3_fields = _build_round3_fallback_fields(cleaned_text, paragraph_text)
+        round3_warnings = round3_fields.pop("_parse_warnings_round3", [])
+        payload.update(round3_fields)
+        if round3_warnings:
+            payload.setdefault("parse_warnings", []).extend(round3_warnings)
 
     return NormalizedRoundOutput(
         payload=payload,
@@ -265,14 +400,17 @@ def generate_summary(text: str, max_chars: int = _MAX_SUMMARY_CHARS) -> str:
     return _ensure_terminal_punctuation(fallback)
 
 
-def _build_round3_fallback_fields(cleaned_text: str, paragraph_text: str) -> dict[str, str]:
+def _build_round3_fallback_fields(cleaned_text: str, paragraph_text: str) -> dict[str, Any]:
     paragraphs = _paragraphs(paragraph_text or cleaned_text)
     final_position = paragraphs[0] if paragraphs else generate_summary(cleaned_text)
     conclusion = paragraphs[-1] if paragraphs else final_position
 
-    strongest_argument = _strongest_claim_sentence(cleaned_text) or generate_summary(cleaned_text)
-    what_changed = _keyword_sentence(cleaned_text, _CHANGE_KEYWORDS) or "The final position weighs the strongest support against the main trade-offs raised in the debate."
-    remaining_concerns = _keyword_sentence(cleaned_text, _CONCERN_KEYWORDS)
+    # FIX-04: when fallback parsing kicks in we no longer fabricate generic
+    # synthesis sentences. Empty fields are surfaced as warnings instead of
+    # silently inventing plausible-sounding content.
+    strongest_argument = _strongest_claim_sentence(cleaned_text) or ""
+    what_changed = _keyword_sentence(cleaned_text, _CHANGE_KEYWORDS) or ""
+    remaining_concerns = _keyword_sentence(cleaned_text, _CONCERN_KEYWORDS) or ""
 
     return {
         "final_position": final_position,
@@ -280,23 +418,31 @@ def _build_round3_fallback_fields(cleaned_text: str, paragraph_text: str) -> dic
         "strongest_argument": strongest_argument,
         "remaining_concerns": remaining_concerns,
         "conclusion": conclusion,
-        "key_tradeoff": remaining_concerns or "The dominant trade-off could not be isolated from the unstructured response.",
+        "key_tradeoff": remaining_concerns or "",
         "winning_argument": strongest_argument,
-        "losing_argument": "The unparsed response did not separate the losing argument explicitly.",
+        "losing_argument": "",
         "confidence": "low",
+        "_parse_warnings_round3": [
+            warn for warn, present in (
+                ("round3_what_changed_missing", bool(what_changed)),
+                ("round3_strongest_argument_missing", bool(strongest_argument)),
+                ("round3_losing_argument_missing", False),
+                ("round3_key_tradeoff_missing", bool(remaining_concerns)),
+            ) if not present
+        ],
     }
 
 
 def _normalize_round1(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
-    response = _pick_string(payload, ["response", "main_argument", "stance", "text"])
-    main_argument = _pick_string(payload, ["main_argument", "response", "stance"]) or response
+    response = _pick_long_text(payload, ["response", "main_argument", "stance", "text"])
+    main_argument = _pick_long_text(payload, ["main_argument", "response", "stance"]) or response
     stance = _normalize_stance(_pick_string(payload, ["stance", "position", "final_position", "final_stance"]))
 
     key_points = _pick_string_list(payload, ["key_points"])
     risks = _pick_string_list(payload, ["risks_or_caveats", "risks"]) or []
 
     if not response:
-        response = main_argument or _sanitize_text(raw_text)
+        response = main_argument or _sanitize_text(raw_text, preserve_paragraphs=True)
 
     if not response:
         raise LLMParseError("Round 1 output missing response content.")
@@ -327,7 +473,7 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         first_critique,
         ["target_agent", "target_role"],
     )
-    challenge = _pick_string(payload, ["challenge", "critique"]) or _pick_string(
+    challenge = _pick_long_text(payload, ["challenge", "critique"]) or _pick_long_text(
         first_critique,
         ["challenge", "critique"],
     )
@@ -335,11 +481,11 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         first_critique,
         ["weakness_found", "weakness"],
     )
-    counter = _pick_string(payload, ["counterargument", "counter_evidence"]) or _pick_string(
+    counter = _pick_long_text(payload, ["counterargument", "counter_evidence"]) or _pick_long_text(
         first_critique,
         ["counterargument", "counter_evidence"],
     )
-    response = _pick_string(payload, ["response", "text", "challenge", "counterargument"])
+    response = _pick_long_text(payload, ["response", "text", "challenge", "counterargument"])
 
     if not target_agent:
         target_agent = "General position"
@@ -351,7 +497,7 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         counter = "A stronger position should address implementation constraints and provide clearer evidence."
 
     if not response:
-        response = _sanitize_text(raw_text)
+        response = _sanitize_text(raw_text, preserve_paragraphs=True)
     if not response:
         response = f"{challenge} {counter}".strip()
 
@@ -374,6 +520,7 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "target_agent": target_agent,
+        "target_roles": _parse_target_roles(target_agent),
         "challenge": challenge,
         "weakness_found": weakness,
         "counterargument": counter,
@@ -385,24 +532,33 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
 
 
 def _normalize_round3(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
-    final_position = _pick_string(payload, ["final_position", "final_stance", "stance", "conclusion"])
-    what_changed = _pick_string(payload, ["what_changed"])
-    strongest_argument = _pick_string(payload, ["strongest_argument", "main_argument", "challenge"])
-    remaining_concerns = _pick_string(payload, ["remaining_concerns", "risks_or_caveats"]) 
-    conclusion = _pick_string(payload, ["conclusion", "recommendation", "final_position"])
-    response = _pick_string(payload, ["response", "text", "conclusion", "final_position"])
+    final_position = _pick_long_text(payload, ["final_position", "final_stance", "stance", "conclusion"])
+    what_changed = _pick_long_text(payload, ["what_changed"])
+    strongest_argument = _pick_long_text(payload, ["strongest_argument", "main_argument", "challenge"])
+    remaining_concerns = _pick_long_text(payload, ["remaining_concerns", "risks_or_caveats"]) 
+    conclusion = _pick_long_text(payload, ["conclusion", "recommendation", "final_position"])
+    response = _pick_long_text(payload, ["response", "text", "conclusion", "final_position"])
 
     if not response:
-        response = _sanitize_text(raw_text)
+        response = _sanitize_text(raw_text, preserve_paragraphs=True)
 
+    # FIX-04: do NOT fabricate generic synthesis sentences. Track which fields
+    # were missing so the UI can surface them as warnings instead of silently
+    # showing invented content.
+    round3_warnings: list[str] = []
     if not final_position:
         final_position = conclusion or _first_sentence(response)
+        if not final_position:
+            round3_warnings.append("round3_final_position_missing")
     if not what_changed:
-        what_changed = "The critique round refined the position by exposing assumptions and trade-offs."
+        what_changed = ""
+        round3_warnings.append("round3_what_changed_missing")
     if not strongest_argument:
-        strongest_argument = "The strongest argument was the one that best connected practical risks with clear policy trade-offs."
+        strongest_argument = ""
+        round3_warnings.append("round3_strongest_argument_missing")
     if not remaining_concerns:
-        remaining_concerns = "Important implementation and fairness concerns remain unresolved."
+        remaining_concerns = ""
+        round3_warnings.append("round3_remaining_concerns_missing")
     if not conclusion:
         conclusion = final_position or _first_sentence(response)
 
@@ -416,12 +572,15 @@ def _normalize_round3(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
 
     key_tradeoff = _pick_string(payload, ["key_tradeoff", "trade_off", "tradeoff"]) or remaining_concerns
     winning_argument = _pick_string(payload, ["winning_argument"]) or strongest_argument
-    losing_argument = _pick_string(payload, ["losing_argument"]) or "The opposing argument lost because it did not adequately address the dominant trade-off."
+    losing_argument = _pick_string(payload, ["losing_argument"])
+    if not losing_argument:
+        losing_argument = ""
+        round3_warnings.append("round3_losing_argument_missing")
     confidence = (_pick_string(payload, ["confidence"]) or "medium").lower()
     if confidence not in ("low", "medium", "high"):
         confidence = "medium"
 
-    return {
+    out = {
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "final_position": final_position or "Mixed",
@@ -442,13 +601,16 @@ def _normalize_round3(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         "position_shift": _pick_string(payload, ["position_shift"]) or what_changed,
         "response": response,
     }
+    if round3_warnings:
+        out["parse_warnings"] = round3_warnings
+    return out
 
 
 # ── Follow-up cycle normalizers ──────────────────────────────────────────────
 
 def _normalize_followup_response(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
-    response = _pick_string(payload, ["response", "answer_to_followup", "main_argument", "text"])
-    answer = _pick_string(payload, ["answer_to_followup", "answer", "response"]) or response
+    response = _pick_long_text(payload, ["response", "answer_to_followup", "main_argument", "text"])
+    answer = _pick_long_text(payload, ["answer_to_followup", "answer", "response"]) or response
     position_update = _pick_string(payload, ["position_update", "stance_update", "position_change"])
     confidence = (_pick_string(payload, ["confidence"]) or "medium").lower()
     if confidence not in ("low", "medium", "high"):
@@ -456,7 +618,7 @@ def _normalize_followup_response(payload: dict[str, Any], raw_text: str) -> dict
 
     key_points = _pick_string_list(payload, ["key_points"])
     if not response:
-        response = answer or _sanitize_text(raw_text)
+        response = answer or _sanitize_text(raw_text, preserve_paragraphs=True)
     if not response:
         raise LLMParseError("Follow-up response missing content.")
 
@@ -494,13 +656,13 @@ def _normalize_followup_critique(payload: dict[str, Any], raw_text: str) -> dict
     target_kind = (_pick_string(payload, ["target_kind"]) or "").lower()
     if target_kind not in ("peer", "strongest_argument", "unresolved_question"):
         target_kind = "peer"
-    challenge = _pick_string(payload, ["challenge", "critique"])
-    counter = _pick_string(payload, ["counterargument", "counter_evidence"])
+    challenge = _pick_long_text(payload, ["challenge", "critique"])
+    counter = _pick_long_text(payload, ["counterargument", "counter_evidence"])
     impact = _pick_string(payload, ["impact"])
-    response = _pick_string(payload, ["response", "text", "challenge", "counterargument"])
+    response = _pick_long_text(payload, ["response", "text", "challenge", "counterargument"])
 
     if not response:
-        response = _sanitize_text(raw_text)
+        response = _sanitize_text(raw_text, preserve_paragraphs=True)
     if not response:
         response = f"{challenge} {counter}".strip()
     if not response:
@@ -526,6 +688,7 @@ def _normalize_followup_critique(payload: dict[str, Any], raw_text: str) -> dict
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "target_agent": target_agent,
+        "target_roles": _parse_target_roles(target_agent),
         "target_kind": target_kind,
         "challenge": challenge,
         "counterargument": counter,
@@ -538,11 +701,11 @@ def _normalize_followup_critique(payload: dict[str, Any], raw_text: str) -> dict
 
 
 def _normalize_updated_synthesis(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
-    updated_conclusion = _pick_string(payload, ["updated_conclusion", "conclusion", "final_position"])
-    what_changed = _pick_string(payload, ["what_changed"])
-    strongest_argument = _pick_string(payload, ["strongest_argument", "main_argument"])
-    remaining = _pick_string(payload, ["remaining_disagreement", "remaining_concerns", "open_questions"])
-    response = _pick_string(payload, ["response", "text", "updated_conclusion", "conclusion"])
+    updated_conclusion = _pick_long_text(payload, ["updated_conclusion", "conclusion", "final_position"])
+    what_changed = _pick_long_text(payload, ["what_changed"])
+    strongest_argument = _pick_long_text(payload, ["strongest_argument", "main_argument"])
+    remaining = _pick_long_text(payload, ["remaining_disagreement", "remaining_concerns", "open_questions"])
+    response = _pick_long_text(payload, ["response", "text", "updated_conclusion", "conclusion"])
 
     conclusion_changed_raw = _pick_string(
         payload, ["conclusion_changed", "changed", "position_changed"]
@@ -566,23 +729,28 @@ def _normalize_updated_synthesis(payload: dict[str, Any], raw_text: str) -> dict
     )
 
     if not response:
-        response = _sanitize_text(raw_text)
+        response = _sanitize_text(raw_text, preserve_paragraphs=True)
     if not response:
         raise LLMParseError("Updated synthesis missing content.")
 
     if not updated_conclusion:
         updated_conclusion = _first_sentence(response)
+    # FIX-04: stop fabricating generic synthesis text. Empty fields surface as
+    # parse_warnings so the UI / debug panel can show what was missing.
+    upd_warnings: list[str] = []
     if not what_changed:
-        what_changed = "The follow-up clarified how the position holds up under the new question."
+        what_changed = ""
+        upd_warnings.append("updated_synthesis_what_changed_missing")
     if not strongest_argument:
-        strongest_argument = _strongest_claim_sentence(response) or _first_sentence(response)
+        strongest_argument = _strongest_claim_sentence(response) or ""
+        if not strongest_argument:
+            upd_warnings.append("updated_synthesis_strongest_argument_missing")
     if not remaining:
-        remaining = "Some disagreements about implementation remain open."
+        remaining = ""
+        upd_warnings.append("updated_synthesis_remaining_disagreement_missing")
     if not change_reason:
-        change_reason = (
-            what_changed if conclusion_changed == "yes"
-            else "The follow-up did not introduce evidence strong enough to shift the previous conclusion."
-        )
+        change_reason = ""
+        upd_warnings.append("updated_synthesis_change_reason_missing")
 
     short_summary = normalize_summary(
         _pick_string(payload, ["one_sentence_takeaway", "short_summary", "summary"]),
@@ -591,12 +759,15 @@ def _normalize_updated_synthesis(payload: dict[str, Any], raw_text: str) -> dict
 
     key_tradeoff = _pick_string(payload, ["key_tradeoff", "trade_off", "tradeoff"]) or remaining
     winning_argument = _pick_string(payload, ["winning_argument"]) or strongest_argument
-    losing_argument = _pick_string(payload, ["losing_argument"]) or "The opposing argument lost because it did not adequately address the dominant trade-off."
+    losing_argument = _pick_string(payload, ["losing_argument"])
+    if not losing_argument:
+        losing_argument = ""
+        upd_warnings.append("updated_synthesis_losing_argument_missing")
     confidence = (_pick_string(payload, ["confidence"]) or "medium").lower()
     if confidence not in ("low", "medium", "high"):
         confidence = "medium"
 
-    return {
+    out = {
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "updated_conclusion": updated_conclusion,
@@ -620,6 +791,129 @@ def _normalize_updated_synthesis(payload: dict[str, Any], raw_text: str) -> dict
         "new_position": _pick_string(payload, ["new_position", "current_position"]) or updated_conclusion,
         "response": response,
     }
+    if upd_warnings:
+        out["parse_warnings"] = upd_warnings
+    return out
+
+
+_VALID_WINNING_SIDES = {"analyst", "critic", "creative", "draw", "mixed"}
+_VALID_CONFIDENCE = {"low", "medium", "high"}
+
+
+def _normalize_synthesis_verdict(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    """Normalize the moderator-aggregator verdict (Step 37).
+
+    The verdict is a single neutral aggregation produced after Round 3 (or
+    each follow-up cycle). It must NOT fabricate fields: every missing
+    field is surfaced via ``parse_warnings`` so the UI can show it
+    honestly.
+    """
+    warnings: list[str] = []
+
+    consensus = _pick_long_text(payload, ["consensus_statement", "consensus", "core_consensus"])
+    main_disagreement = _pick_long_text(
+        payload, ["main_disagreement", "primary_disagreement", "disagreement"]
+    )
+    recommended = _pick_long_text(
+        payload,
+        [
+            "recommended_answer",
+            "recommendation",
+            "policy_direction",
+            "final_position",
+            "updated_conclusion",
+        ],
+    )
+    response = _pick_long_text(
+        payload,
+        ["response", "text", "recommended_answer", "consensus_statement"],
+    )
+    if not response:
+        response = _sanitize_text(raw_text, preserve_paragraphs=True)
+    if not response and recommended:
+        response = recommended
+    if not response and consensus:
+        response = consensus
+    if not response:
+        raise LLMParseError("Synthesis verdict missing content.")
+
+    short_summary = normalize_summary(
+        _pick_string(payload, ["one_sentence_takeaway", "short_summary", "summary"]),
+        recommended or response,
+    )
+
+    winning_side = (_pick_string(payload, ["winning_side", "winner"]) or "").lower().strip()
+    if winning_side not in _VALID_WINNING_SIDES:
+        if winning_side:
+            warnings.append("synthesis_verdict_winning_side_invalid")
+        winning_side = "mixed"
+
+    confidence = (_pick_string(payload, ["confidence", "confidence_level"]) or "").lower().strip()
+    if confidence not in _VALID_CONFIDENCE:
+        if confidence:
+            warnings.append("synthesis_verdict_confidence_invalid")
+        confidence = "medium"
+
+    what_changed = _pick_long_text(payload, ["what_changed", "change_summary"])
+    reasoning_basis = _pick_string_list(
+        payload, ["reasoning_basis", "reasons", "key_reasons"]
+    )
+    unresolved = _pick_string_list(
+        payload, ["unresolved_questions", "open_questions", "remaining_questions"]
+    )
+
+    if not consensus:
+        warnings.append("synthesis_verdict_consensus_missing")
+    if not main_disagreement:
+        warnings.append("synthesis_verdict_main_disagreement_missing")
+    if not recommended:
+        recommended = _first_sentence(response) or short_summary
+        warnings.append("synthesis_verdict_recommended_answer_missing")
+    if not reasoning_basis:
+        warnings.append("synthesis_verdict_reasoning_basis_missing")
+
+    # Quality guards mirroring the per-agent normalizer.
+    raw_short_summary = str(payload.get("short_summary", "") or "").strip()
+    raw_takeaway = str(payload.get("one_sentence_takeaway", "") or "").strip()
+    if (
+        raw_short_summary
+        and raw_takeaway
+        and (
+            raw_short_summary == raw_takeaway
+            or _texts_too_similar(raw_short_summary, raw_takeaway, threshold=0.90)
+        )
+    ):
+        warnings.append("short_summary_duplicates_takeaway")
+
+    concat_probe = " ".join(
+        str(x or "")
+        for x in (
+            payload.get("one_sentence_takeaway", ""),
+            payload.get("consensus_statement", ""),
+            payload.get("main_disagreement", ""),
+            payload.get("recommended_answer", ""),
+            *(payload.get("reasoning_basis") or []),
+        )
+    ).strip()
+    if concat_probe and _texts_too_similar(response, concat_probe, threshold=0.85):
+        warnings.append("response_looks_like_field_concatenation")
+
+    out = {
+        "one_sentence_takeaway": short_summary,
+        "short_summary": short_summary,
+        "consensus_statement": consensus,
+        "main_disagreement": main_disagreement,
+        "recommended_answer": recommended,
+        "winning_side": winning_side,
+        "confidence": confidence,
+        "what_changed": what_changed,
+        "reasoning_basis": reasoning_basis,
+        "unresolved_questions": unresolved,
+        "response": response,
+    }
+    if warnings:
+        out["parse_warnings"] = warnings
+    return out
 
 
 def _normalize_position_evolution(
@@ -700,6 +994,24 @@ def _pick_string(source: dict[str, Any], keys: list[str]) -> str:
         value = source.get(key)
         if isinstance(value, str):
             sanitized = _sanitize_text(value)
+            if sanitized:
+                return sanitized
+    return ""
+
+
+def _pick_long_text(source: dict[str, Any], keys: list[str]) -> str:
+    """Like ``_pick_string`` but preserves paragraph breaks.
+
+    Used for fields that hold the agent's full analytical answer
+    (``response``, ``main_argument``, ``conclusion``, ``challenge``,
+    ``counterargument``, ``answer_to_followup``, ``updated_conclusion``,
+    ``final_position``). Detail panels render these verbatim, so we must
+    not collapse multi-paragraph reasoning into a single wall of text.
+    """
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str):
+            sanitized = _sanitize_text(value, preserve_paragraphs=True)
             if sanitized:
                 return sanitized
     return ""
@@ -832,6 +1144,48 @@ def _extract_best_jsonish_field(text: str) -> str:
         cleaned = _sanitize_text(decoded)
         if cleaned:
             return cleaned
+    return ""
+
+
+def _texts_too_similar(a: str, b: str, threshold: float = 0.92) -> bool:
+    """Return True when two strings have ≥``threshold`` token overlap.
+
+    Used as an anti-repetition guard between fields like ``response`` and
+    ``one_sentence_takeaway`` — exact equality is too strict because models
+    often paraphrase the takeaway slightly when filling ``response``.
+    """
+    if not a or not b:
+        return False
+
+    norm = lambda s: re.sub(r"\s+", " ", s.strip().lower())  # noqa: E731
+    a_n, b_n = norm(a), norm(b)
+    if a_n == b_n:
+        return True
+    # If the shorter string is a near-perfect prefix/suffix of the longer one
+    # we treat them as duplicates; this catches "<takeaway>." vs "<takeaway>".
+    short, long = sorted((a_n, b_n), key=len)
+    if len(short) >= 24 and short in long and len(short) / max(len(long), 1) >= 0.8:
+        return True
+
+    a_tokens = set(re.findall(r"[a-z0-9]+", a_n))
+    b_tokens = set(re.findall(r"[a-z0-9]+", b_n))
+    if not a_tokens or not b_tokens:
+        return False
+    overlap = len(a_tokens & b_tokens) / max(len(a_tokens | b_tokens), 1)
+    return overlap >= threshold
+
+
+def _recover_full_response_from_raw(raw_text: str) -> str:
+    """Try to pull a richer multi-paragraph ``response`` out of raw text.
+
+    Used when the parsed payload's ``response`` field collapsed to the same
+    sentence as the takeaway. Looks for the JSON ``response`` field directly
+    in the raw text (handles cases where the parsed value got truncated by
+    a malformed sibling field) and falls back to other long-text fields.
+    """
+    extracted = _extract_best_jsonish_field(raw_text)
+    if extracted and len(extracted) > 120:
+        return _sanitize_text(extracted, preserve_paragraphs=True)
     return ""
 
 

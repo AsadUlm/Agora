@@ -115,6 +115,12 @@ class ChatEngine:
             event_type=ExecutionEventType.turn_started,
             session_id=ctx.session_id,
             turn_id=ctx.turn_id,
+            payload={
+                # FIX-12: surface RAG state to the UI. ``rag_active=False`` is
+                # a normal mode (reasoning-only) — never an error.
+                "rag_active": ctx.rag_active,
+                "document_count": ctx.document_count,
+            },
         ))
 
         # ── Execute rounds via RoundManager ────────────────────────────────────
@@ -238,6 +244,11 @@ class ChatEngine:
                 for a in active_agents
             ],
             turn_index=turn.turn_index,
+            # FIX-12: surface RAG state so the UI can render a neutral
+            # "Reasoning-only mode" indicator when no documents are attached.
+            # No documents is a valid mode — never treated as an error.
+            rag_active=any(bindings_by_agent.get(a.id) for a in active_agents),
+            document_count=len({d for ids in bindings_by_agent.values() for d in ids}),
         )
 
     async def _emit(self, event: ExecutionEvent) -> None:
@@ -280,6 +291,7 @@ def _agent_to_ctx(agent: ChatAgent, assigned_doc_ids: list[uuid.UUID] | None = N
         model=agent.model,
         temperature=float(agent.temperature) if agent.temperature is not None else 0.7,
         reasoning_style=agent.reasoning_style or "balanced",
+        reasoning_depth=getattr(agent, "reasoning_depth", None) or "normal",
         knowledge_mode=agent.knowledge_mode or "shared_session_docs",
         knowledge_strict=agent.knowledge_strict if agent.knowledge_strict is not None else False,
         assigned_document_ids=assigned_doc_ids or [],

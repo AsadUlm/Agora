@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useGraphStore } from "../model/graph.store";
 import { useDebateStore } from "../model/debate.store";
 import { getPersonaMeta } from "../model/persona-meta";
-import { extractFullResponse, getTurnSummary, normalizeSummary, parseResponsePayload } from "../model/formatters";
+import { extractFullResponse, getTurnSummary, parseResponsePayload, sentenceSafePreview, cleanScalarText } from "../model/formatters";
 import { cn } from "@/shared/lib/cn";
 
 const kindLabels: Record<string, string> = {
@@ -75,10 +75,12 @@ function relationLabel(kind: string, outgoing: boolean): string {
 }
 
 function normalizeScalar(value: unknown): string {
+    // Preserve full text for detail-panel sections. We previously truncated
+    // every scalar to its first sentence (~280 chars) which compressed every
+    // analytical answer into a slogan. Detail panels must show the full
+    // structured field exactly as the model produced it.
     if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (!trimmed) return "";
-        return normalizeSummary(trimmed, trimmed, 280);
+        return cleanScalarText(value);
     }
     if (typeof value === "number" || typeof value === "boolean") return String(value);
     return "";
@@ -266,8 +268,11 @@ function buildSections(args: {
         pushSection(sections, "Follow-up Question", firstScalar(parsed, ["question"]) || fullResponse);
     }
 
-    if (fullResponse && !isRound3) {
-        pushSection(sections, "Full Response", fullResponse);
+    // Always include the full analytical response in detail panels,
+    // including Round 3. Graph-card previews already use a separate
+    // sentence-safe summary, so the detail panel must never truncate.
+    if (fullResponse) {
+        pushSection(sections, isRound3 ? "Full Synthesis" : "Full Response", fullResponse);
     }
 
     if (sections.length === 0 && fullResponse) {
@@ -278,7 +283,7 @@ function buildSections(args: {
 }
 
 function QuickTakeawayBox({ text }: { text: string }) {
-    const [open, setOpen] = useState(false);
+    const [open, setOpen] = useState(true);
     const isLong = text.length > 140;
 
     return (
@@ -330,17 +335,27 @@ export default function NodeDetailDrawer() {
     const quickTakeaway = useMemo(() => {
         if (!node) return "";
         const raw = node.summary || node.content;
-        // If raw is already plain text (not JSON), use it directly
         const trimmed = (raw ?? "").trimStart();
+        // Plain-text payload — return a sentence-safe preview, never a
+        // mid-word slice (which produced '... but they sho' truncations).
         if (!trimmed.startsWith("{")) {
-            return trimmed.slice(0, 180);
+            return sentenceSafePreview(trimmed, 220);
         }
-        // Raw is JSON — extract the summary field before displaying
         try {
             const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-            for (const key of ["short_summary", "summary", "final_position", "final_stance", "stance", "conclusion"]) {
-                if (typeof parsed[key] === "string" && (parsed[key] as string).trim()) {
-                    return (parsed[key] as string).trim().slice(0, 180);
+            // Prefer a dedicated takeaway field. These are already short.
+            for (const key of ["one_sentence_takeaway", "quick_takeaway", "short_summary", "summary"]) {
+                const val = parsed[key];
+                if (typeof val === "string" && val.trim()) {
+                    return sentenceSafePreview(val, 240);
+                }
+            }
+            // Otherwise derive a sentence-safe preview from a position-like
+            // field — never slice mid-word.
+            for (const key of ["final_position", "final_stance", "stance", "conclusion"]) {
+                const val = parsed[key];
+                if (typeof val === "string" && val.trim()) {
+                    return sentenceSafePreview(val, 220);
                 }
             }
         } catch {
@@ -351,7 +366,7 @@ export default function NodeDetailDrawer() {
             round: node.round,
             kind: node.kind,
             sourceRole: node.agentRole,
-            maxLen: 180,
+            maxLen: 220,
         });
     }, [node]);
 

@@ -78,6 +78,24 @@ export default function AppSidebar() {
                         </svg>
                         Documents
                     </NavLink>
+                    <NavLink
+                        to="/agent-presets"
+                        className={({ isActive }) =>
+                            cn(
+                                "flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all",
+                                isActive
+                                    ? "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
+                                    : "text-agora-text-muted hover:text-white hover:bg-agora-surface-light/40",
+                            )
+                        }
+                    >
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <circle cx="5.5" cy="6" r="2" stroke="currentColor" strokeWidth="1.2" />
+                            <circle cx="10.5" cy="6" r="2" stroke="currentColor" strokeWidth="1.2" />
+                            <path d="M2 13c.6-1.6 2-2.5 3.5-2.5S8.4 11.4 9 13M7 13c.6-1.6 2-2.5 3.5-2.5S13.4 11.4 14 13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                        </svg>
+                        Agent Presets
+                    </NavLink>
                     <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs text-agora-text-muted/40 cursor-default">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                             <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.2" />

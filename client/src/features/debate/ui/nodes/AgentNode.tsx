@@ -4,9 +4,11 @@ import { AnimatePresence, motion } from "motion/react";
 import type { DebateGraphNode } from "../../model/graph.types";
 import { useGraphStore } from "../../model/graph.store";
 import { truncateNodeText } from "../../model/formatters";
+import { AGENT_COLOR_PALETTE } from "../../model/agent-config.types";
 
 type AgentNodeData = DebateGraphNode & {
     label: string;
+    agentColor?: string;
     dimmedByRound?: boolean;
     dimmedBySelection?: boolean;
     dimmedByGeneration?: boolean;
@@ -23,6 +25,13 @@ const statusStyles: Record<string, string> = {
     failed: "opacity-100 border-red-500/60 ring-1 ring-red-500/20",
 };
 
+// Color gradients keyed by AGENT_COLOR_PALETTE key.
+const COLOR_GRADIENTS: Record<string, string> = {
+    ...Object.fromEntries(AGENT_COLOR_PALETTE.map((c) => [c.key, c.gradient])),
+    default: "from-slate-600/80 to-slate-800/80",
+};
+
+// Legacy role-name fallback (for old nodes that don’t have agentColor yet).
 const roleColors: Record<string, string> = {
     analyst: "from-blue-600/80 to-blue-800/80",
     critic: "from-rose-600/80 to-rose-800/80",
@@ -79,7 +88,9 @@ export default function AgentNode({
     selected,
 }: NodeProps & { data: AgentNodeData }) {
     const nodeStatus = data.status ?? "visible";
-    const gradient = getRoleGradient(data.agentRole);
+    const gradient = data.agentColor
+        ? (COLOR_GRADIENTS[data.agentColor] ?? COLOR_GRADIENTS.default)
+        : getRoleGradient(data.agentRole);
     const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
     const dimmedByFocus = focusedNodeId != null && focusedNodeId !== id;
     const dimmed = dimmedByFocus || data.dimmedByRound || data.dimmedBySelection || data.dimmedByGeneration;

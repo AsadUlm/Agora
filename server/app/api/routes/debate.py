@@ -147,6 +147,7 @@ async def start_debate(
                 else settings.LLM_TEMPERATURE
             ),
             reasoning_style=cfg.reasoning.style,
+            reasoning_depth=cfg.reasoning.depth or "normal",
             position_order=i,
             is_active=True,
             knowledge_mode=cfg.knowledge.mode,

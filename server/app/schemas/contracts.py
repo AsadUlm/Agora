@@ -120,6 +120,12 @@ class TurnContext(BaseModel):
     question: str
     agents: list[AgentContext]
     turn_index: int = 1
+    # FIX-12: surface whether RAG is active for this turn so the UI can show a
+    # neutral mode indicator. ``rag_active`` is True iff at least one document
+    # is attached to the session/agents and was discoverable for retrieval.
+    # ``document_count`` is informational only.
+    rag_active: bool = False
+    document_count: int = 0
 
 
 # ── WebSocket / Streaming Contracts ──────────────────────────────────────────

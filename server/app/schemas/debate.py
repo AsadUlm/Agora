@@ -31,6 +31,7 @@ class AgentDTO(BaseModel):
     model: str
     temperature: float | None
     reasoning_style: str | None
+    reasoning_depth: str | None = None
     position_order: int | None
     knowledge_mode: str | None
     knowledge_strict: bool | None

@@ -26,10 +26,17 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
+    ANTI_STRAWMAN_BLOCK,
+    ASSUMPTION_LABELING_BLOCK,
     CONTINUITY_REQUIREMENTS_BLOCK,
     DEBUG_METADATA_BLOCK,
+    FACTUALITY_BLOCK,
+    FIELD_DIFFERENTIATION_BLOCK,
+    FOLLOWUP_ADAPTATION_BLOCK,
     QUALITY_REQUIREMENTS_BLOCK,
+    evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
     EvidencePacket,
@@ -98,6 +105,28 @@ def _format_debate_summary(debate_summary: dict[str, Any] | None) -> str:
         lines.append("- Unresolved questions:")
         lines.extend(u_lines)
     return "\n".join(lines) + "\n"
+
+
+def _format_consensus_stop_list(debate_summary: dict[str, Any] | None) -> str:
+    """FIX-08: prevent agents from re-asserting prior consensus verbatim.
+
+    When a follow-up cycle starts, agents tend to restate the previous
+    synthesis's consensus sentence and treat it as the answer. This block
+    explicitly bans that move and asks the agent to advance the analysis.
+    """
+    if not debate_summary:
+        return ""
+    consensus = _compact(str(debate_summary.get("consensus", "") or ""), 320)
+    if not consensus:
+        return ""
+    return (
+        "\nConsensus stop-list (do NOT just repeat this in your answer):\n"
+        f"  · {consensus}\n"
+        "Treat the consensus as established background. Your task is to ADVANCE\n"
+        "the analysis: surface a new tension the follow-up exposes, sharpen a\n"
+        "trade-off, or explicitly state which part of the consensus the new\n"
+        "question stresses. Do not return the consensus sentence as your answer.\n"
+    )
 
 
 def _format_cycle_memories(cycle_memories: list[dict[str, Any]] | None) -> str:
@@ -216,12 +245,7 @@ def build_followup_response_prompt(
         "deep": "Be exhaustive. Detailed analysis per field.",
     }.get(reasoning_depth, "Be thorough. A short paragraph per field.")
 
-    style = {
-        "analytical": "Reason analytically based on evidence.",
-        "creative": "Reflect creatively and consider unexpected insights.",
-        "devil_advocate": "Stay contrarian; challenge convenient assumptions.",
-        "balanced": "Reflect in a balanced, nuanced way.",
-    }.get(reasoning_style, "Reflect in a balanced, nuanced way.")
+    style = _style_instruction("reason", reasoning_style)
 
     points = "; ".join([_compact(p, 100) for p in (own_key_arguments or [])][:3]) or "(none recorded)"
     chunks = retrieved_chunks or []
@@ -234,6 +258,7 @@ def build_followup_response_prompt(
     cycles_block = _format_cycle_memories(cycle_memories)
     evolution_block = _format_evolving_positions(evolving_positions)
     evidence_mem_block = _format_evidence_memory(evidence_memory)
+    consensus_stop_block = _format_consensus_stop_list(debate_summary)
 
     return f"""You are a debate participant with the role: {role}. The debate is ongoing.
 {persona_block(role)}
@@ -241,7 +266,7 @@ Original debate question: {_compact(original_question, 280)}
 
 Previous synthesis of the debate so far:
 {_compact(previous_synthesis, 600)}
-{summary_block}{cycles_block}{evolution_block}{evidence_mem_block}
+{summary_block}{cycles_block}{evolution_block}{evidence_mem_block}{consensus_stop_block}
 Your established position from the debate:
 {_compact(own_previous_position, 280)}
 
@@ -261,13 +286,23 @@ position survives the new question. Do not paraphrase the previous synthesis.
 Reasoning style: {style}
 {depth}
 
+{evidence_mode_block(bool(packets or chunks))}
+
 {QUALITY_REQUIREMENTS_BLOCK}
 
+{FACTUALITY_BLOCK}
+
+{FIELD_DIFFERENTIATION_BLOCK}
+
+{ASSUMPTION_LABELING_BLOCK}
+
 {CONTINUITY_REQUIREMENTS_BLOCK}
+
+{FOLLOWUP_ADAPTATION_BLOCK}
 {_OUTPUT_CONTRACT}
 Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) capturing your answer.
-- short_summary: same sentence as one_sentence_takeaway.
+- short_summary: 2 distinct sentences that ADD a supporting reason or trade-off the takeaway omits. MUST NOT duplicate the takeaway.
 - answer_to_followup: direct answer to the new question (1–3 sentences).
 - key_points: 2–4 strings.
 - confidence: one of "low", "medium", "high".
@@ -276,7 +311,7 @@ Required JSON fields:
     - reason: 1 sentence on WHY (or why not).
 - position_update: one short note (kept for backward compatibility — usually equals
   position_evolution.reason; set "" if change is "no_change").
-- response: full prose answer for end users.
+- response: FULL multi-paragraph analytical answer (300-550 words) covering: 1) direct answer to the new question, 2) how it interacts with your previous position, 3) key reasoning, 4) risks / open questions, 5) updated stance. Detail panels render this verbatim — do NOT shorten it.
 
 {DEBUG_METADATA_BLOCK}
 """
@@ -314,12 +349,7 @@ def build_followup_critique_prompt(
         "deep": "Be exhaustive.",
     }.get(reasoning_depth, "Be thorough.")
 
-    style = {
-        "analytical": "Critique analytically.",
-        "creative": "Critique creatively, exposing blind spots.",
-        "devil_advocate": "Critique aggressively.",
-        "balanced": "Critique in a balanced, fair way.",
-    }.get(reasoning_style, "Critique in a balanced, fair way.")
+    style = _style_instruction("critique", reasoning_style)
 
     others_block = "\n".join(
         [
@@ -378,11 +408,17 @@ Reasoning style: {style}
 
 {QUALITY_REQUIREMENTS_BLOCK}
 
+{FACTUALITY_BLOCK}
+
+{FIELD_DIFFERENTIATION_BLOCK}
+
 {CONTINUITY_REQUIREMENTS_BLOCK}
+
+{FOLLOWUP_ADAPTATION_BLOCK}
 {_OUTPUT_CONTRACT}
 Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) naming the core flaw.
-- short_summary: same sentence as one_sentence_takeaway.
+- short_summary: 2 distinct sentences that ADD a supporting reason or trade-off the takeaway omits. MUST NOT duplicate the takeaway.
 - target_agent: the role (or "Strongest argument" / "Unresolved question") you are challenging.
 - target_kind: one of "peer", "strongest_argument", "unresolved_question".
 - challenge: the core problem with the target (1–2 sentences).
@@ -423,12 +459,7 @@ def build_updated_synthesis_prompt(
         "deep": "Be exhaustive.",
     }.get(reasoning_depth, "Be thorough.")
 
-    style = {
-        "analytical": "Synthesize analytically based on evidence.",
-        "creative": "Synthesize creatively, surfacing emerging insights.",
-        "devil_advocate": "Synthesize while keeping the strongest counter-views in view.",
-        "balanced": "Synthesize in a balanced, fair way.",
-    }.get(reasoning_style, "Synthesize in a balanced, fair way.")
+    style = _style_instruction("synthesize", reasoning_style)
 
     resp_block = "\n".join(
         [
@@ -487,7 +518,17 @@ Decision rule (mandatory):
 Reasoning style: {style}
 {depth}
 
+{evidence_mode_block(bool(packets or chunks))}
+
 {QUALITY_REQUIREMENTS_BLOCK}
+
+{FACTUALITY_BLOCK}
+
+{FIELD_DIFFERENTIATION_BLOCK}
+
+{ASSUMPTION_LABELING_BLOCK}
+
+{FOLLOWUP_ADAPTATION_BLOCK}
 
 Evolution intelligence (mandatory for the moderator-style synthesis):
 - `change_reason` MUST explain WHY the conclusion shifted (or did not), not
@@ -500,7 +541,7 @@ Evolution intelligence (mandatory for the moderator-style synthesis):
 {_OUTPUT_CONTRACT}
 Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) capturing the updated conclusion.
-- short_summary: same sentence as one_sentence_takeaway.
+- short_summary: 2 distinct sentences that ADD a supporting reason or trade-off the takeaway omits. MUST NOT duplicate the takeaway.
 - updated_conclusion: the refined conclusion after this follow-up cycle.
 - conclusion_changed: exactly "yes" or "no".
 - change_reason: 1–2 sentences explaining WHY the conclusion changed (or why it did not).
@@ -520,7 +561,7 @@ Required JSON fields:
 - what_changed: what the new question shifted (or confirmed) — 1–2 sentences.
 - strongest_argument: the single argument that did the most work this cycle.
 - remaining_disagreement: open questions or unresolved tensions.
-- response: full prose suitable for end users.
+- response: FULL multi-paragraph synthesis essay (450-700 words) covering: 1) restated question + new dominant position, 2) winning argument, 3) why losing argument lost, 4) key trade-off, 5) risks / open questions, 6) recommendation. Detail panels render this verbatim — do NOT shorten it.
 
 Optional (recommended) evolution-tracking fields:
 - consensus_growth: short string describing what new ground was agreed on this cycle (or "").

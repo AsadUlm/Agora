@@ -24,11 +24,15 @@ import {
 } from "@/features/debate/model/agent-config.types";
 import AgentConfigDrawer from "@/features/debate/ui/AgentConfigDrawer";
 import { useDebateStore } from "@/features/debate/model/debate.store";
+import { getAgentPreset } from "@/features/agent-presets/api/agent-preset.api";
+import { applyPresetToAgentConfig } from "@/features/agent-presets/model/agent-preset.types";
+import { toast } from "@/shared/ui/toast";
 
 export default function DebateListPage() {
     const navigate = useNavigate();
     const location = useLocation();
     const startDebate = useDebateStore((s) => s.startDebate);
+    const setAgentColors = useDebateStore((s) => s.setAgentColors);
     const [debates, setDebates] = useState<DebateListItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [creating, setCreating] = useState(false);
@@ -61,19 +65,49 @@ export default function DebateListPage() {
         fetchDebates();
     }, [fetchDebates]);
 
-    // Handle "New Debate" from sidebar
+    // Handle "New Debate" from sidebar + optional ?presetId= / state.presetId
     useEffect(() => {
-        if ((location.state as { openNew?: boolean })?.openNew) {
+        const stateAny = location.state as { openNew?: boolean; presetId?: string } | null;
+        const searchPreset = new URLSearchParams(location.search).get("presetId");
+        const presetId = stateAny?.presetId ?? searchPreset ?? null;
+
+        if (stateAny?.openNew || presetId) {
             setShowNew(true);
-            // Clear the state so it doesn't re-trigger
-            window.history.replaceState({}, "");
         }
-    }, [location.state]);
+
+        if (presetId) {
+            (async () => {
+                try {
+                    const preset = await getAgentPreset(presetId);
+                    setAgentConfigs((prev) => {
+                        const base = createAgentConfig();
+                        const updates = applyPresetToAgentConfig(preset, base);
+                        return [...prev, { ...base, ...updates }];
+                    });
+                    toast.success(`Added agent from preset "${preset.name}".`);
+                } catch {
+                    toast.error("Failed to apply preset.");
+                }
+            })();
+        }
+
+        if (stateAny?.openNew || presetId) {
+            // Clear router state + query so it doesn't re-trigger.
+            window.history.replaceState({}, "", location.pathname);
+        }
+    }, [location.state, location.search, location.pathname]);
 
     const handleCreate = async () => {
         if (!question.trim() || enabledCount === 0) return;
         setCreating(true);
         try {
+            // Store per-position colors so the graph can color-code nodes.
+            const colorsByPosition: Record<number, string> = {};
+            agentConfigs.filter((c) => c.enabled).forEach((c, i) => {
+                colorsByPosition[i] = c.color;
+            });
+            setAgentColors(colorsByPosition);
+
             const res = await startDebate(
                 question.trim(),
                 agentConfigsToPayload(agentConfigs),

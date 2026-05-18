@@ -10,6 +10,8 @@ export default function TopTopicBar() {
     const navigate = useNavigate();
     const session = useDebateStore((s) => s.session);
     const agents = useDebateStore((s) => s.agents);
+    const ragActive = useDebateStore((s) => s.ragActive);
+    const documentCount = useDebateStore((s) => s.documentCount);
     const graph = useGraphStore((s) => s.graph);
     const execution = useDebateExecutionState();
     const [questionExpanded, setQuestionExpanded] = useState(false);
@@ -113,6 +115,30 @@ export default function TopTopicBar() {
                     {session?.agents && (
                         <span className="hidden md:inline text-[11px] text-agora-text-muted whitespace-nowrap">
                             {session.agents.length} agents
+                        </span>
+                    )}
+
+                    {/*
+                      FIX-12: Neutral RAG mode indicator. Reasoning-only
+                      (no documents attached) is a valid mode \u2014 never an error.
+                    */}
+                    {ragActive !== null && (
+                        <span
+                            className={cn(
+                                "hidden md:inline px-2 py-0.5 rounded-full text-[11px] font-medium border whitespace-nowrap",
+                                ragActive
+                                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+                                    : "bg-slate-500/10 text-slate-300 border-slate-500/30",
+                            )}
+                            title={
+                                ragActive
+                                    ? `Evidence mode \u00b7 ${documentCount} document${documentCount === 1 ? "" : "s"} attached`
+                                    : "Reasoning-only mode \u00b7 No documents attached"
+                            }
+                        >
+                            {ragActive
+                                ? `Evidence \u00b7 ${documentCount} doc${documentCount === 1 ? "" : "s"}`
+                                : "Reasoning-only"}
                         </span>
                     )}
                 </div>
