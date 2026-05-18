@@ -35,6 +35,18 @@ const navItems = [
             </svg>
         ),
     },
+    {
+        to: "/agent-presets",
+        end: false,
+        label: "Agent Presets",
+        icon: (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M2.5 13c0-2.485 2.462-4.5 5.5-4.5s5.5 2.015 5.5 4.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                <path d="M11.5 7.5l1 1 2-2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+        ),
+    },
 ];
 
 export default function AppSidebar() {
