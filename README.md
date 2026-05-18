@@ -38,7 +38,7 @@
 | -------- | ------------------------------------------------ |
 | Frontend | React 18, Vite, TypeScript, MUI (Material UI)    |
 | Backend  | FastAPI, SQLAlchemy (async), Alembic, PostgreSQL |
-| LLM      | Groq / OpenAI (provider pattern)                 |
+| LLM      | OpenRouter                 |
 | Testing  | pytest, pytest-asyncio, aiosqlite                |
 
 ---

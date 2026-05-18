@@ -67,7 +67,7 @@ class Message(Base):
     )
 
     # Relationships
-    chat_session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="messages" if hasattr(Base, "chat_sessions") else None, overlaps="chat_turns,chat_agents,messages")  # We can optionally back_populate if needed, but keeping it unpopulated since we didn't add the list back in ChatSession.
+    chat_session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="messages")
     chat_turn: Mapped["ChatTurn"] = relationship("ChatTurn", back_populates="messages")
     round: Mapped["Round"] = relationship("Round", back_populates="messages")
     chat_agent: Mapped["ChatAgent"] = relationship("ChatAgent", back_populates="messages")
