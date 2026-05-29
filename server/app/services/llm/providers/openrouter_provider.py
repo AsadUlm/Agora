@@ -20,9 +20,10 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# Hard safety ceiling. Mirrors `MAX_ALLOWED_TOKENS` in the round manager so
-# even ad-hoc callers cannot blow the OpenRouter credit budget.
-MAX_ALLOWED_TOKENS = 1200
+# Hard safety ceiling. Raised to 4000 to support the dedicated moderator
+# verdict call (MODERATOR_MAX_TOKENS=2000) and other high-budget rounds
+# without silent truncation.
+MAX_ALLOWED_TOKENS = 4000
 DEFAULT_MAX_TOKENS = 850
 
 
@@ -62,9 +63,10 @@ class OpenRouterProvider(LLMService):
         max_tokens = min(requested_max, MAX_ALLOWED_TOKENS)
         if request.max_tokens is not None and request.max_tokens > MAX_ALLOWED_TOKENS:
             logger.warning(
-                "OpenRouterProvider: requested max_tokens=%d exceeds ceiling, clamped to %d",
+                "OpenRouter max_tokens capped: requested=%s capped=%s model=%s",
                 request.max_tokens,
-                MAX_ALLOWED_TOKENS,
+                max_tokens,
+                model,
             )
 
         logger.debug(

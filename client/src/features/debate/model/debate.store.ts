@@ -448,11 +448,27 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     ? String(payload["short_summary"]).trim()
                     : "";
             const isFallbackHint = payload["is_fallback"] === true;
+            const parseStatus =
+                typeof payload["parse_status"] === "string"
+                    ? String(payload["parse_status"]).toLowerCase()
+                    : "";
+            const failureReason =
+                typeof payload["failure_reason"] === "string"
+                    ? String(payload["failure_reason"])
+                    : "";
             const generationStatus =
                 typeof payload["generation_status"] === "string"
                     ? String(payload["generation_status"]).toLowerCase()
                     : "success";
-            const failed = generationStatus === "failed" || skipGraphInference;
+            // Phase 6: a fallback / fallback-parse payload is malformed output
+            // and must be shown as a failed node, never as valid debate content.
+            const malformed = isFallbackHint || parseStatus === "fallback";
+            const failed =
+                generationStatus === "failed" || malformed || skipGraphInference;
+            const failMessage = malformed
+                ? "This model returned malformed output. Please retry this agent or choose a more stable model."
+                : "This agent response failed to generate.";
+
             const agentObj = state.agents.find(
                 (a) => a.id === event.agent_id,
             );
@@ -493,7 +509,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 });
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
-                        ? "This agent response failed to generate."
+                        ? failMessage
                         : normalizeSummary(
                             shortSummaryHint || formatRound1Summary(rawContent),
                             safeContent || rawContent || "Initial position prepared.",
@@ -503,9 +519,17 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     metadata: {
                         loading: false,
                         failed,
+                        malformed,
+                        failureReason,
                         isFallback: isFallbackHint,
                         rawOutput: rawContent,
                         displayContent: safeContent,
+                        // RAG visibility: forward the optional retrieval blob
+                        // attached by the backend so the UI can render the
+                        // evidence badge and source-chunk panel.
+                        ...(payload["retrieval"] && typeof payload["retrieval"] === "object"
+                            ? { retrieval: payload["retrieval"] }
+                            : {}),
                     },
                 });
                 ensureVisible(nodeId);
@@ -561,7 +585,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 );
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
-                        ? "This agent response failed to generate."
+                        ? failMessage
                         : normalizeSummary(
                             shortSummaryHint || formatRound2Summary(
                                 rawContent,
@@ -575,9 +599,14 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     metadata: {
                         loading: false,
                         failed,
+                        malformed,
+                        failureReason,
                         isFallback: isFallbackHint,
                         rawOutput: rawContent,
                         displayContent: safeContent,
+                        ...(payload["retrieval"] && typeof payload["retrieval"] === "object"
+                            ? { retrieval: payload["retrieval"] }
+                            : {}),
                     },
                 });
                 ensureVisible(nodeId);
@@ -596,7 +625,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 });
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
-                        ? "This agent response failed to generate."
+                        ? failMessage
                         : normalizeSummary(
                             shortSummaryHint || getTurnSummary({
                                 raw: rawContent,
@@ -610,9 +639,14 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     metadata: {
                         loading: false,
                         failed,
+                        malformed,
+                        failureReason,
                         isFallback: isFallbackHint,
                         rawOutput: rawContent,
                         displayContent: safeContent,
+                        ...(payload["retrieval"] && typeof payload["retrieval"] === "object"
+                            ? { retrieval: payload["retrieval"] }
+                            : {}),
                     },
                 });
                 ensureVisible(nodeId);

@@ -5,6 +5,7 @@ import type { DebateGraphNode } from "../../model/graph.types";
 import { useGraphStore } from "../../model/graph.store";
 import { truncateNodeText } from "../../model/formatters";
 import { AGENT_COLOR_PALETTE } from "../../model/agent-config.types";
+import { parseEvidenceRetrieval } from "../../model/evidence.types";
 
 type AgentNodeData = DebateGraphNode & {
     label: string;
@@ -106,6 +107,14 @@ export default function AgentNode({
         ? `${loadingLabel}...`
         : truncateNodeText(data.summary || data.content || data.label, maxLen) || data.label;
 
+    // Small "evidence used" hint shown when the backend attached retrieval
+    // metadata with >0 chunks. Distinct from the static `knowledge` doc-count
+    // chip: that one shows how many docs were *available*; this one shows how
+    // many were *actually used* in this response.
+    const evidence = parseEvidenceRetrieval(data.metadata);
+    const evidenceChunks = evidence?.total_chunks ?? 0;
+    const evidenceLabels = evidence?.evidence_labels ?? [];
+
     return (
         <AnimatePresence>
             <motion.div
@@ -173,6 +182,21 @@ export default function AgentNode({
                     {displayText}
                 </div>
 
+                {evidenceChunks > 0 && (
+                    <div
+                        className="mt-1.5 inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-indigo-500/25 border border-indigo-400/40 text-indigo-100 font-medium max-w-full truncate"
+                        title={`Evidence used: ${evidenceChunks} chunk${evidenceChunks === 1 ? "" : "s"}${evidenceLabels.length ? ` · ${evidenceLabels.join(", ")}` : ""}`}
+                    >
+                        <span aria-hidden>📑</span>
+                        <span className="truncate">
+                            {evidenceLabels.length > 0
+                                ? evidenceLabels.slice(0, 3).join(", ")
+                                : `${evidenceChunks}c`}
+                            {evidenceLabels.length > 3 && ` +${evidenceLabels.length - 3}`}
+                        </span>
+                    </div>
+                )}
+
                 {isLoading && (
                     <div className="mt-2 text-[10px] text-cyan-100/90 flex items-center gap-1.5 rounded-md bg-white/10 px-2 py-1">
                         <span>{loadingLabel}</span>
@@ -182,7 +206,13 @@ export default function AgentNode({
 
                 {nodeStatus === "failed" && (
                     <div className="mt-2 text-[10px] text-red-200/90">
-                        This response failed to generate.
+                        {data.metadata?.["malformed"] ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 font-medium text-red-100">
+                                ⚠ Malformed output
+                            </span>
+                        ) : (
+                            "This response failed to generate."
+                        )}
                     </div>
                 )}
 

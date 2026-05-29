@@ -205,10 +205,44 @@ async def recover_json_with_llm(
     return parsed
 
 
+async def repair_structured_output_with_moderator(
+    raw_content: str,
+    *,
+    round_number: int,
+    round_type: str | None,
+    llm_call: LLMCallable,
+    provider: str,
+    model: str,
+    temperature: float = 0.0,
+    max_tokens: int = 900,
+) -> dict | None:
+    """Phase 4: last-resort JSON repair using the stable moderator model.
+
+    Extracts and reformats content already present in ``raw_content`` into a
+    valid JSON object for the round. Never invents new argument content — if
+    the source is unusable, returns ``None`` and the caller marks the node as
+    failed. ``provider`` / ``model`` should be the configured moderator
+    (Claude Sonnet 4.6) for maximum structured-output reliability.
+    """
+    if not (raw_content or "").strip():
+        return None
+    return await recover_json_with_llm(
+        raw_content,
+        round_number=round_number,
+        round_type=round_type,
+        llm_call=llm_call,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
 __all__ = [
     "LLMCallable",
     "build_recovery_prompt",
     "recover_json_with_llm",
+    "repair_structured_output_with_moderator",
 ]
 
 

@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_CONCURRENT_AGENT_CALLS: int = 3
 
+    # ── Dedicated Moderator (Final Synthesis Verdict) ─────────────────────
+    # These settings are used exclusively by _generate_synthesis_verdict.
+    # Normal debate agent rounds are not affected.
+    MODERATOR_PROVIDER: str = "openrouter"
+    MODERATOR_MODEL: str = "anthropic/claude-sonnet-4-6"
+    MODERATOR_TEMPERATURE: float = 0.2
+    MODERATOR_MAX_TOKENS: int = 2000
+
     # ── LLM API keys (optional — server starts without them, falls back to mock)
     GROQ_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
@@ -53,14 +61,23 @@ class Settings(BaseSettings):
 
     # ── Embeddings ────────────────────────────────────────────────────────
     # Provider:
-    #   "openrouter" — POST {OPENROUTER_BASE_URL}/embeddings (recommended)
+    #   "openrouter" — POST {EMBEDDING_BASE_URL or OPENROUTER_BASE_URL}/embeddings (recommended)
     #   "openai"     — direct OpenAI text-embedding-3-small (needs OPENAI_API_KEY)
-    #   "mock"       — all-zeros vector, for tests / offline dev
-    # NOTE: leaving the default at "mock" keeps local startup safe; flip to
-    # "openrouter" via .env for real RAG quality.
-    EMBEDDING_PROVIDER: str = "mock"
-    EMBEDDING_MODEL: str = "google/gemini-embedding-exp-03-07"
+    #   "gemini"     — Google Generative Language REST (needs GEMINI_API_KEY)
+    #   "mock"       — all-zeros vector, for tests / offline dev (MUST be explicit)
+    #
+    # The default targets a real provider — RAG silently degrades to nothing
+    # if you let it fall back to mock in production. Use EMBEDDING_PROVIDER=mock
+    # explicitly when you truly want zero-vector embeddings (CI / offline dev).
+    EMBEDDING_PROVIDER: str = "openrouter"
+    EMBEDDING_MODEL: str = "google/gemini-embedding-2-preview"
     EMBEDDING_DIM: int = 768                           # must match DocumentChunk.embedding Vector dim
+    # Optional override for the embedding endpoint base URL. When unset the
+    # OpenRouter provider falls back to OPENROUTER_BASE_URL.
+    EMBEDDING_BASE_URL: str | None = None
+    # When True, an empty/invalid EMBEDDING_PROVIDER silently falls back to
+    # MockEmbeddingService instead of raising. Use this only in offline dev.
+    EMBEDDING_ALLOW_MOCK_FALLBACK: bool = False
 
     # ── File upload storage ───────────────────────────────────────────────
     # Local filesystem path for uploaded documents.

@@ -9,7 +9,7 @@
 # Defaults can still be overridden by exporting these env vars:
 #   DOCKER_USERNAME  (default: asaddev13)
 #   IMAGE_NAME       (default: agora-server)
-#   IMAGE_TAG        (default: v1)
+#   IMAGE_TAG        (default: v3)
 #   PUSH             (default: 1) Set to 0 to build only, no push.
 #   PLATFORM         (optional) e.g. linux/amd64 — uses `docker buildx` if set.
 #
@@ -35,7 +35,7 @@ DIST_DIR="${CLIENT_DIR}/dist"
 # ── 1. Defaults (override via env if needed) ───────────────────────────────
 DOCKER_USERNAME="${DOCKER_USERNAME:-asaddev13}"
 IMAGE_NAME="${IMAGE_NAME:-agora-server}"
-IMAGE_TAG="${IMAGE_TAG:-v1}"
+IMAGE_TAG="${IMAGE_TAG:-v3}"
 PUSH="${PUSH:-1}"
 
 DOCKER_IMAGE="docker.io/${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"

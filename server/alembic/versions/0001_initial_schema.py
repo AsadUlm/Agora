@@ -9,7 +9,11 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from pgvector.sqlalchemy import Vector
+
+try:
+    from pgvector.sqlalchemy import Vector as _Vector
+except ImportError:
+    _Vector = None  # type: ignore[assignment,misc]
 
 revision: str = "0001"
 down_revision: Union[str, None] = None
@@ -17,9 +21,22 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _try_enable_pgvector() -> bool:
+    """Enable pgvector extension safely; returns True when available."""
+    conn = op.get_bind()
+    conn.execute(sa.text("SAVEPOINT _pgv"))
+    try:
+        conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.execute(sa.text("RELEASE SAVEPOINT _pgv"))
+        return True
+    except Exception:
+        conn.execute(sa.text("ROLLBACK TO SAVEPOINT _pgv"))
+        return False
+
+
 def upgrade() -> None:
     # ── pgvector extension ────────────────────────────────────────────────────
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    vector_ok = _try_enable_pgvector()
 
     # ── users ──────────────────────────────────────────────────────────────
     op.create_table(
@@ -209,12 +226,16 @@ def upgrade() -> None:
         sa.Column("document_id", sa.Uuid(), nullable=False),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("embedding", Vector(1536), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["document_id"], ["documents.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_document_chunks_document_id"), "document_chunks", ["document_id"], unique=False)
+    # Embedding column type depends on pgvector availability.
+    if vector_ok and _Vector is not None:
+        op.execute(sa.text("ALTER TABLE document_chunks ADD COLUMN embedding vector(1536)"))
+    else:
+        op.add_column("document_chunks", sa.Column("embedding", sa.JSON(), nullable=True))
 
 
 def downgrade() -> None:

@@ -25,6 +25,11 @@ export interface SynthesisVerdictPayload {
     parse_status?: string;
     parse_warnings?: unknown;
     is_fallback?: boolean;
+    // Moderator metadata — present only in debates using dedicated moderator config
+    moderator_provider?: string;
+    moderator_model?: string;
+    moderator_temperature?: number;
+    moderator_max_tokens?: number;
     [key: string]: unknown;
 }
 
@@ -89,6 +94,9 @@ export default function SynthesisVerdictCard({
     const showFallbackBadge = isFallback || parseStatus === "fallback";
     const showRecoveredBadge = parseStatus === "recovered" || parseStatus === "partial";
 
+    const moderatorModel = typeof payload.moderator_model === "string" ? payload.moderator_model : null;
+    const moderatorProvider = typeof payload.moderator_provider === "string" ? payload.moderator_provider : null;
+
     return (
         <div className="rounded-xl border border-violet-500/40 bg-gradient-to-br from-violet-500/10 via-violet-500/5 to-transparent p-4 space-y-3 shadow-lg shadow-violet-500/5">
             <div className="flex items-start justify-between gap-2 flex-wrap">
@@ -96,6 +104,11 @@ export default function SynthesisVerdictCard({
                     <div className="text-[10px] uppercase tracking-widest text-violet-300 font-semibold">
                         Moderator
                     </div>
+                    {moderatorModel && (
+                        <div className="text-[9px] text-violet-300/60 font-mono leading-none" title={moderatorProvider ? `Provider: ${moderatorProvider}` : undefined}>
+                            {moderatorModel}
+                        </div>
+                    )}
                     <h3 className="text-sm font-semibold text-white leading-tight">
                         {title}
                     </h3>

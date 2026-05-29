@@ -28,14 +28,14 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.auth import get_current_user
 from app.core.config import settings
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.models.chat_session import ChatSession
 from app.models.document import Document
 from app.models.user import User
@@ -143,12 +143,20 @@ def _validate_file_or_raise(filename: str, size: int) -> None:
     summary="Upload a single document for RAG grounding",
 )
 async def upload_document(
+    background_tasks: BackgroundTasks,
     session_id: uuid.UUID = Query(..., description="The debate session to attach this document to"),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> DocumentUploadResponse:
-    """Upload and ingest a single document (legacy single-file endpoint)."""
+    """Upload a single document and schedule background ingestion.
+
+    The HTTP response returns as soon as the file is stored and a
+    ``processing`` Document row is committed. Text extraction, chunking
+    and embedding run in a FastAPI ``BackgroundTask`` on its own DB
+    session (see ``DocumentIngestionService.process_in_background``).
+    """
     await _require_session_ownership(session_id, db, current_user)
 
     filename = _sanitize_filename(file.filename)
@@ -157,7 +165,7 @@ async def upload_document(
 
     svc = DocumentIngestionService()
     try:
-        doc = await svc.ingest(
+        doc = await svc.create_pending(
             db=db,
             session_id=session_id,
             filename=filename,
@@ -170,6 +178,15 @@ async def upload_document(
             detail=str(exc),
         ) from exc
 
+    # Schedule heavy work to run after the response is sent. The task
+    # opens its own DB session via the factory, so it must not capture
+    # the request-scoped ``db`` or the ORM ``doc`` object.
+    background_tasks.add_task(
+        svc.process_in_background,
+        session_factory,
+        doc.id,
+    )
+
     return _doc_to_response(doc)
 
 
@@ -180,17 +197,21 @@ async def upload_document(
     summary="Upload multiple documents in one request (partial success)",
 )
 async def upload_documents_batch(
+    background_tasks: BackgroundTasks,
     session_id: uuid.UUID = Query(..., description="The debate session to attach these documents to"),
     files: list[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> DocumentUploadBatchResponse:
     """
-    Step 30: ingest a batch of files. One bad file does not fail the batch.
+    Step 30 / Step 45: ingest a batch of files with partial-success
+    semantics. One bad file does not fail the batch.
 
-    For every file we validate the extension/size, run the full ingestion
-    pipeline, and roll back its DB rows + delete the storage blob if any
-    later step fails.
+    Per file: validate, upload to storage, mark ``processing`` inside a
+    SAVEPOINT. After the request DB is committed, schedule a background
+    task per successfully-created Document so heavy extraction /
+    embedding does not block the HTTP response.
     """
     await _require_session_ownership(session_id, db, current_user)
 
@@ -209,6 +230,7 @@ async def upload_documents_batch(
     svc = DocumentIngestionService()
     uploaded: list[DocumentUploadResponse] = []
     failed: list[DocumentUploadFailure] = []
+    scheduled_ids: list[uuid.UUID] = []
     max_bytes = _max_upload_bytes()
 
     for upload in files:
@@ -242,7 +264,7 @@ async def upload_documents_batch(
         # successful files in the batch remain persisted.
         try:
             async with db.begin_nested():
-                doc = await svc.ingest(
+                doc = await svc.create_pending(
                     db=db,
                     session_id=session_id,
                     filename=filename,
@@ -250,6 +272,7 @@ async def upload_documents_batch(
                     content_type=upload.content_type,
                 )
             uploaded.append(_doc_to_response(doc))
+            scheduled_ids.append(doc.id)
         except DocumentIngestionError as exc:
             logger.warning(
                 "document_upload_failed filename=%s reason=%s",
@@ -269,6 +292,15 @@ async def upload_documents_batch(
             failed.append(DocumentUploadFailure(
                 filename=filename, error=f"Unexpected error: {exc}",
             ))
+
+    # Schedule background ingestion only for files whose pending rows
+    # were successfully committed.
+    for document_id in scheduled_ids:
+        background_tasks.add_task(
+            svc.process_in_background,
+            session_factory,
+            document_id,
+        )
 
     return DocumentUploadBatchResponse(uploaded=uploaded, failed=failed)
 
@@ -393,6 +425,102 @@ async def list_documents(
         )
         for d in docs
     ]
+
+
+@router.get(
+    "/rag-health",
+    summary="Diagnostic snapshot of the RAG pipeline for a session",
+)
+async def rag_health(
+    session_id: uuid.UUID = Query(..., description="Session to inspect"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Returns provider/model/dim plus chunk-embedding statistics for the
+    session. Ownership-protected. Never returns chunk content or any
+    secret material.
+    """
+    await _require_session_ownership(session_id, db, current_user)
+
+    # Lazy imports — keep module import cost low for unrelated routes.
+    from sqlalchemy import func  # noqa: PLC0415
+    from app.models.document import DocumentStatus  # noqa: PLC0415
+    from app.models.document_chunk import DocumentChunk  # noqa: PLC0415
+    from app.services.embeddings.embedding_service import (  # noqa: PLC0415
+        EmbeddingProviderError,
+        MockEmbeddingService,
+        get_embedding_service,
+    )
+
+    provider_name: str
+    provider_error: str | None = None
+    is_mock = False
+    try:
+        svc = get_embedding_service()
+        provider_name = type(svc).__name__
+        is_mock = isinstance(svc, MockEmbeddingService)
+    except EmbeddingProviderError as exc:
+        provider_name = "UNAVAILABLE"
+        provider_error = str(exc)
+
+    # Chunk-side stats scoped to this session.
+    base = (
+        select(func.count(DocumentChunk.id))
+        .join(Document, Document.id == DocumentChunk.document_id)
+        .where(Document.chat_session_id == session_id)
+    )
+    total_chunks = (await db.execute(base)).scalar() or 0
+    null_chunks = (
+        await db.execute(base.where(DocumentChunk.embedding.is_(None)))
+    ).scalar() or 0
+    total_docs = (
+        await db.execute(
+            select(func.count(Document.id)).where(Document.chat_session_id == session_id)
+        )
+    ).scalar() or 0
+    ready_docs = (
+        await db.execute(
+            select(func.count(Document.id))
+            .where(Document.chat_session_id == session_id)
+            .where(Document.status == DocumentStatus.ready)
+        )
+    ).scalar() or 0
+
+    # Sample a handful of stored vectors to detect all-zero embeddings without
+    # streaming everything.
+    sample_stmt = (
+        select(DocumentChunk.embedding)
+        .join(Document, Document.id == DocumentChunk.document_id)
+        .where(Document.chat_session_id == session_id)
+        .where(DocumentChunk.embedding.is_not(None))
+        .limit(10)
+    )
+    sample_total = 0
+    sample_zero = 0
+    try:
+        for vec in (await db.execute(sample_stmt)).scalars().all():
+            sample_total += 1
+            if vec is not None and all(abs(float(v)) < 1e-9 for v in vec):
+                sample_zero += 1
+    except Exception:  # pragma: no cover — defensive
+        sample_total = -1
+        sample_zero = -1
+
+    return {
+        "provider": provider_name,
+        "is_mock": is_mock,
+        "provider_error": provider_error,
+        "model": settings.EMBEDDING_MODEL,
+        "dim": settings.EMBEDDING_DIM,
+        "session_id": str(session_id),
+        "document_count": int(total_docs),
+        "ready_document_count": int(ready_docs),
+        "chunk_count": int(total_chunks),
+        "null_embedding_chunk_count": int(null_chunks),
+        "sampled_chunks": sample_total,
+        "zero_embedding_in_sample": sample_zero,
+    }
 
 
 @router.delete(

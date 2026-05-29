@@ -26,13 +26,19 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select, text, literal_column
+from sqlalchemy import bindparam, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from pgvector.sqlalchemy import Vector
 
+from app.core.config import settings
 from app.models.document import Document, DocumentStatus
 from app.models.document_chunk import DocumentChunk
 from app.schemas.contracts import RetrievedChunk
-from app.services.embeddings.embedding_service import get_embedding_service
+from app.services.embeddings.embedding_service import (
+    _validate_embedding_vector,
+    EmbeddingProviderError,
+    get_embedding_service,
+)
 from app.services.retrieval.router import RetrievalStrategy
 from app.services.retrieval.diversity import apply_strategy
 
@@ -175,13 +181,44 @@ class RetrievalService:
 
         # ── 2. Embed the query ────────────────────────────────────────────────
         embedding_svc = get_embedding_service()
+        provider_name = type(embedding_svc).__name__
         try:
             query_vector = await embedding_svc.embed(query)
         except Exception as exc:
             logger.warning(
-                "RetrievalService: embedding failed for query (%r): %s — returning empty",
-                query[:60],
+                "RetrievalService: embedding failed for query (%r) via %s: %s — returning empty",
+                query[:120],
+                provider_name,
                 exc,
+            )
+            return []
+
+        # ── 2b. Validate the query vector strictly. A bad vector (wrong dim,
+        # NaN/Inf, all-zeros from MockEmbeddingService, …) will silently break
+        # cosine similarity at the SQL layer, so we catch it here.
+        try:
+            query_vector = _validate_embedding_vector(
+                query_vector,
+                settings.EMBEDDING_DIM,
+                context=f"RetrievalService query vector ({provider_name})",
+            )
+        except EmbeddingProviderError as exc:
+            logger.warning(
+                "RetrievalService: invalid query vector from %s: %s — returning empty",
+                provider_name,
+                exc,
+            )
+            return []
+
+        # All-zero vector is technically valid floats but cosine distance is
+        # undefined (NaN). MockEmbeddingService produces this — return empty
+        # rather than running a meaningless query.
+        if not any(v != 0.0 for v in query_vector):
+            logger.warning(
+                "RetrievalService: query vector from %s is all-zeros — "
+                "retrieval cannot work. Set EMBEDDING_PROVIDER to a real "
+                "provider (e.g. openrouter).",
+                provider_name,
             )
             return []
 
@@ -197,32 +234,29 @@ class RetrievalService:
             sql_limit = max(top_k, top_k * strategy.candidate_multiplier)
 
         try:
-            vector_literal = f"[{','.join(str(v) for v in query_vector)}]"
+            # Bind the vector as a typed parameter — pgvector adapts it to
+            # the ``vector`` SQL type. This is dramatically safer than
+            # f-string interpolation (no SQL-injection surface, no parser
+            # surprises on big floats).
+            qv_param = bindparam("qv", value=query_vector, type_=Vector(settings.EMBEDDING_DIM))
+            distance_expr = DocumentChunk.embedding.cosine_distance(qv_param)
             stmt = (
                 select(
                     DocumentChunk.id,
                     DocumentChunk.document_id,
                     DocumentChunk.chunk_index,
                     DocumentChunk.content,
-                    literal_column(
-                        f"1 - (document_chunks.embedding <=> '{vector_literal}'::vector)"
-                    ).label("similarity"),
+                    (1 - distance_expr).label("similarity"),
                 )
                 .join(Document, Document.id == DocumentChunk.document_id)
                 .where(Document.chat_session_id == session_id)
                 .where(Document.status == DocumentStatus.ready)
                 .where(DocumentChunk.embedding.is_not(None))
-                .where(
-                    text(f"(document_chunks.embedding <=> '{vector_literal}'::vector) < {1 - _MIN_SIMILARITY}")
-                )
+                .where(distance_expr < (1 - _MIN_SIMILARITY))
             )
             if document_ids is not None:
                 stmt = stmt.where(Document.id.in_(document_ids))
-            stmt = (
-                stmt
-                .order_by(text(f"document_chunks.embedding <=> '{vector_literal}'::vector"))
-                .limit(sql_limit)
-            )
+            stmt = stmt.order_by(distance_expr).limit(sql_limit)
             rows = await db.execute(stmt)
             results = rows.all()
         except Exception as exc:
@@ -244,16 +278,25 @@ class RetrievalService:
             for row in results
         ]
 
+        raw_count = len(chunks)
+
         # ── 4. Step 31: apply role-aware re-ranking (when a strategy is set).
         if strategy is not None and chunks:
             chunks = apply_strategy(chunks, strategy, top_k=top_k)
 
+        top_sims = [round(c.similarity_score, 4) for c in chunks[:3]]
         logger.info(
-            "RetrievalService: %d chunks retrieved for session %s (query=%r strategy=%s)",
-            len(chunks),
+            "RetrievalService: session=%s provider=%s model=%s dim=%d "
+            "query=%r raw=%d final=%d strategy=%s top_sims=%s",
             session_id,
-            query[:60],
+            provider_name,
+            settings.EMBEDDING_MODEL,
+            settings.EMBEDDING_DIM,
+            query[:120],
+            raw_count,
+            len(chunks),
             strategy.name if strategy else "none",
+            top_sims,
         )
         return chunks
 

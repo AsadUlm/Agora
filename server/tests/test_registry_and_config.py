@@ -65,18 +65,23 @@ class TestProviderRegistry:
         reg = ProviderRegistry()
         openrouter_models = reg.list_models(provider="openrouter")
         assert len(openrouter_models) == len(OpenRouterModel)
-        assert openrouter_models[0].id == OpenRouterModel.CLAUDE_SONNET_4_5.value
+        assert openrouter_models[0].id == OpenRouterModel.CLAUDE_SONNET_4_6.value
 
     def test_modern_model_presets(self):
         presets = {preset.name: preset.model for preset in MODEL_PRESETS}
-        assert presets == {
-            "Fast": OpenRouterModel.GROK_4_1_FAST.value,
-            "Balanced": OpenRouterModel.CLAUDE_SONNET_4_5.value,
-            "High Quality": OpenRouterModel.GPT_5_5.value,
-        }
+        # Verify all 9 presets are present
+        assert len(presets) == 9
+        # Verify updated / key preset models
+        assert presets["Fast"] == OpenRouterModel.GROK_4_3.value
+        assert presets["Balanced"] == OpenRouterModel.CLAUDE_SONNET_4_5.value
+        assert presets["High Quality"] == OpenRouterModel.GPT_5_5.value
+        assert presets["Deep Reasoning"] == OpenRouterModel.GROK_4_THINKING.value
 
     def test_modern_models_route_to_openrouter(self):
         assert provider_for_model(OpenRouterModel.KIMI_K2_5.value, "groq") == "openrouter"
+        # Deprecated IDs should still route to openrouter for backward compat
+        assert provider_for_model("x-ai/grok-4.1-fast", "groq") == "openrouter"
+        assert provider_for_model("moonshotai/kimi-k2.5", "groq") == "openrouter"
         assert provider_for_model("unknown/model", "mock") == "mock"
 
     def test_list_models_unknown_provider_returns_empty(self):

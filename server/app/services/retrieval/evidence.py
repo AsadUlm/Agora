@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
 from app.schemas.contracts import RetrievedChunk
+from app.services.documents.chunker import split_sentences_multilingual
 
 logger = logging.getLogger(__name__)
 
@@ -98,19 +99,19 @@ def _infer_source_type(filename: str, raw_source_type: str) -> str:
 
 # ── Text helpers ──────────────────────────────────────────────────────────────
 
-_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-ZА-Я])")
-
 
 def _normalize(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
 def _split_sentences(text: str) -> list[str]:
+    """Multilingual sentence splitter — delegates to the shared chunker
+    helper so evidence previews handle English / Russian / Korean /
+    Japanese / Chinese punctuation consistently with chunking."""
     norm = _normalize(text)
     if not norm:
         return []
-    parts = _SENT_SPLIT_RE.split(norm)
-    return [p.strip() for p in parts if p.strip()]
+    return split_sentences_multilingual(norm)
 
 
 def _summarize(text: str, max_chars: int = 220) -> str:

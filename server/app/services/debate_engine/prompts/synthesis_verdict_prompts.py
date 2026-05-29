@@ -175,6 +175,36 @@ Aggregation rules (mandatory):
 - Confidence reflects how much the three syntheses converge: convergent →
   high; partially overlapping → medium; mostly contradictory → low.
 
+Disagreement detection (mandatory):
+- Set consensus_level to exactly one of: High Consensus, Moderate Consensus,
+  Low Consensus, Fundamental Disagreement. Judge it across four axes: policy
+  agreement, mechanism agreement, evidence agreement, and risk-assessment
+  agreement. Do NOT default to "All agents agree" — most expert panels reach
+  only partial agreement.
+- Set initial_divergence to exactly one of: Low Divergence, Moderate
+  Divergence, High Divergence. Judge how far apart the agents STARTED, based on
+  their position, assumption, and priority differences (use the debate
+  summary / Round 1 material).
+- strongest_surviving_argument: the single argument that survived all critiques.
+- weakest_defended_assumption: the assumption that took the most successful
+  attacks and was least defended.
+- core_tradeoff: the difficult trade-off that remains genuinely unresolved.
+- decision_confidence (High | Medium | Low): based on argument quality,
+  evidence quality, and degree of disagreement.
+
+Convergence quality (mandatory):
+- Set convergence_quality to exactly one of: "earned" or "shallow".
+  Use "earned" when consensus emerged because arguments survived criticism.
+  Use "shallow" when agents simply started from similar positions and never
+  genuinely disagreed.
+- If there is no consensus, set convergence_quality to "none".
+
+Anti-convergence rule (mandatory):
+- If the agents reached essentially the same conclusion, do NOT just report
+  agreement. In convergence_note, explicitly state: what disagreement
+  disappeared, why it disappeared, and which argument caused the convergence.
+- If genuine disagreement remains, set convergence_note to an empty string.
+
 {evidence_mode_block(has_evidence)}
 
 {FACTUALITY_BLOCK}
@@ -186,11 +216,19 @@ Aggregation rules (mandatory):
 Output contract — return ONLY this JSON, no markdown fences, no commentary:
 {{
   "one_sentence_takeaway": "One concise sentence, max 24 words.",
+  "consensus_level": "High Consensus | Moderate Consensus | Low Consensus | Fundamental Disagreement",
+  "initial_divergence": "Low Divergence | Moderate Divergence | High Divergence",
+  "convergence_quality": "earned | shallow | none",
   "consensus_statement": "What the agents mostly agree on.",
   "main_disagreement": "The strongest remaining disagreement.",
+  "strongest_surviving_argument": "The argument that survived all critiques.",
+  "weakest_defended_assumption": "The assumption that took the most successful attacks.",
+  "core_tradeoff": "The difficult trade-off that remains unresolved.",
+  "convergence_note": "If agents converged: what disagreement disappeared, why, and which argument caused it. Otherwise empty string.",
   "recommended_answer": "The final answer the user should take away.",
   "winning_side": "analyst | critic | creative | draw | mixed",
   "confidence": "low | medium | high",
+  "decision_confidence": "High | Medium | Low",
   "what_changed": "What changed in this cycle compared with the previous cycle, or empty string for cycle 1.",
   "reasoning_basis": [
     "Key reason 1 from the debate.",
@@ -207,6 +245,11 @@ Output contract — return ONLY this JSON, no markdown fences, no commentary:
 Strict field rules:
   - winning_side MUST be exactly one of: analyst | critic | creative | draw | mixed.
   - confidence MUST be exactly one of: low | medium | high.
+  - consensus_level MUST be exactly one of: High Consensus | Moderate Consensus | Low Consensus | Fundamental Disagreement.
+  - initial_divergence MUST be exactly one of: Low Divergence | Moderate Divergence | High Divergence.
+  - convergence_quality MUST be exactly one of: earned | shallow | none.
+  - decision_confidence MUST be exactly one of: High | Medium | Low.
+  - convergence_note MUST be a non-empty explanation when agents converged, otherwise an empty string.
   - reasoning_basis MUST be an array of 2-5 short reasons drawn from the
     agent syntheses (paraphrase, do not copy verbatim).
   - unresolved_questions MAY be an empty array if the verdict is strong.

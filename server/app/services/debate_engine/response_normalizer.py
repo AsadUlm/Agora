@@ -61,6 +61,35 @@ def _parse_target_roles(raw_target: str) -> list[str]:
     found = [role for role in _ROLE_ORDER if role in lowered]
     return found or ["general"]
 
+
+# Step 46: canonical Round 3 position-update labels. The synthesis round must
+# state how the agent's belief moved after the critique round.
+_POSITION_UPDATE_CANONICAL: dict[str, str] = {
+    "strengthened": "Strengthened",
+    "refined": "Refined",
+    "partially revised": "Partially Revised",
+    "partially_revised": "Partially Revised",
+    "partial revision": "Partially Revised",
+    "revised": "Partially Revised",
+    "reversed": "Reversed",
+    "reversal": "Reversed",
+}
+
+
+def _normalize_position_update(raw: str) -> str:
+    """Map a free-text position-update label to one of the four canonical
+    values (Strengthened | Refined | Partially Revised | Reversed). Returns an
+    empty string when the model gave nothing recognizable."""
+    text = (raw or "").strip().lower()
+    if not text:
+        return ""
+    if text in _POSITION_UPDATE_CANONICAL:
+        return _POSITION_UPDATE_CANONICAL[text]
+    for key, canonical in _POSITION_UPDATE_CANONICAL.items():
+        if key in text:
+            return canonical
+    return ""
+
 _CONCERN_KEYWORDS = (
     "concern",
     "risks",
@@ -89,6 +118,40 @@ class NormalizedRoundOutput:
     is_fallback: bool = False
 
 
+# Phase 5: simplified → legacy canonical field aliases. Each entry maps a new
+# short field name to the legacy key consumers already expect. The alias only
+# fills the legacy key when the model did not already provide it.
+_FIELD_ALIASES: dict[str, str] = {
+    "takeaway": "one_sentence_takeaway",
+    "supporting_points": "key_points",
+    "risks": "risks_or_caveats",
+    "quoted_claim": "challenge",
+    "recommendation": "policy_direction",
+    "weakest_argument": "losing_argument",
+    "consensus": "consensus_statement",
+}
+
+
+def _apply_field_aliases(payload: dict[str, Any]) -> dict[str, Any]:
+    """Map simplified schema field names onto legacy canonical keys.
+
+    Non-destructive: a legacy key already present in ``payload`` always wins,
+    and the original alias keys are preserved so nothing downstream breaks.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    for alias, canonical in _FIELD_ALIASES.items():
+        if alias in payload:
+            existing = payload.get(canonical)
+            is_empty = existing in (None, "", []) or (
+                isinstance(existing, str) and not existing.strip()
+            )
+            if canonical not in payload or is_empty:
+                payload[canonical] = payload[alias]
+    return payload
+
+
+
 def normalize_round_output(
     round_number: int,
     raw_text: str,
@@ -114,6 +177,12 @@ def normalize_round_output(
     if not isinstance(parsed_payload, dict):
         logger.warning("JSON parse failed -> fallback mode used: parsed output is not an object")
         return fallback_parse(raw_text, round_number=round_number, round_type=round_type)
+
+    # Phase 5: accept simplified field names by mapping them onto the legacy
+    # canonical keys when the canonical key is absent. This keeps backward
+    # compatibility (old prompts/UIs) while allowing models to emit the shorter
+    # schema.
+    parsed_payload = _apply_field_aliases(parsed_payload)
 
     try:
         dispatch = (round_type or "").lower()
@@ -414,6 +483,8 @@ def _build_round3_fallback_fields(cleaned_text: str, paragraph_text: str) -> dic
 
     return {
         "final_position": final_position,
+        "position_update": "",
+        "position_update_basis": "",
         "what_changed": what_changed,
         "strongest_argument": strongest_argument,
         "remaining_concerns": remaining_concerns,
@@ -428,6 +499,7 @@ def _build_round3_fallback_fields(cleaned_text: str, paragraph_text: str) -> dic
                 ("round3_strongest_argument_missing", bool(strongest_argument)),
                 ("round3_losing_argument_missing", False),
                 ("round3_key_tradeoff_missing", bool(remaining_concerns)),
+                ("round3_position_update_missing", False),
             ) if not present
         ],
     }
@@ -459,9 +531,14 @@ def _normalize_round1(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "stance": stance or "Mixed",
+        "priority_framework": _pick_string(payload, ["priority_framework", "priority", "framework"]),
         "main_argument": main_argument or response,
+        "assumptions": _pick_string_list(payload, ["assumptions", "underlying_assumptions"]),
         "key_points": key_points,
+        "expected_benefits": _pick_string_list(payload, ["expected_benefits", "benefits"]),
         "risks_or_caveats": risks,
+        "acknowledged_weakness": _pick_string(payload, ["acknowledged_weakness", "weakness", "own_weakness"]),
+        "what_would_change_my_mind": _pick_long_text(payload, ["what_would_change_my_mind", "what_changes_my_mind", "change_my_mind"]),
         "response": response,
     }
 
@@ -515,6 +592,12 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
     real_world_implication = _pick_string(payload, ["real_world_implication"]) or _pick_string(
         first_critique, ["real_world_implication"]
     ) or "If this assumption fails, the recommended action would need to be re-scoped before deployment."
+    failure_scenario = _pick_string(payload, ["failure_scenario"]) or _pick_string(
+        first_critique, ["failure_scenario"]
+    ) or why_it_breaks
+    why_my_framework_disagrees = _pick_long_text(
+        payload, ["why_my_framework_disagrees", "framework_disagreement"]
+    ) or _pick_long_text(first_critique, ["why_my_framework_disagrees", "framework_disagreement"])
 
     return {
         "one_sentence_takeaway": short_summary,
@@ -525,7 +608,9 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         "weakness_found": weakness,
         "counterargument": counter,
         "assumption_attacked": assumption_attacked,
+        "failure_scenario": failure_scenario,
         "why_it_breaks": why_it_breaks,
+        "why_my_framework_disagrees": why_my_framework_disagrees,
         "real_world_implication": real_world_implication,
         "response": response,
     }
@@ -580,10 +665,23 @@ def _normalize_round3(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
     if confidence not in ("low", "medium", "high"):
         confidence = "medium"
 
+    position_update = _normalize_position_update(
+        _pick_string(payload, ["position_update", "position_change", "belief_update"])
+    )
+    if not position_update:
+        round3_warnings.append("round3_position_update_missing")
+    position_update_basis = _pick_long_text(
+        payload, ["position_update_basis", "update_basis", "update_reason"]
+    )
+    if position_update and not position_update_basis:
+        round3_warnings.append("round3_position_update_basis_missing")
+
     out = {
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "final_position": final_position or "Mixed",
+        "position_update": position_update,
+        "position_update_basis": position_update_basis,
         "what_changed": what_changed,
         "strongest_argument": strongest_argument,
         "remaining_concerns": remaining_concerns,
@@ -800,6 +898,75 @@ _VALID_WINNING_SIDES = {"analyst", "critic", "creative", "draw", "mixed"}
 _VALID_CONFIDENCE = {"low", "medium", "high"}
 
 
+# Step 46: moderator consensus + decision-confidence canonicalization.
+_CONSENSUS_LEVEL_CANONICAL: dict[str, str] = {
+    "high consensus": "High Consensus",
+    "high": "High Consensus",
+    "moderate consensus": "Moderate Consensus",
+    "moderate": "Moderate Consensus",
+    "medium": "Moderate Consensus",
+    "low consensus": "Low Consensus",
+    "low": "Low Consensus",
+    "fundamental disagreement": "Fundamental Disagreement",
+    "fundamental": "Fundamental Disagreement",
+    "disagreement": "Fundamental Disagreement",
+}
+
+
+def _normalize_consensus_level(raw: str) -> str:
+    text = (raw or "").strip().lower()
+    if not text:
+        return ""
+    if text in _CONSENSUS_LEVEL_CANONICAL:
+        return _CONSENSUS_LEVEL_CANONICAL[text]
+    for key, canonical in _CONSENSUS_LEVEL_CANONICAL.items():
+        if key in text:
+            return canonical
+    return ""
+
+
+def _normalize_decision_confidence(raw: str) -> str:
+    text = (raw or "").strip().lower()
+    if text in ("high",):
+        return "High"
+    if text in ("low",):
+        return "Low"
+    return "Medium"
+
+
+# Step 47: initial divergence score + convergence quality canonicalization.
+_DIVERGENCE_CANONICAL: dict[str, str] = {
+    "low divergence": "Low Divergence",
+    "low": "Low Divergence",
+    "moderate divergence": "Moderate Divergence",
+    "moderate": "Moderate Divergence",
+    "medium": "Moderate Divergence",
+    "high divergence": "High Divergence",
+    "high": "High Divergence",
+}
+
+
+def _normalize_initial_divergence(raw: str) -> str:
+    text = (raw or "").strip().lower()
+    if not text:
+        return ""
+    if text in _DIVERGENCE_CANONICAL:
+        return _DIVERGENCE_CANONICAL[text]
+    for key, canonical in _DIVERGENCE_CANONICAL.items():
+        if key in text:
+            return canonical
+    return ""
+
+
+def _normalize_convergence_quality(raw: str) -> str:
+    text = (raw or "").strip().lower()
+    if "earn" in text:
+        return "earned"
+    if "shallow" in text or "similar" in text:
+        return "shallow"
+    return "none"
+
+
 def _normalize_synthesis_verdict(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
     """Normalize the moderator-aggregator verdict (Step 37).
 
@@ -898,14 +1065,50 @@ def _normalize_synthesis_verdict(payload: dict[str, Any], raw_text: str) -> dict
     if concat_probe and _texts_too_similar(response, concat_probe, threshold=0.85):
         warnings.append("response_looks_like_field_concatenation")
 
+    # Step 46: disagreement detection + anti-convergence fields.
+    consensus_level = _normalize_consensus_level(
+        _pick_string(payload, ["consensus_level", "agreement_level"])
+    )
+    if not consensus_level:
+        consensus_level = "Moderate Consensus"
+        warnings.append("synthesis_verdict_consensus_level_missing")
+    strongest_surviving = _pick_long_text(
+        payload, ["strongest_surviving_argument", "surviving_argument"]
+    )
+    weakest_assumption = _pick_long_text(
+        payload, ["weakest_defended_assumption", "weakest_assumption"]
+    )
+    core_tradeoff = _pick_long_text(payload, ["core_tradeoff", "core_trade_off", "key_tradeoff"])
+    convergence_note = _pick_long_text(payload, ["convergence_note", "convergence"])
+    decision_confidence = _normalize_decision_confidence(
+        _pick_string(payload, ["decision_confidence"]) or confidence
+    )
+    initial_divergence = _normalize_initial_divergence(
+        _pick_string(payload, ["initial_divergence", "divergence_score", "divergence"])
+    )
+    if not initial_divergence:
+        initial_divergence = "Moderate Divergence"
+        warnings.append("synthesis_verdict_initial_divergence_missing")
+    convergence_quality = _normalize_convergence_quality(
+        _pick_string(payload, ["convergence_quality", "consensus_quality"])
+    )
+
     out = {
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
+        "consensus_level": consensus_level,
+        "initial_divergence": initial_divergence,
+        "convergence_quality": convergence_quality,
         "consensus_statement": consensus,
         "main_disagreement": main_disagreement,
+        "strongest_surviving_argument": strongest_surviving,
+        "weakest_defended_assumption": weakest_assumption,
+        "core_tradeoff": core_tradeoff,
+        "convergence_note": convergence_note,
         "recommended_answer": recommended,
         "winning_side": winning_side,
         "confidence": confidence,
+        "decision_confidence": decision_confidence,
         "what_changed": what_changed,
         "reasoning_basis": reasoning_basis,
         "unresolved_questions": unresolved,
@@ -980,6 +1183,8 @@ def _normalize_stance(value: str) -> str:
     lowered = stance.lower()
     if "conditional" in lowered:
         return "Conditional"
+    if "skeptic" in lowered or "sceptic" in lowered:
+        return "Skeptical"
     if "mixed" in lowered or "both" in lowered:
         return "Mixed"
     if any(token in lowered for token in ["oppose", "against", "reject", "no"]):

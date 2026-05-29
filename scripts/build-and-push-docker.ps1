@@ -23,7 +23,7 @@
 param(
     [string]$DockerUsername = $(if ($env:DOCKER_USERNAME) { $env:DOCKER_USERNAME } else { "asaddev13" }),
     [string]$ImageName      = $(if ($env:IMAGE_NAME)       { $env:IMAGE_NAME }       else { "agora-server" }),
-    [string]$ImageTag       = $(if ($env:IMAGE_TAG)        { $env:IMAGE_TAG }        else { "v1" }),
+    [string]$ImageTag       = $(if ($env:IMAGE_TAG)        { $env:IMAGE_TAG }        else { "v3" }),
     [string]$Platform       = $env:PLATFORM,
     [int]   $Push           = $(if ($env:PUSH -ne $null -and $env:PUSH -ne "") { [int]$env:PUSH } else { 1 })
 )

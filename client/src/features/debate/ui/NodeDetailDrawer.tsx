@@ -4,6 +4,13 @@ import { useGraphStore } from "../model/graph.store";
 import { useDebateStore } from "../model/debate.store";
 import { getPersonaMeta } from "../model/persona-meta";
 import { extractFullResponse, getTurnSummary, parseResponsePayload, sentenceSafePreview, cleanScalarText } from "../model/formatters";
+import {
+    buildLabelToDocumentMap,
+    parseEvidenceRetrieval,
+    type EvidenceRetrievalMetadata,
+} from "../model/evidence.types";
+import EvidenceUsageBadge from "./EvidenceUsageBadge";
+import { renderTextWithCitations } from "./EvidenceCitation";
 import { cn } from "@/shared/lib/cn";
 
 const kindLabels: Record<string, string> = {
@@ -29,40 +36,9 @@ const roundGuidance: Record<number, string> = {
     3: "Final synthesis: the agent converges on a refined final position.",
 };
 
-interface RetrievalChunkPreview {
-    text: string;
-    score: number;
-}
-
-interface RetrievalDocumentGroup {
-    document_id: string;
-    document_name: string;
-    chunks: RetrievalChunkPreview[];
-}
-
-interface RetrievalSummary {
-    documents: RetrievalDocumentGroup[];
-    total_chunks: number;
-}
-
 interface ContentSection {
     heading: string;
     body: string;
-}
-
-function parseRetrieval(meta: unknown): RetrievalSummary | null {
-    if (!meta || typeof meta !== "object") return null;
-    const retrieval = (meta as Record<string, unknown>)["retrieval"];
-    if (!retrieval || typeof retrieval !== "object") return null;
-
-    const obj = retrieval as Record<string, unknown>;
-    const docs = obj["documents"];
-    if (!Array.isArray(docs)) return null;
-
-    return {
-        documents: docs as RetrievalDocumentGroup[],
-        total_chunks: typeof obj["total_chunks"] === "number" ? (obj["total_chunks"] as number) : 0,
-    };
 }
 
 function relationLabel(kind: string, outgoing: boolean): string {
@@ -390,7 +366,18 @@ export default function NodeDetailDrawer() {
         });
     }, [node, isLoading, parsedPayload, fullResponse]);
 
-    const retrieval = useMemo(() => parseRetrieval(node?.metadata), [node]);
+    const retrieval = useMemo<EvidenceRetrievalMetadata | null>(
+        () => parseEvidenceRetrieval(node?.metadata),
+        [node],
+    );
+    const knownLabels = useMemo<ReadonlySet<string>>(
+        () => new Set(retrieval?.evidence_labels ?? []),
+        [retrieval],
+    );
+    const labelToDocument = useMemo(
+        () => buildLabelToDocumentMap(retrieval),
+        [retrieval],
+    );
 
     return (
         <AnimatePresence>
@@ -464,6 +451,7 @@ export default function NodeDetailDrawer() {
                             <Badge>{kindLabels[node.kind] ?? node.kind}</Badge>
                             {node.agentRole && <Badge>{node.agentRole}</Badge>}
                             {isFallbackFormatted && <Badge>Formatted automatically</Badge>}
+                            <EvidenceUsageBadge retrieval={retrieval} />
                         </div>
 
                         {node.round > 0 && roundGuidance[node.round] && (
@@ -502,7 +490,9 @@ export default function NodeDetailDrawer() {
                             <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
                                 <Label>Generation Failed</Label>
                                 <p className="text-xs text-red-100 leading-relaxed">
-                                    This agent response failed to generate.
+                                    {node.metadata?.["malformed"]
+                                        ? "This model returned malformed output. Please retry this agent or choose a more stable model."
+                                        : "This agent response failed to generate."}
                                 </p>
                             </div>
                         )}
@@ -518,48 +508,74 @@ export default function NodeDetailDrawer() {
                                         <div className="text-[11px] uppercase tracking-wide text-agora-text-muted font-semibold mb-1.5">
                                             {section.heading}
                                         </div>
-                                        <SectionBody body={section.body} />
+                                        <SectionBody
+                                            body={section.body}
+                                            knownLabels={knownLabels}
+                                            labelToDocument={labelToDocument}
+                                        />
                                     </div>
                                 ))}
                             </section>
                         )}
 
-                        {!isLoading && retrieval && retrieval.documents.length > 0 && (
+                        {!isLoading && retrieval && (retrieval.documents?.length ?? 0) > 0 && (
                             <div className="pt-2 border-t border-agora-border/40">
                                 <div className="text-[10px] uppercase tracking-widest text-agora-text-muted/80 font-semibold mb-2 px-1">
                                     Advanced
                                 </div>
                                 <details className="rounded-lg border border-indigo-500/30 bg-indigo-500/5">
                                     <summary className="px-3 py-2 text-[11px] text-indigo-200 cursor-pointer select-none">
-                                        Sources ({retrieval.total_chunks} chunks from {retrieval.documents.length} {retrieval.documents.length === 1 ? "document" : "documents"})
+                                        Sources ({retrieval.total_chunks ?? 0} chunks from {retrieval.documents!.length} {retrieval.documents!.length === 1 ? "document" : "documents"})
                                     </summary>
                                     <div className="px-3 pb-3 space-y-3">
-                                        {retrieval.documents.map((doc) => (
-                                            <div key={doc.document_id} className="space-y-1.5">
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <div className="text-[11px] font-medium text-white truncate" title={doc.document_name}>
-                                                        {doc.document_name}
-                                                    </div>
-                                                    <div className="text-[10px] text-agora-text-muted whitespace-nowrap">
-                                                        {doc.chunks.length} {doc.chunks.length === 1 ? "chunk" : "chunks"}
-                                                    </div>
-                                                </div>
-                                                <div className="space-y-1.5">
-                                                    {doc.chunks.map((chunk, ci) => (
-                                                        <div key={ci} className="rounded-md bg-agora-surface-light/40 px-2.5 py-2">
-                                                            <div className="flex items-start gap-2">
-                                                                <p className="text-[11px] text-agora-text leading-relaxed flex-1 whitespace-pre-line break-words">
-                                                                    {chunk.text}
-                                                                </p>
-                                                                <span className="text-[10px] font-mono text-indigo-200 bg-indigo-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
-                                                                    {chunk.score.toFixed(2)}
-                                                                </span>
+                                        {retrieval.documents!.map((doc) => {
+                                            const chunks = doc.chunks ?? [];
+                                            const docLabels = doc.evidence_labels ?? [];
+                                            const docKey = doc.document_id ?? doc.document_name ?? Math.random().toString(36);
+                                            return (
+                                                <div key={docKey} className="space-y-1.5">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="flex items-center gap-1.5 min-w-0">
+                                                            <div className="text-[11px] font-medium text-white truncate" title={doc.document_name}>
+                                                                {doc.document_name ?? "Untitled document"}
                                                             </div>
+                                                            {docLabels.map((lbl) => (
+                                                                <span
+                                                                    key={lbl}
+                                                                    className="text-[10px] font-mono px-1 rounded bg-indigo-500/25 text-indigo-100 border border-indigo-400/40"
+                                                                    title={`Citation label ${lbl}`}
+                                                                >
+                                                                    {lbl}
+                                                                </span>
+                                                            ))}
                                                         </div>
-                                                    ))}
+                                                        <div className="text-[10px] text-agora-text-muted whitespace-nowrap">
+                                                            {chunks.length} {chunks.length === 1 ? "chunk" : "chunks"}
+                                                        </div>
+                                                    </div>
+                                                    <div className="space-y-1.5">
+                                                        {chunks.map((chunk, ci) => {
+                                                            const score = chunk.score ?? chunk.similarity;
+                                                            const text = chunk.text ?? "";
+                                                            return (
+                                                                <div key={ci} className="rounded-md bg-agora-surface-light/40 px-2.5 py-2">
+                                                                    <div className="flex items-start gap-2">
+                                                                        <p className="text-[11px] text-agora-text leading-relaxed flex-1 whitespace-pre-line break-words">
+                                                                            {text}
+                                                                        </p>
+                                                                        {typeof score === "number" && (
+                                                                            <span className="text-[10px] font-mono text-indigo-200 bg-indigo-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
+                                                                                {score.toFixed(2)}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 </details>
                             </div>
@@ -647,7 +663,15 @@ function StatusBadge({ status }: { status: string }) {
     );
 }
 
-function SectionBody({ body }: { body: string }) {
+function SectionBody({
+    body,
+    knownLabels,
+    labelToDocument,
+}: {
+    body: string;
+    knownLabels?: ReadonlySet<string>;
+    labelToDocument?: Readonly<Record<string, string>>;
+}) {
     const lines = body
         .split("\n")
         .map((line) => line.trim())
@@ -657,11 +681,14 @@ function SectionBody({ body }: { body: string }) {
     if (isBulletOnly) {
         return (
             <ul className="space-y-1">
-                {lines.map((line, idx) => (
-                    <li key={idx} className="text-xs text-agora-text leading-relaxed text-justify">
-                        {line.replace(/^•\s*/, "")}
-                    </li>
-                ))}
+                {lines.map((line, idx) => {
+                    const clean = line.replace(/^•\s*/, "");
+                    return (
+                        <li key={idx} className="text-xs text-agora-text leading-relaxed text-justify">
+                            {renderTextWithCitations({ text: clean, knownLabels, labelToDocument })}
+                        </li>
+                    );
+                })}
             </ul>
         );
     }
@@ -675,7 +702,7 @@ function SectionBody({ body }: { body: string }) {
         <div className="space-y-2">
             {(paragraphs.length > 0 ? paragraphs : [body]).map((paragraph, idx) => (
                 <p key={idx} className="text-xs text-agora-text leading-relaxed whitespace-pre-line text-justify">
-                    {paragraph}
+                    {renderTextWithCitations({ text: paragraph, knownLabels, labelToDocument })}
                 </p>
             ))}
         </div>

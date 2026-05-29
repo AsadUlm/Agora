@@ -191,10 +191,15 @@ def evidence_mode_block(has_evidence: bool) -> str:
             "Evidence mode: RAG active.\n"
             "- Use the provided evidence/document context as your primary anchor "
             "for any concrete factual claim (numbers, dates, named studies).\n"
+            "- Do NOT ignore the supplied evidence when it is relevant to the "
+            "question — engage with it directly, even if you ultimately disagree.\n"
             "- Do NOT invent sources outside the supplied context. If a claim is "
             "not supported by the supplied evidence, mark it as reasoning, not fact.\n"
-            "- Cite by [E#] labels or by the document's title — do not fabricate "
-            "article numbers or DOIs.\n"
+            "- Cite by [E#] labels (e.g. [E1], [E2]) — do not fabricate citation\n"
+            "  labels that were not given to you and do not invent article numbers,\n"
+            "  DOIs, or page numbers.\n"
+            "- If the supplied evidence is insufficient to answer the question, "
+            "say so explicitly instead of guessing.\n"
         )
     return (
         "Evidence mode: reasoning-only.\n"

@@ -50,7 +50,14 @@ from app.services.debate_engine.prompts.followup_prompts import (
 )
 from app.services.debate_engine.prompts.personas import resolve_temperature
 from app.services.debate_engine.response_normalizer import normalize_round_output
-from app.services.debate_engine.two_stage_structurer import recover_json_with_llm
+from app.services.debate_engine.quality_guards import (
+    evaluate_round_quality,
+    validate_structured_output,
+)
+from app.services.debate_engine.two_stage_structurer import (
+    recover_json_with_llm,
+    repair_structured_output_with_moderator,
+)
 from app.services.llm.exceptions import LLMError
 from app.services.llm.service import LLMService, get_llm_service
 from app.services.retrieval.retrieval_service import RetrievalService
@@ -91,6 +98,27 @@ ROUND_TYPE_MAX_TOKENS: dict[str, int] = {
     "updated_synthesis": 2500,
     "synthesis_verdict": 2000,
 }
+
+
+# Phase 2: appended to the prompt on a single corrective regeneration when the
+# first answer leaked prompt / schema / role / formatting text into content.
+_LEAK_CORRECTION_SUFFIX = (
+    "\n\nIMPORTANT CORRECTION: Your previous answer leaked instruction, schema, "
+    "role, or formatting text into the user-facing content. Answer again as an "
+    "expert panelist debating the question directly for a human reader. Do NOT "
+    "mention JSON, schemas, field names, your role/persona, the instructions, "
+    "or your own process. Produce only the required JSON where every field "
+    "value is substantive debate content."
+)
+
+_STRUCTURED_CORRECTION_SUFFIX = (
+    "\n\nIMPORTANT CORRECTION: Your previous answer was malformed or incomplete. "
+    "Return a SINGLE valid JSON object only — no markdown, no code fences, no "
+    "commentary before or after. Every required field must be present and filled "
+    "with substantive debate content. Do NOT copy field descriptions, schema "
+    "hints, placeholders, word counts, or example scaffolding into the values. "
+    "The 'response' field must contain the full readable answer."
+)
 
 
 def _resolve_max_tokens(round_number: int, round_type: str | None = None) -> int:
@@ -1040,6 +1068,48 @@ class RoundManager:
             except TypeError:
                 # Backward compatibility: legacy single-arg builders.
                 prompt = plan.prompt_builder(chunks)
+
+            # ── Evidence-injection visibility (single consolidated log line).
+            # We capture the data once per agent turn so logs can be grepped
+            # for "evidence_injection" to audit RAG behavior end-to-end.
+            assigned_doc_count = len(plan.agent_ctx.assigned_document_ids or [])
+            packet_labels = [p.citation_label for p in packets if p.citation_label]
+            prompt_has_block = "AVAILABLE EVIDENCE" in prompt
+            logger.info(
+                "evidence_injection: session=%s turn=%s round=%d cycle=%d "
+                "agent=%s role=%s knowledge_mode=%s assigned_docs=%d "
+                "retrieved_chunks=%d evidence_packets=%d labels=%s "
+                "prompt_has_evidence_block=%s",
+                ctx.session_id,
+                ctx.turn_id,
+                round_record.round_number,
+                plan.cycle_number,
+                plan.agent_ctx.agent_id,
+                plan.agent_ctx.role,
+                plan.agent_ctx.knowledge_mode,
+                assigned_doc_count,
+                len(chunks),
+                len(packets),
+                packet_labels or "[]",
+                prompt_has_block,
+            )
+            # Warn loudly when documents are configured but nothing was
+            # retrieved — this is the most common silent-failure mode.
+            if (
+                plan.agent_ctx.knowledge_mode != "no_docs"
+                and not chunks
+            ):
+                logger.warning(
+                    "evidence_injection: NO chunks retrieved despite "
+                    "knowledge_mode=%s (session=%s agent=%s role=%s). "
+                    "Check /api/documents/rag-health and confirm documents "
+                    "are status=ready with non-null embeddings.",
+                    plan.agent_ctx.knowledge_mode,
+                    ctx.session_id,
+                    plan.agent_ctx.agent_id,
+                    plan.agent_ctx.role,
+                )
+
             result = await self._call_llm(
                 db=task_db,
                 agent_ctx=plan.agent_ctx,
@@ -1051,6 +1121,7 @@ class RoundManager:
                 sequence_no=plan.sequence_no,
                 agent_index=plan.agent_index,
                 retrieved_chunks=chunks,
+                evidence_packets=packets,
                 extra_payload_fields=plan.extra_payload_fields,
             )
 
@@ -1320,13 +1391,14 @@ class RoundManager:
         )
         is_followup_cycle = cycle_number > 1 or round_type_value == "updated_synthesis"
 
-        # Use the first agent's provider/model for stability and to avoid
-        # introducing a new "moderator" agent config. Temperature is forced
-        # low: the moderator must be deterministic and neutral.
-        moderator_agent = ctx.agents[0]
-        moderator_provider = moderator_agent.provider
-        moderator_model = moderator_agent.model
-        moderator_temperature = 0.2
+        # Dedicated moderator config — always uses the settings-defined model
+        # regardless of which agent models were chosen for the debate itself.
+        # This ensures the final synthesis/verdict is always produced by a
+        # known, high-quality model and never silently inherits a cheap/fast
+        # agent model that may have been selected for debate rounds.
+        moderator_provider = settings.MODERATOR_PROVIDER
+        moderator_model = settings.MODERATOR_MODEL
+        moderator_temperature = settings.MODERATOR_TEMPERATURE
 
         agent_payload_blocks = [
             {"role": r.role, "structured": r.structured}
@@ -1359,10 +1431,7 @@ class RoundManager:
             model=moderator_model,
             prompt=prompt,
             temperature=moderator_temperature,
-            max_tokens=_resolve_max_tokens(
-                round_record.round_number,
-                round_type="synthesis_verdict",
-            ),
+            max_tokens=settings.MODERATOR_MAX_TOKENS,
         )
 
         sequence_no = self.next_seq
@@ -1374,6 +1443,21 @@ class RoundManager:
         error_msg: str | None = None
 
         try:
+            logger.info(
+                "FINAL_SYNTHESIS_MODEL provider=%s model=%s temperature=%s max_tokens=%s round=%s cycle=%s",
+                moderator_provider,
+                moderator_model,
+                moderator_temperature,
+                settings.MODERATOR_MAX_TOKENS,
+                round_record.round_number,
+                cycle_number,
+            )
+            logger.info(
+                "MODERATOR_PROMPT round=%d cycle=%d: %s",
+                round_record.round_number,
+                cycle_number,
+                prompt[:1500],
+            )
             response = await self._llm.generate(request)
             raw_content = (response.content or "").strip()
             if not raw_content:
@@ -1421,6 +1505,66 @@ class RoundManager:
                     else:
                         if recovered_normalized.payload.get("is_fallback") is False:
                             normalized = recovered_normalized
+
+            logger.info(
+                "MODERATOR_RESPONSE round=%d cycle=%d: %s",
+                round_record.round_number,
+                cycle_number,
+                raw_content[:1500],
+            )
+
+            # Phase 2/6: leak + quality guard on the verdict. Regenerate once if
+            # prompt / schema / role / formatting text leaked into the verdict.
+            verdict_report = evaluate_round_quality(
+                round_number=round_record.round_number,
+                round_type="synthesis_verdict",
+                payload=normalized.payload,
+            )
+            if not verdict_report.ok:
+                logger.warning(
+                    "QUALITY_GUARD moderator round=%d cycle=%d issues=%s",
+                    round_record.round_number,
+                    cycle_number,
+                    verdict_report.summary,
+                )
+            if verdict_report.has_leak:
+                logger.warning(
+                    "PROMPT_LEAK_DETECTED moderator round=%d cycle=%d codes=%s — regenerating once.",
+                    round_record.round_number,
+                    cycle_number,
+                    verdict_report.leak_codes,
+                )
+                corrective_request = request.model_copy(
+                    update={"prompt": prompt + _LEAK_CORRECTION_SUFFIX}
+                )
+                try:
+                    retry_response = await self._llm.generate(corrective_request)
+                    retry_raw = (retry_response.content or "").strip()
+                except Exception as retry_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Moderator leak-correction regeneration raised: %s — keeping original.",
+                        retry_exc,
+                    )
+                    retry_raw = ""
+                if retry_raw:
+                    retry_normalized = normalize_round_output(
+                        round_number=round_record.round_number,
+                        raw_text=retry_raw,
+                        round_type="synthesis_verdict",
+                    )
+                    retry_report = evaluate_round_quality(
+                        round_number=round_record.round_number,
+                        round_type="synthesis_verdict",
+                        payload=retry_normalized.payload,
+                    )
+                    if not retry_report.has_leak:
+                        logger.info(
+                            "Moderator leak-correction regeneration succeeded (round=%d cycle=%d).",
+                            round_record.round_number,
+                            cycle_number,
+                        )
+                        normalized = retry_normalized
+                        raw_content = retry_raw
 
             normalized_payload = normalized.payload
         except LLMError as exc:
@@ -1471,6 +1615,13 @@ class RoundManager:
         if followup_question:
             normalized_payload["followup_question"] = followup_question
             normalized_payload["followup_cycle"] = cycle_number
+
+        # Moderator metadata — additive only, never overwrites existing fields.
+        # Frontend consumers can display these without breaking old debates.
+        normalized_payload["moderator_provider"] = moderator_provider
+        normalized_payload["moderator_model"] = moderator_model
+        normalized_payload["moderator_temperature"] = moderator_temperature
+        normalized_payload["moderator_max_tokens"] = settings.MODERATOR_MAX_TOKENS
 
         content_json = json.dumps(normalized_payload, ensure_ascii=False)
 
@@ -1665,6 +1816,7 @@ class RoundManager:
         chunks: list[RetrievedChunk],
         max_chunks: int = RETRIEVAL_TOP_K,
         text_chars: int = 280,
+        packets: list[EvidencePacket] | None = None,
     ) -> dict[str, Any] | None:
         if not chunks:
             return None
@@ -1700,15 +1852,28 @@ class RoundManager:
                 {"text": text, "score": round(float(c.similarity_score), 3)}
             )
 
+        # Build a {document_id: [labels]} map from the supplied packets so the
+        # UI can show which [E#] labels were derived from each source.
+        labels_by_doc: dict[uuid.UUID, list[str]] = {}
+        for p in packets or []:
+            if p.citation_label:
+                labels_by_doc.setdefault(p.document_id, []).append(p.citation_label)
+
         documents = [
             {
                 "document_id": str(doc_id),
                 "document_name": names.get(doc_id, "Untitled document"),
                 "chunks": grouped[doc_id],
+                "evidence_labels": labels_by_doc.get(doc_id, []),
             }
             for doc_id in order
         ]
-        return {"documents": documents, "total_chunks": len(capped)}
+        all_labels = [lbl for labels in labels_by_doc.values() for lbl in labels]
+        return {
+            "documents": documents,
+            "total_chunks": len(capped),
+            "evidence_labels": all_labels,
+        }
 
     async def _call_llm(
         self,
@@ -1722,6 +1887,7 @@ class RoundManager:
         sequence_no: int,
         agent_index: int,
         retrieved_chunks: list[RetrievedChunk] | None = None,
+        evidence_packets: list[EvidencePacket] | None = None,
         extra_payload_fields: dict[str, Any] | None = None,
     ) -> AgentRoundResult:
         step_meta = {
@@ -1799,10 +1965,21 @@ class RoundManager:
             llm_started_at.isoformat(),
         )
 
+        # Phase 7 diagnostic: log the prompt actually sent (first 1500 chars).
+        logger.info(
+            "ROUND_%d_PROMPT agent=%s role=%s type=%s: %s",
+            round_record.round_number,
+            agent_ctx.agent_id,
+            agent_ctx.role,
+            message_type.value,
+            prompt[:1500],
+        )
+
         content = ""
         structured: dict[str, Any] = {}
         generation_status = "success"
         error_msg: str | None = None
+        failure_reason: str | None = None
         prompt_tokens = 0
         completion_tokens = 0
         provider_latency_ms = 0
@@ -1908,7 +2085,205 @@ class RoundManager:
                             )
                             normalized = recovered_normalized
 
+            # Phase 7 diagnostic: log the raw model response (first 1500 chars).
+            logger.info(
+                "ROUND_%d_RESPONSE agent=%s role=%s type=%s: %s",
+                round_record.round_number,
+                agent_ctx.agent_id,
+                agent_ctx.role,
+                message_type.value,
+                (raw_content or "")[:1500],
+            )
+
+            # Phase 2/6: prompt-leak + quality guard. If the answer leaked
+            # prompt / schema / role / formatting text, regenerate once with a
+            # strict corrective instruction and re-normalize. Quality-only
+            # issues are logged for observability but never force a retry, to
+            # avoid over-rejecting otherwise valid debates.
+            rt_value = (
+                round_record.round_type.value
+                if round_record.round_type is not None
+                else None
+            )
+            quality_report = evaluate_round_quality(
+                round_number=round_record.round_number,
+                round_type=rt_value,
+                payload=normalized.payload,
+            )
+            if not quality_report.ok:
+                logger.warning(
+                    "QUALITY_GUARD agent=%s round=%d type=%s issues=%s",
+                    agent_ctx.agent_id,
+                    round_record.round_number,
+                    message_type.value,
+                    quality_report.summary,
+                )
+            if quality_report.has_leak:
+                logger.warning(
+                    "PROMPT_LEAK_DETECTED agent=%s round=%d codes=%s — regenerating once.",
+                    agent_ctx.agent_id,
+                    round_record.round_number,
+                    quality_report.leak_codes,
+                )
+                corrective_request = request.model_copy(
+                    update={
+                        "prompt": prompt + _LEAK_CORRECTION_SUFFIX,
+                        "temperature": min(0.4, request.temperature),
+                    }
+                )
+                try:
+                    retry_response = await self._llm.generate(corrective_request)
+                    retry_raw = retry_response.content or ""
+                except Exception as retry_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Leak-correction regeneration raised: %s — keeping original answer.",
+                        retry_exc,
+                    )
+                    retry_raw = ""
+                if retry_raw.strip():
+                    retry_normalized = normalize_round_output(
+                        round_number=round_record.round_number,
+                        raw_text=retry_raw,
+                        round_type=rt_value,
+                    )
+                    retry_report = evaluate_round_quality(
+                        round_number=round_record.round_number,
+                        round_type=rt_value,
+                        payload=retry_normalized.payload,
+                    )
+                    if not retry_report.has_leak:
+                        logger.info(
+                            "Leak-correction regeneration succeeded for agent %s round %d.",
+                            agent_ctx.agent_id,
+                            round_record.round_number,
+                        )
+                        normalized = retry_normalized
+                        raw_content = retry_raw
+                        completion_tokens += retry_response.completion_tokens
+                    else:
+                        logger.warning(
+                            "Leak persisted after regeneration for agent %s round %d codes=%s.",
+                            agent_ctx.agent_id,
+                            round_record.round_number,
+                            retry_report.leak_codes,
+                        )
+
+            # Phase 2/3/4: strict structured-output validation. If the final
+            # normalized payload is empty / fell back / placeholder / missing
+            # required fields, attempt (1) a same-model strict retry, then
+            # (2) a moderator-based JSON repair. If both fail, mark the node as
+            # failed so malformed content is never displayed or fed forward.
+            structured_reasons = validate_structured_output(
+                normalized.payload,
+                round_number=round_record.round_number,
+                round_type=rt_value,
+                raw_content=raw_content,
+            )
+            if structured_reasons:
+                logger.warning(
+                    "STRUCTURED_GUARD agent=%s round=%d type=%s reasons=%s — attempting recovery.",
+                    agent_ctx.agent_id,
+                    round_record.round_number,
+                    message_type.value,
+                    structured_reasons,
+                )
+
+                # (1) Same-model strict retry at a lower temperature.
+                strict_request = request.model_copy(
+                    update={
+                        "prompt": prompt + _STRUCTURED_CORRECTION_SUFFIX,
+                        "temperature": min(0.2, request.temperature),
+                    }
+                )
+                try:
+                    strict_response = await self._llm.generate(strict_request)
+                    strict_raw = strict_response.content or ""
+                except Exception as strict_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Structured-correction retry raised: %s.", strict_exc
+                    )
+                    strict_raw = ""
+                if strict_raw.strip():
+                    strict_normalized = normalize_round_output(
+                        round_number=round_record.round_number,
+                        raw_text=strict_raw,
+                        round_type=rt_value,
+                    )
+                    if not validate_structured_output(
+                        strict_normalized.payload,
+                        round_number=round_record.round_number,
+                        round_type=rt_value,
+                        raw_content=strict_raw,
+                    ):
+                        logger.info(
+                            "Structured-correction retry succeeded for agent %s round %d.",
+                            agent_ctx.agent_id,
+                            round_record.round_number,
+                        )
+                        normalized = strict_normalized
+                        raw_content = strict_raw
+                        completion_tokens += getattr(
+                            strict_response, "completion_tokens", 0
+                        )
+                        structured_reasons = []
+
+                # (2) Moderator-based JSON repair (extract/format only).
+                if structured_reasons:
+                    try:
+                        repaired_payload = await repair_structured_output_with_moderator(
+                            raw_content,
+                            round_number=round_record.round_number,
+                            round_type=rt_value,
+                            llm_call=self._raw_llm_call,
+                            provider=settings.MODERATOR_PROVIDER,
+                            model=settings.MODERATOR_MODEL,
+                            temperature=0.0,
+                            max_tokens=900,
+                        )
+                    except Exception as repair_exc:  # noqa: BLE001
+                        logger.warning(
+                            "Moderator JSON repair raised: %s.", repair_exc
+                        )
+                        repaired_payload = None
+                    if repaired_payload is not None:
+                        repaired_normalized = normalize_round_output(
+                            round_number=round_record.round_number,
+                            raw_text=raw_content,
+                            parsed_payload=repaired_payload,
+                            round_type=rt_value,
+                        )
+                        if not validate_structured_output(
+                            repaired_normalized.payload,
+                            round_number=round_record.round_number,
+                            round_type=rt_value,
+                            raw_content=raw_content,
+                        ):
+                            logger.info(
+                                "Moderator JSON repair succeeded for agent %s round %d.",
+                                agent_ctx.agent_id,
+                                round_record.round_number,
+                            )
+                            normalized = repaired_normalized
+                            structured_reasons = []
+
+                # (3) Give up: mark the node as failed so malformed content is
+                # neither displayed nor used as evidence in later rounds.
+                if structured_reasons:
+                    logger.warning(
+                        "STRUCTURED_GUARD_FAILED agent=%s round=%d reasons=%s — marking node failed.",
+                        agent_ctx.agent_id,
+                        round_record.round_number,
+                        structured_reasons,
+                    )
+                    generation_status = "failed"
+                    failure_reason = "malformed_structured_output"
+                    error_msg = (
+                        "Model returned malformed structured output: "
+                        + ", ".join(structured_reasons)
+                    )
+
             structured = normalized.payload
+
             # FIX-09: persist extra payload fields (e.g. follow-up question /
             # cycle number) so every saved message carries the context that
             # produced it. We use setdefault so an LLM that already returned
@@ -1989,7 +2364,9 @@ class RoundManager:
 
         retrieval_summary: dict[str, Any] | None = None
         if retrieved_chunks:
-            retrieval_summary = await self._build_retrieval_summary(db, retrieved_chunks)
+            retrieval_summary = await self._build_retrieval_summary(
+                db, retrieved_chunks, packets=evidence_packets
+            )
 
         await db.commit()
 
@@ -2005,6 +2382,8 @@ class RoundManager:
                 "agent_role": agent_ctx.role,
                 "agent_index": agent_index,
             }
+            if failure_reason is not None:
+                event_payload["failure_reason"] = failure_reason
             if generation_status == "success" and isinstance(structured, dict):
                 display_content = structured.get("display_content")
                 short_summary = structured.get("short_summary")
@@ -2045,6 +2424,7 @@ class RoundManager:
             structured=structured,
             generation_status=generation_status,
             error=error_msg,
+            failure_reason=failure_reason,
         )
 
     @staticmethod

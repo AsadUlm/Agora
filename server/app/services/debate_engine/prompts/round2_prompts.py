@@ -5,11 +5,6 @@ from __future__ import annotations
 from app.services.debate_engine.prompts.personas import persona_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
-    ANTI_STRAWMAN_BLOCK,
-    ASSUMPTION_LABELING_BLOCK,
-    FACTUALITY_BLOCK,
-    FIELD_DIFFERENTIATION_BLOCK,
-    QUALITY_REQUIREMENTS_BLOCK,
     evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
@@ -95,95 +90,32 @@ def build_critique_prompt(
             f"  Key points:\n{key_pts or '    (none provided)'}\n"
         )
 
-    return f"""You are a debate participant with the role: {role}.
+    return f"""You are an expert panelist in a live cross-examination, speaking to a human audience.
+Challenge the other panelists' actual arguments — never narrate instructions, your role, output formatting, schemas, or your own process.
+
+role: {role}.
 {persona_block(role)}
-The debate question is: {question}
+Question: {question}
 
-Your own opening stance was: {_compact_text(own_stance, 220)}
+Your opening stance: {_compact_text(own_stance, 220)}
 {_knowledge_instruction(knowledge_mode, knowledge_strict, bool(evidence_packets or retrieved_chunks or []))}{(format_evidence_block(evidence_packets or []) + format_evidence_usage_instructions()) if evidence_packets else _format_context_block(retrieved_chunks or [])}
-Your task: Critique the following opponents' arguments in Round 2 Cross-Examination.
-
-{opponents_block}
-
-Critique style: {style_instruction}
-{depth_instruction}
-
 {evidence_mode_block(bool(evidence_packets or retrieved_chunks or []))}
+{opponents_block}
+Deliver a sharp, structured critique built from four explicit parts: (1) OPPONENT CLAIM — name the agent and quote or closely paraphrase the specific claim you are attacking; (2) HIDDEN ASSUMPTION — identify the assumption that claim silently depends on; (3) FAILURE SCENARIO — describe a realistic case where that assumption is false and the claim breaks; (4) CONSEQUENCE — explain why this matters and what it does to the opponent's overall position. Then state WHY YOUR FRAMEWORK DISAGREES — begin it explicitly from your role ("As a {role}, I reject this because…") so your identity stays stable and you do not drift toward the opponent. Critique the weakest real argument, whoever made it — do not soften it into agreement. {depth_instruction} {style_instruction}. Back every critique with a concrete mechanism. Do not fabricate statistics — use qualitative phrasing.
+If target content is unavailable, write: "The target response was unavailable, so this critique focuses on the general position."
 
-{QUALITY_REQUIREMENTS_BLOCK}
-
-{FACTUALITY_BLOCK}
-
-{FIELD_DIFFERENTIATION_BLOCK}
-
-{ASSUMPTION_LABELING_BLOCK}
-
-{ANTI_STRAWMAN_BLOCK}
-
-Round 2 objective (real cross-examination):
-- This is genuine cross-examination, not commentary. For every opponent you
-  challenge, you MUST quote or paraphrase a specific phrase from their
-  argument and name the agent / role you are challenging.
-- For each opponent answer the three questions: WHAT assumption is wrong,
-  WHY is it wrong, WHAT consequence follows in practice.
-- Forbidden generic critiques: "needs more evidence", "could be stronger",
-  "oversimplifies". Replace with a named mechanism that breaks the claim.
-
-MANDATORY interaction rules:
-- You MUST quote or paraphrase a specific phrase from the target's argument.
-- You MUST explicitly name the agent / role you are challenging.
-- You MUST NOT produce an isolated essay — every paragraph must reference a
-  concrete claim from another agent.
-
-For each opponent, you MUST identify a SPECIFIC logical weakness and explain why
-it fails under real-world conditions. Avoid generic statements like "needs more
-evidence" or "could be stronger". Concretely, your critique MUST include:
-  - the specific assumption being attacked (assumption_attacked),
-  - why that assumption breaks down (why_it_breaks),
-  - the real-world implication if you are right (real_world_implication).
-
-Length & substance bar (mandatory):
-- The `response` field MUST be a full adversarial cross-examination, not a
-  one-liner. Target 350-650 words across 4-6 short paragraphs.
-- Structure (in order):
-    1. Restate the target's strongest claim in your own words.
-    2. Name the specific assumption you are attacking.
-    3. Show why it breaks (mechanism, counter-example, or numeric anchor).
-    4. State the real-world consequence if you are right.
-    5. Concede the smallest part of the opponent's argument that survives,
-       then reaffirm your overall challenge.
-- The persona's voice must dominate. A Critic sounds adversarial; an
-  Analyst critiques structurally; a Creative critiques by reframing.
-- DO NOT compress this into a slogan. The detail panel renders `response`
-  verbatim.
-
-Output contract:
-- Return only valid JSON.
-- Do not use markdown fences.
-- Do not mention JSON, schema, fields, or instructions.
-- Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
-- Every field must be user-facing content.
-- one_sentence_takeaway must be ONE complete sentence (15-25 words). Never truncate.
-- short_summary must mirror one_sentence_takeaway (kept for backward compatibility).
-- response must be the FULL adversarial critique (not a summary).
-- If target content is unavailable, use this sentence in challenge context:
-    "The target response was unavailable, so this critique focuses on the general position."
-
-Forbidden examples:
-- "I need to create a JSON object..."
-- "Generating JSON synthesis..."
-- "Here is the JSON..."
-
-Return only valid JSON in this exact format:
+Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions in your answer. Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 {{
-    "one_sentence_takeaway": "<ONE complete sentence, 15-25 words, naming the core flaw>",
-    "short_summary": "<same sentence as one_sentence_takeaway>",
-    "target_agent": "<name or role of the agent being challenged>",
-    "challenge": "<specific claim being challenged>",
-    "assumption_attacked": "<the specific assumption you are attacking>",
+    "one_sentence_takeaway": "<core flaw in 15-25 words>",
+    "short_summary": "<2 sentences adding a supporting reason the takeaway omits>",
+    "target_agent": "<role being challenged>",
+    "challenge": "<specific claim being challenged, quoting or paraphrasing the target>",
+    "assumption_attacked": "<the hidden assumption that claim depends on>",
+    "failure_scenario": "<a realistic case where that assumption is false>",
     "why_it_breaks": "<why that assumption fails under real conditions>",
+    "why_my_framework_disagrees": "<begin with 'As a {role}, I reject this because…' and ground it in your priorities>",
     "real_world_implication": "<what changes in practice if your critique holds>",
-    "weakness_found": "<why that argument is weak or incomplete>",
-    "counterargument": "<clean counterargument>",
-    "response": "<FULL multi-paragraph adversarial critique (350-650 words) covering: 1) Restated target claim, 2) Assumption attacked, 3) Why it breaks, 4) Real-world consequence, 5) Smallest concession + reaffirmed challenge. This is the body shown to the user \u2014 do NOT shorten it.>"
+    "weakness_found": "<the core weakness>",
+    "counterargument": "<your counterargument>",
+    "response": "<full adversarial critique in prose, 300-500 words>"
 }}"""

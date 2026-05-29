@@ -12,6 +12,8 @@ import {
     REASONING_DEPTHS,
     KNOWLEDGE_MODES,
     AGENT_COLOR_PALETTE,
+    EXPERIMENTAL_MODEL_WARNING,
+    isExperimentalModel,
 } from "../model/agent-config.types";
 import { useLLMCatalog } from "../model/useLLMCatalog";
 import { useAgentPresets, useAgentPresetCache } from "@/features/agent-presets/model/useAgentPresets";
@@ -456,12 +458,23 @@ export default function AgentConfigCard({
                                         onChange={(e) => onUpdate({ model: e.target.value, modelPreset: null })}
                                         className="w-full bg-agora-bg border border-agora-border rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                                     >
+                                        {/* Backward compat: if current model is deprecated/unknown, show it */}
+                                        {!models.some((m) => m.id === agent.model) && agent.model && (
+                                            <option key={agent.model} value={agent.model}>
+                                                Deprecated: {agent.model}
+                                            </option>
+                                        )}
                                         {models.map((m) => (
                                             <option key={m.id} value={m.id}>
                                                 {m.name}
                                             </option>
                                         ))}
                                     </select>
+                                    {isExperimentalModel(agent.model) && (
+                                        <p className="mt-1 text-[10px] leading-snug text-amber-300/90">
+                                            ⚠ {EXPERIMENTAL_MODEL_WARNING}
+                                        </p>
+                                    )}
                                 </div>
 
                                 {/* Temperature */}

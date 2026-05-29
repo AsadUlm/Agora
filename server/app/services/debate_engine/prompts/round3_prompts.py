@@ -5,10 +5,6 @@ from __future__ import annotations
 from app.services.debate_engine.prompts.personas import persona_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
-    ASSUMPTION_LABELING_BLOCK,
-    FACTUALITY_BLOCK,
-    FIELD_DIFFERENTIATION_BLOCK,
-    QUALITY_REQUIREMENTS_BLOCK,
     evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
@@ -81,106 +77,35 @@ def build_final_synthesis_prompt(
         bool(evidence_packets or retrieved_chunks or []),
     )
 
-    return f"""You are a debate participant with the role: {role}.
-{persona_block(role)}
-The debate question is: {question}
+    return f"""You are an expert panelist delivering a closing synthesis to a human audience.
+Resolve the debate with intellectual rigour — never narrate instructions, your role, output formatting, schemas, or your own process.
 
-Your original opening stance was:
-{_compact_text(original_stance, 260)}
+role: {role}.
+{persona_block(role)}
+Question: {question}
+
+Your opening stance: {_compact_text(original_stance, 260)}
 
 Debate digest (Round 1 positions and Round 2 critiques):
 {_compact_text(debate_digest, 1300)}
 {knowledge_block}{context_block}
-Your task: Generate your final synthesis for Round 3.
-
-Reasoning style: {style_instruction}
-{depth_instruction}
-
 {evidence_mode_block(bool(evidence_packets or retrieved_chunks or []))}
+Do not simply repeat your opening position. First evaluate the debate: which critique survived, which assumption failed, which argument got stronger, and whether your own position should change. Then state a position update — exactly one of: Strengthened, Refined, Partially Revised, or Reversed. Your update MUST be earned: explicitly reference the specific critique you received, the assumption that was challenged, or the evidence you accepted. No generic updates — if nothing was challenged, your position is Strengthened and you must say why. Synthesize across the agents' strongest arguments. Take a strong final stance — not a compromise or average. Identify the winning argument and the losing argument. Explain what changed after the critique round. Write like a final conclusion for a human reader. Do NOT describe your process. {depth_instruction} {style_instruction}. Back every claim with a concrete mechanism. Do not fabricate statistics — use qualitative phrasing.
 
-{QUALITY_REQUIREMENTS_BLOCK}
-
-{FACTUALITY_BLOCK}
-
-{FIELD_DIFFERENTIATION_BLOCK}
-
-{ASSUMPTION_LABELING_BLOCK}
-
-Round 3 objective (genuine synthesis, not averaging):
-- Treat this as an expert-committee conclusion, not a compromise summary.
-- Identify the strongest VALID arguments and reject the weakest reasoning
-  explicitly (in `losing_argument`).
-- Do not average opinions: pick a dominant position even when uncertainty
-  remains, and state the uncertainty in `risk_tradeoffs` / `unresolved_questions`.
-- Explain WHY the conclusion changed after Round 2 critique (in `what_changed`
-  and `position_shift`). "Did not change" is a valid answer if you justify it.
-
-Output contract:
-- Return only valid JSON.
-- Do not use markdown fences.
-- Do not mention JSON, schema, fields, or instructions.
-- Do NOT describe your process.
-- Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
-- Every field must be user-facing content.
-- one_sentence_takeaway must be ONE complete sentence (15-25 words). Never truncate.
-- short_summary must mirror one_sentence_takeaway (kept for backward compatibility).
-- response must be clean prose for end users.
-- Write like a final conclusion for a human reader.
-- Take a strong final stance, not a process note.
-- Synthesize across the agents' strongest arguments and critiques.
-- End with a clear conclusion.
-- Synthesis must explain what changed after critique and why.
-
-Decision rule (mandatory):
-- You MUST resolve the debate by choosing a dominant position OR explicitly state
-  that no resolution is possible (and why). NO neutral, generic, hedging text.
-- You MUST identify a single key trade-off, the winning argument, the losing
-  argument, and your overall confidence (low | medium | high).
-
-Length & substance bar (mandatory):
-- The `response` field MUST be a full synthesis essay, not a slogan. Target
-  450-800 words across 5-7 short paragraphs.
-- Structure (in order):
-    1. Restate the question and the dominant position you are taking.
-    2. Why it won (winning argument + supporting mechanism).
-    3. Why the losing argument lost (concrete failure mode).
-    4. The single key trade-off you accepted to take this position.
-    5. Risks and unresolved questions you are leaving open.
-    6. Concrete recommendation or policy direction.
-- Do NOT compress this synthesis into a one-paragraph summary. The detail
-  panel renders `response` verbatim.
-- Refined position must still carry the persona's voice (Analyst stays
-  structural, Critic stays adversarial about the losing argument, Creative
-  reframes the trade-off in unconventional terms).
-
-Forbidden examples:
-- "I need to create a JSON object..."
-- "Generating JSON synthesis..."
-- "Here is the JSON..."
-
-Return only valid JSON in this exact format:
+Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions in your answer. Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 {{
-    "one_sentence_takeaway": "<ONE complete sentence, 15-25 words, capturing the final position>",
-    "short_summary": "<same sentence as one_sentence_takeaway>",
-    "final_position": "<clear final stance, OR an explicit 'no resolution because ...' statement>",
-    "core_consensus": "<the single most important point all agents converged on, or '' if none>",
-    "major_disagreements": ["<disagreement 1>", "<disagreement 2>"],
-    "risk_tradeoffs": ["<risk or trade-off 1>", "<risk or trade-off 2>"],
-    "policy_direction": "<the recommended direction in one sentence>",
-    "unresolved_questions": ["<open question 1>", "<open question 2>"],
-    "key_tradeoff": "<the single key trade-off that decided this position>",
+    "one_sentence_takeaway": "<final position in 15-25 words>",
+    "short_summary": "<2 sentences adding a supporting reason the takeaway omits>",
+    "final_position": "<clear final stance, or explicit 'no resolution because ...' if none>",
+    "position_update": "Strengthened | Refined | Partially Revised | Reversed",
+    "position_update_basis": "<the specific critique, challenged assumption, or accepted evidence that earned this update>",
+    "key_tradeoff": "<the key trade-off that decided this position>",
     "winning_argument": "<the argument that prevailed and why>",
-    "losing_argument": "<the strongest argument that did NOT prevail and why>",
+    "losing_argument": "<the strongest argument that did not prevail and why>",
     "confidence": "low | medium | high",
-    "confidence_level": "low | medium | high",
-    "what_changed": "<what changed or was refined after Round 2>",
-    "position_shift": "<how the synthesis position shifted vs Round 1, in one sentence>",
+    "what_changed": "<what changed or was refined after Round 2, and why your position update is what it is>",
     "strongest_argument": "<strongest argument from the full debate>",
     "remaining_concerns": "<important unresolved concerns>",
     "conclusion": "<final concise conclusion>",
-    "response": "<FULL multi-paragraph synthesis essay (450-800 words) covering: 1) Question + dominant position, 2) Winning argument, 3) Why losing argument lost, 4) Key trade-off, 5) Risks / open questions, 6) Recommendation. This is the body shown to the user \u2014 do NOT shorten it.>",
-    "key_evidence_used": ["<E-label or short title of evidence that drove the conclusion>"],
-    "rejected_evidence": ["<E-label of evidence you discounted, with one-line reason>"],
-    "evidence_conflicts": ["<short description of where evidence disagreed and how you resolved it>"],
-    "evidence_gaps": ["<factual question the evidence did not answer>"]
+    "response": "<full synthesis essay in prose, 400-700 words>"
 }}"""

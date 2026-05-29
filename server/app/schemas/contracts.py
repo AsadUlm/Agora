@@ -91,6 +91,7 @@ class AgentRoundResult(BaseModel):
     structured: dict[str, Any] = Field(default_factory=dict)  # Parsed JSON (if any)
     generation_status: str = "success"  # "success" | "failed"
     error: str | None = None
+    failure_reason: str | None = None    # Machine code, e.g. "malformed_structured_output"
 
 
 class RoundContext(BaseModel):
