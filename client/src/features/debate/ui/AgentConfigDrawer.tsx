@@ -182,10 +182,10 @@ export default function AgentConfigDrawer({
                             animate={{ x: 0 }}
                             exit={{ x: "-100%" }}
                             transition={{ type: "spring", damping: 28, stiffness: 300 }}
-                            className="fixed left-0 top-0 bottom-0 w-[48vw] max-w-[700px] min-w-[380px] bg-agora-bg border-r border-agora-border z-50 flex flex-col shadow-2xl shadow-black/40"
+                            className="fixed left-0 top-0 bottom-0 w-full sm:w-[48vw] sm:max-w-[700px] sm:min-w-[380px] bg-agora-bg border-r border-agora-border z-50 flex flex-col shadow-2xl shadow-black/40"
                         >
                             {/* Header */}
-                            <div className="px-6 py-5 border-b border-agora-border flex items-center justify-between shrink-0">
+                            <div className="px-4 sm:px-6 py-5 border-b border-agora-border flex items-center justify-between shrink-0">
                                 <div>
                                     <h2 className="text-sm font-semibold text-white">
                                         Agent Configuration
@@ -205,7 +205,7 @@ export default function AgentConfigDrawer({
                             </div>
 
                             {/* Agent list */}
-                            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+                            <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3">
                                 {/* Document Management Section */}
                                 {(onUploadDocument || onUploadDocumentsBatch) && (
                                     <div className="mb-4 pb-4 border-b border-agora-border/30">
@@ -252,8 +252,8 @@ export default function AgentConfigDrawer({
                             </div>
 
                             {/* Footer */}
-                            <div className="px-6 py-4 border-t border-agora-border shrink-0 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
+                            <div className="px-4 sm:px-6 py-4 border-t border-agora-border shrink-0 flex flex-wrap items-center gap-2 justify-between">
+                                <div className="flex items-center gap-2 flex-wrap">
                                     <button
                                         onClick={() => onAdd()}
                                         className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-dashed border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 transition-all"

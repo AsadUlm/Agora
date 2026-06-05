@@ -250,7 +250,7 @@ export default function DebateListPage() {
                 onDeleteDocument={handleDeleteDocument}
             />
 
-            <main className="max-w-5xl mx-auto px-6 py-8">
+            <main className="max-w-5xl mx-auto px-4 py-6 sm:px-6 sm:py-8">
                 {/* New debate block */}
                 <div className="mb-8">
                     {!showNew ? (
@@ -281,7 +281,7 @@ export default function DebateListPage() {
                             className="rounded-2xl border border-agora-border bg-agora-surface overflow-hidden"
                         >
                             {/* Header bar */}
-                            <div className="px-6 py-4 border-b border-agora-border flex items-center justify-between">
+                            <div className="px-4 sm:px-6 py-4 border-b border-agora-border flex items-center justify-between">
                                 <div className="flex items-center gap-3">
                                     <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
                                         <span className="text-white text-sm">✦</span>
@@ -306,7 +306,7 @@ export default function DebateListPage() {
                             </div>
 
                             {/* Question input */}
-                            <div className="px-6 py-5">
+                            <div className="px-4 sm:px-6 py-5">
                                 <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-2 block">
                                     Question
                                 </label>
@@ -325,8 +325,8 @@ export default function DebateListPage() {
                             </div>
 
                             {/* Footer controls */}
-                            <div className="px-6 py-4 border-t border-agora-border bg-agora-surface-light/20 flex items-center justify-between">
-                                <div className="flex items-center gap-3">
+                            <div className="px-4 sm:px-6 py-4 border-t border-agora-border bg-agora-surface-light/20 flex flex-wrap items-center justify-between gap-3">
+                                <div className="flex items-center flex-wrap gap-x-3 gap-y-2">
                                     <button
                                         onClick={handleOpenDrawer}
                                         className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-agora-surface-light/50 border border-agora-border text-agora-text hover:text-white hover:border-indigo-500/40 transition-all"

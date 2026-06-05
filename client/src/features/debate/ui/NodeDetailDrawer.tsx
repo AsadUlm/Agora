@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import { useGraphStore } from "../model/graph.store";
 import { useDebateStore } from "../model/debate.store";
 import { getPersonaMeta } from "../model/persona-meta";
@@ -379,17 +380,42 @@ export default function NodeDetailDrawer() {
         [retrieval],
     );
 
+    const isMobile = useIsMobile();
+
     return (
         <AnimatePresence>
             {node && (
+                <>
+                    {/* Mobile backdrop — tap to close */}
+                    {isMobile && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="absolute inset-0 bg-black/40 z-40"
+                            onClick={() => selectNode(null)}
+                        />
+                    )}
                 <motion.aside
-                    initial={{ x: "100%", opacity: 0 }}
-                    animate={{ x: 0, opacity: 1 }}
-                    exit={{ x: "100%", opacity: 0 }}
+                    initial={isMobile ? { y: "100%", opacity: 0 } : { x: "100%", opacity: 0 }}
+                    animate={isMobile ? { y: 0, opacity: 1 } : { x: 0, opacity: 1 }}
+                    exit={isMobile ? { y: "100%", opacity: 0 } : { x: "100%", opacity: 0 }}
                     transition={{ type: "spring", stiffness: 300, damping: 34 }}
-                    className="absolute top-0 right-0 h-full bg-agora-surface border-l border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col" style={{ width: "clamp(320px, 34vw, 520px)" }}
+                    className={
+                        isMobile
+                            ? "absolute bottom-0 left-0 right-0 h-[88dvh] rounded-t-2xl bg-agora-surface border-t border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col"
+                            : "absolute top-0 right-0 h-full bg-agora-surface border-l border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col"
+                    }
+                    style={isMobile ? {} : { width: "clamp(320px, 34vw, 520px)" }}
                 >
-                    <div className="px-5 py-4 border-b border-agora-border flex items-start justify-between gap-3">
+                    {/* Drag handle — mobile only */}
+                    {isMobile && (
+                        <div className="pt-3 pb-1 flex justify-center shrink-0">
+                            <div className="w-10 h-1 rounded-full bg-agora-border/60" />
+                        </div>
+                    )}
+                    <div className="px-4 sm:px-5 py-4 border-b border-agora-border flex items-start justify-between gap-3">
                         <div className="space-y-1 min-w-0">
                             <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
                                 {kindLabels[node.kind] ?? node.kind}
@@ -439,7 +465,7 @@ export default function NodeDetailDrawer() {
                         </button>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                    <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-4">
                         <div className="flex flex-wrap items-center gap-2">
                             <Badge>{roundLabels[node.round] ?? `Round ${node.round}`}</Badge>
                             {node.cycle && node.cycle >= 2 && (
@@ -626,6 +652,7 @@ export default function NodeDetailDrawer() {
                         )}
                     </div>
                 </motion.aside>
+                </>
             )}
         </AnimatePresence>
     );

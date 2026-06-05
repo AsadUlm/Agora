@@ -19,7 +19,7 @@ const statusDotColors: Record<string, string> = {
     failed: "bg-red-500",
 };
 
-export default function DebateTimeline() {
+export default function DebateTimeline({ mobile = false }: { mobile?: boolean }) {
     const execution = useDebateExecutionState();
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
     const setSelectedRound = usePlaybackStore((s) => s.setSelectedRound);
@@ -60,7 +60,13 @@ export default function DebateTimeline() {
     };
 
     return (
-        <div className="h-full border-r border-agora-border bg-agora-surface/60 backdrop-blur-sm flex flex-col shrink-0" style={{ width: "clamp(160px, 16vw, 260px)" }}>
+        <div
+            className={cn(
+                "h-full bg-agora-surface/60 backdrop-blur-sm flex flex-col shrink-0",
+                mobile ? "w-full" : "border-r border-agora-border",
+            )}
+            style={mobile ? undefined : { width: "clamp(160px, 16vw, 260px)" }}
+        >
             <CycleNavigator />
 
             <div className="px-4 py-3 border-b border-agora-border">

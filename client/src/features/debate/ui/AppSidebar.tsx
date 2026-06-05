@@ -49,15 +49,26 @@ const navItems = [
     },
 ];
 
-export default function AppSidebar() {
+interface AppSidebarProps {
+    /** When true, render as a full-height mobile drawer (no collapse toggle). */
+    mobile?: boolean;
+    /** Invoked after a navigation action so the parent can close the drawer. */
+    onNavigate?: () => void;
+}
+
+export default function AppSidebar({ mobile = false, onNavigate }: AppSidebarProps) {
     const navigate = useNavigate();
     const logout = useAuthStore((s) => s.logout);
     const user = useAuthStore((s) => s.user);
     const [collapsed, setCollapsed] = useState(false);
     const [logoHovered, setLogoHovered] = useState(false);
 
+    // The collapse affordance is desktop-only; on mobile the sidebar is a drawer.
+    const isCollapsed = mobile ? false : collapsed;
+
     const handleLogout = () => {
         logout();
+        onNavigate?.();
         navigate("/login");
     };
 
@@ -65,11 +76,11 @@ export default function AppSidebar() {
         <aside
             className={cn(
                 "shrink-0 h-screen flex flex-col border-r border-agora-border bg-agora-surface/60 backdrop-blur-sm transition-all duration-200",
-                collapsed ? "w-[76px]" : "w-[220px]",
+                mobile ? "w-[240px]" : isCollapsed ? "w-[76px]" : "w-[220px]",
             )}
         >
             {/* Header */}
-            {collapsed ? (
+            {isCollapsed ? (
                 <button
                     className="h-[60px] flex items-center justify-center cursor-pointer"
                     onClick={() => setCollapsed(false)}
@@ -90,30 +101,35 @@ export default function AppSidebar() {
                         <AgoraLogoIcon size={30} />
                         <h1 className="text-sm font-semibold text-white">AGORA</h1>
                     </div>
-                    <button
-                        onClick={() => setCollapsed(true)}
-                        className="w-8 h-8 flex items-center justify-center rounded-lg text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all"
-                        title="Collapse sidebar"
-                    >
-                        <SidebarToggleIcon />
-                    </button>
+                    {!mobile && (
+                        <button
+                            onClick={() => setCollapsed(true)}
+                            className="w-8 h-8 flex items-center justify-center rounded-lg text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all"
+                            title="Collapse sidebar"
+                        >
+                            <SidebarToggleIcon />
+                        </button>
+                    )}
                 </div>
             )}
 
             {/* Nav */}
             <nav className="flex-1 px-2 space-y-0.5">
                 <button
-                    onClick={() => navigate("/debates", { state: { openNew: true } })}
+                    onClick={() => {
+                        onNavigate?.();
+                        navigate("/debates", { state: { openNew: true } });
+                    }}
                     className={cn(
                         "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-agora-text-muted hover:text-white hover:bg-agora-surface-light/40 transition-all",
-                        collapsed && "justify-center px-0",
+                        isCollapsed && "justify-center px-0",
                     )}
                     title="New Debate"
                 >
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0">
                         <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                     </svg>
-                    {!collapsed && "New Debate"}
+                    {!isCollapsed && "New Debate"}
                 </button>
 
                 {navItems.map((item) => (
@@ -121,10 +137,11 @@ export default function AppSidebar() {
                         key={item.to}
                         to={item.to}
                         end={item.end}
+                        onClick={() => onNavigate?.()}
                         className={({ isActive }) =>
                             cn(
                                 "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all",
-                                collapsed && "justify-center px-0",
+                                isCollapsed && "justify-center px-0",
                                 isActive
                                     ? "bg-agora-surface-light text-white"
                                     : "text-agora-text-muted hover:text-white hover:bg-agora-surface-light/40",
@@ -133,14 +150,14 @@ export default function AppSidebar() {
                         title={item.label}
                     >
                         <span className="shrink-0">{item.icon}</span>
-                        {!collapsed && item.label}
+                        {!isCollapsed && item.label}
                     </NavLink>
                 ))}
             </nav>
 
             {/* User footer */}
-            <div className={cn("px-3 py-4", collapsed && "flex justify-center px-0")}>
-                {collapsed ? (
+            <div className={cn("px-3 py-4", isCollapsed && "flex justify-center px-0")}>
+                {isCollapsed ? (
                     <button
                         onClick={handleLogout}
                         title={user?.email ?? "Sign out"}
