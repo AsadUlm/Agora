@@ -72,10 +72,10 @@ export default function AgentConfigCard({
     const userPresets = presets.filter((p) => p.type === "user");
 
     // Build provider/model lookups from the live catalog with a static fallback.
-    const providerIds: string[] = catalog.length
+    const providerIds: string[] = Array.isArray(catalog) && catalog.length
         ? catalog.filter((p) => p.status !== "placeholder").map((p) => p.id)
         : [...PROVIDER_OPTIONS];
-    const modelMap: Record<string, { id: string; name: string }[]> = catalog.length
+    const modelMap: Record<string, { id: string; name: string }[]> = Array.isArray(catalog) && catalog.length
         ? Object.fromEntries(
             catalog.map((p) => [p.id, p.models.map((m) => ({ id: m.id, name: m.name }))]),
         )
@@ -86,7 +86,7 @@ export default function AgentConfigCard({
             ]),
         );
     const models = modelMap[agent.provider] ?? modelMap.openrouter ?? [];
-    const catalogPresets = catalog.find((p) => p.id === "openrouter")?.presets ?? [];
+    const catalogPresets = (Array.isArray(catalog) ? catalog : []).find((p) => p.id === "openrouter")?.presets ?? [];
     const modelPresets = catalogPresets.length
         ? catalogPresets.map((preset) => ({
             key: preset.id,

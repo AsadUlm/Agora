@@ -39,7 +39,7 @@ export async function getDebateDetail(
 
 export async function listDebates(): Promise<DebateListItem[]> {
     const res = await apiClient.get<DebateListItem[]>("/debates");
-    return res.data;
+    return Array.isArray(res.data) ? res.data : [];
 }
 
 export async function uploadDocument(
@@ -80,12 +80,12 @@ export async function listDocuments(
     const res = await apiClient.get<DocumentDTO[]>(
         `/documents?session_id=${sessionId}`,
     );
-    return res.data;
+    return Array.isArray(res.data) ? res.data : [];
 }
 
 export async function listAllDocuments(): Promise<DocumentAllItemDTO[]> {
     const res = await apiClient.get<DocumentAllItemDTO[]>("/documents/all");
-    return res.data;
+    return Array.isArray(res.data) ? res.data : [];
 }
 
 export async function downloadDocumentBlob(documentId: string): Promise<{ blob: Blob; filename: string }> {

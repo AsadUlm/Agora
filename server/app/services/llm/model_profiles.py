@@ -17,9 +17,12 @@ STABLE_STRUCTURED_MODELS: frozenset[str] = frozenset(
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-opus-4-8",
         "anthropic/claude-opus-4-7",
-        "openai/gpt-5.5",
-        "openai/gpt-5.5-pro",
+        "anthropic/claude-3-haiku",
+        "openai/gpt-4.1-mini",
+        "openai/gpt-4.1-nano",
+        "openai/gpt-4o-mini",
         "google/gemini-3.1-pro",
+        "google/gemini-2.0-flash-001",
         "deepseek/deepseek-v4-pro",
     }
 )
@@ -31,10 +34,12 @@ EXPERIMENTAL_STRUCTURED_MODELS: frozenset[str] = frozenset(
         "xiaomi/mimo-v2.5",
         "xiaomi/mimo-v2.5-pro",
         "google/gemini-3.5-flash",
+        "google/gemini-2.0-flash-lite-001",
         "deepseek/deepseek-v4-flash",
         "xai/grok-4.3",
         "moonshot/kimi-k2.5",
         "moonshot/kimi-k2.6",
+        "meta-llama/llama-3.1-8b-instruct",
     }
 )
 

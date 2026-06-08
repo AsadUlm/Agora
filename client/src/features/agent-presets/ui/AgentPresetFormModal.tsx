@@ -81,14 +81,14 @@ export default function AgentPresetFormModal({
     const { providers: catalog } = useLLMCatalog();
 
     const providerIds = useMemo(
-        () => (catalog.length
+        () => (Array.isArray(catalog) && catalog.length
             ? catalog.filter((p) => p.status !== "placeholder").map((p) => p.id)
             : [...PROVIDER_OPTIONS]),
         [catalog],
     );
 
     const modelMap = useMemo<Record<string, { id: string; name: string }[]>>(
-        () => (catalog.length
+        () => (Array.isArray(catalog) && catalog.length
             ? Object.fromEntries(
                 catalog.map((p) => [p.id, p.models.map((m) => ({ id: m.id, name: m.name }))]),
             )

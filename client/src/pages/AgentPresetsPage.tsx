@@ -52,7 +52,7 @@ export default function AgentPresetsPage() {
         setLoading(true);
         try {
             const items = await listAgentPresets({ query: debouncedSearch || undefined });
-            setPresets(items);
+            setPresets(Array.isArray(items) ? items : []);
         } catch {
             toast.error("Failed to load presets.");
         } finally {

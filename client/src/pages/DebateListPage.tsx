@@ -76,7 +76,7 @@ export default function DebateListPage() {
     const fetchDebates = useCallback(async () => {
         try {
             const data = await listDebates();
-            setDebates(data);
+            setDebates(Array.isArray(data) ? data : []);
         } catch {
             /* ignore */
         } finally {
