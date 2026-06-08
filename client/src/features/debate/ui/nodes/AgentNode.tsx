@@ -5,6 +5,7 @@ import type { DebateGraphNode } from "../../model/graph.types";
 import { useGraphStore } from "../../model/graph.store";
 import { truncateNodeText } from "../../model/formatters";
 import { AGENT_COLOR_PALETTE } from "../../model/agent-config.types";
+import { parseEvidenceRetrieval } from "../../model/evidence.types";
 
 type AgentNodeData = DebateGraphNode & {
     label: string;
@@ -18,7 +19,7 @@ type AgentNodeData = DebateGraphNode & {
 const statusStyles: Record<string, string> = {
     hidden: "opacity-0 scale-0",
     entering: "opacity-100 border-white/40 ring-1 ring-white/10",
-    visible: "opacity-80 border-gray-600",
+    visible: "opacity-95 border-gray-500/70",
     active:
         "opacity-100 border-indigo-400 shadow-md shadow-indigo-500/30 ring-2 ring-indigo-500/20",
     completed: "opacity-100 border-emerald-500/60",
@@ -106,13 +107,21 @@ export default function AgentNode({
         ? `${loadingLabel}...`
         : truncateNodeText(data.summary || data.content || data.label, maxLen) || data.label;
 
+    // Small "evidence used" hint shown when the backend attached retrieval
+    // metadata with >0 chunks. Distinct from the static `knowledge` doc-count
+    // chip: that one shows how many docs were *available*; this one shows how
+    // many were *actually used* in this response.
+    const evidence = parseEvidenceRetrieval(data.metadata);
+    const evidenceChunks = evidence?.total_chunks ?? 0;
+    const evidenceLabels = evidence?.evidence_labels ?? [];
+
     return (
         <AnimatePresence>
             <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 8 }}
                 animate={{
                     scale: nodeStatus === "hidden" ? 0.95 : isGeneratingFocus ? 1.045 : selected ? 1.02 : 1,
-                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.26 : 1,
+                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.45 : 1,
                     y: nodeStatus === "hidden" ? 8 : 0,
                 }}
                 transition={{
@@ -173,6 +182,21 @@ export default function AgentNode({
                     {displayText}
                 </div>
 
+                {evidenceChunks > 0 && (
+                    <div
+                        className="mt-1.5 inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-indigo-500/25 border border-indigo-400/40 text-indigo-100 font-medium max-w-full truncate"
+                        title={`Evidence used: ${evidenceChunks} chunk${evidenceChunks === 1 ? "" : "s"}${evidenceLabels.length ? ` · ${evidenceLabels.join(", ")}` : ""}`}
+                    >
+                        <span aria-hidden>📑</span>
+                        <span className="truncate">
+                            {evidenceLabels.length > 0
+                                ? evidenceLabels.slice(0, 3).join(", ")
+                                : `${evidenceChunks}c`}
+                            {evidenceLabels.length > 3 && ` +${evidenceLabels.length - 3}`}
+                        </span>
+                    </div>
+                )}
+
                 {isLoading && (
                     <div className="mt-2 text-[10px] text-cyan-100/90 flex items-center gap-1.5 rounded-md bg-white/10 px-2 py-1">
                         <span>{loadingLabel}</span>
@@ -181,8 +205,18 @@ export default function AgentNode({
                 )}
 
                 {nodeStatus === "failed" && (
-                    <div className="mt-2 text-[10px] text-red-200/90">
-                        This response failed to generate.
+                    <div className="mt-2 text-[10px] text-red-200/90 space-y-0.5">
+                        {data.metadata?.["malformed"] ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 font-medium text-red-100">
+                                ⚠ Malformed output
+                            </span>
+                        ) : data.metadata?.["safeError"] ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 font-medium text-red-100 leading-snug">
+                                ⚠ {String((data.metadata["safeError"] as Record<string, unknown>)["userMessage"] ?? "Response failed")}
+                            </span>
+                        ) : (
+                            "This response failed to generate."
+                        )}
                     </div>
                 )}
 

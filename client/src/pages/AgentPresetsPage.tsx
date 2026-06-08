@@ -126,7 +126,7 @@ export default function AgentPresetsPage() {
 
     return (
         <div className="min-h-screen bg-agora-bg">
-            <main className="max-w-6xl mx-auto px-6 py-8">
+            <main className="max-w-6xl mx-auto px-4 py-6 sm:px-6 sm:py-8">
                 {/* Header */}
                 <header className="mb-6 flex items-start justify-between gap-4 flex-wrap">
                     <div>

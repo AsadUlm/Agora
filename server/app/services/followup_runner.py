@@ -38,6 +38,7 @@ from app.services.debate_engine.debate_memory import (
     build_debate_memory,
 )
 from app.services.debate_engine.round_manager import RoundManager
+from app.services.llm.provider_error_classifier import make_safe_error, UNKNOWN_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,20 @@ async def run_followup_cycle(
             round_a = existing_max + 1
             round_b = existing_max + 2
             round_c = existing_max + 3
+
+            logger.info(
+                "[FollowUp] previous context loaded session=%s turn=%s cycle=%d "
+                "has_previous_synthesis=%s agent_count=%d has_rag_context=%s "
+                "cycle_memories=%d evolution_count=%d",
+                session_id,
+                turn_id,
+                cycle_number,
+                bool(memory.get("previous_synthesis")),
+                len(agents),
+                any(bindings_by_agent.get(a.id) for a in agents),
+                len(memory.get("cycle_memories") or []),
+                len(memory.get("evolving_positions") or []),
+            )
 
             # Reset turn status so the UI sees the cycle as live
             turn.status = ChatTurnStatus.running
@@ -226,6 +241,17 @@ async def run_followup_cycle(
                 turn.current_round_no = round_c
                 await db.commit()
 
+                logger.info(
+                    "[FollowUp] generation completed session=%s turn=%s cycle=%d "
+                    "responses_ok=%d critiques_ok=%d synthesis_ok=%d",
+                    session_id,
+                    turn_id,
+                    cycle_number,
+                    sum(1 for r in resp if r.generation_status == "success"),
+                    sum(1 for c in crit if c.generation_status == "success"),
+                    sum(1 for s in synth_results if s.generation_status == "success"),
+                )
+
                 await on_event(
                     ExecutionEvent(
                         event_type=ExecutionEventType.turn_completed,
@@ -236,7 +262,21 @@ async def run_followup_cycle(
                 )
 
             except Exception as exc:
-                logger.exception("Follow-up cycle failed: %s", exc)
+                safe_error = getattr(exc, "safe_error", None)
+                if safe_error is None:
+                    safe_error = make_safe_error(UNKNOWN_ERROR, message=str(exc))
+                logger.warning(
+                    "[FollowUp] generation failed: %s",
+                    safe_error.message,
+                    extra={
+                        "debate_id": str(session_id),
+                        "turn_id": str(turn_id),
+                        "cycle_number": cycle_number,
+                        "error_code": safe_error.code,
+                        "retryable": safe_error.retryable,
+                        "debug_id": safe_error.debug_id,
+                    },
+                )
                 turn.status = ChatTurnStatus.failed
                 turn.ended_at = datetime.now(timezone.utc)
                 await db.commit()
@@ -250,6 +290,8 @@ async def run_followup_cycle(
                                 "follow_up": True,
                                 "cycle_number": cycle_number,
                                 "error": str(exc),
+                                "safe_error": safe_error.to_frontend_dict(),
+                                "generation_failed": True,
                             },
                         )
                     )
@@ -257,14 +299,34 @@ async def run_followup_cycle(
                     pass
 
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Follow-up cycle outer failure: %s", exc)
+            safe_error = getattr(exc, "safe_error", None)
+            if safe_error is None:
+                safe_error = make_safe_error(UNKNOWN_ERROR, message=str(exc))
+            logger.warning(
+                "[FollowUp] outer failure: %s",
+                safe_error.message,
+                extra={
+                    "debate_id": str(session_id),
+                    "turn_id": str(turn_id),
+                    "cycle_number": cycle_number,
+                    "error_code": safe_error.code,
+                    "retryable": safe_error.retryable,
+                    "debug_id": safe_error.debug_id,
+                },
+            )
             try:
                 await on_event(
                     ExecutionEvent(
                         event_type=ExecutionEventType.turn_failed,
                         session_id=session_id,
                         turn_id=turn_id,
-                        payload={"follow_up": True, "error": str(exc)},
+                        payload={
+                            "follow_up": True,
+                            "cycle_number": cycle_number,
+                            "error": str(exc),
+                            "safe_error": safe_error.to_frontend_dict(),
+                            "generation_failed": True,
+                        },
                     )
                 )
             except Exception:
@@ -299,8 +361,8 @@ async def _persist_cycle_summary(
 
         summary_text = build_compact_cycle_summary(
             cycle_number=cycle_number,
-            follow_up_question=follow_up_question,
-            synthesis_payload=payload,
+            question=follow_up_question,
+            updated_synth_payload=payload,
         )
         if not summary_text:
             return

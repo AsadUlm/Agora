@@ -49,6 +49,7 @@ from app.models.message import MessageType
 from app.models.agent_document_binding import AgentDocumentBinding
 from app.schemas.contracts import AgentContext, AgentRoundResult, ExecutionEvent, ExecutionEventType, OnEventCallback, TurnContext
 from app.services.debate_engine.round_manager import RoundManager
+from app.services.llm.provider_error_classifier import classify_provider_error, make_safe_error, UNKNOWN_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,14 @@ class ChatEngine:
         """
         turn = await self._load_turn(turn_id)
         ctx = await self._build_turn_context(turn)
+
+        # ── Service-level agent count guard ──────────────────────────────────
+        from app.core.config import settings
+        if len(ctx.agents) > settings.MAX_DEBATE_AGENTS:
+            raise ValueError(
+                f"Debate execution rejected: {len(ctx.agents)} agents exceeds "
+                f"the maximum of {settings.MAX_DEBATE_AGENTS}."
+            )
 
         # ── Transition: queued → running ─────────────────────────────────────
         turn.status = ChatTurnStatus.running
@@ -166,11 +175,22 @@ class ChatEngine:
             turn.ended_at = datetime.now(timezone.utc)
             await self.db.flush()
             logger.exception("Turn %s failed: %s", turn_id, exc)
+            # Build a safe error — classify if we have provider error info
+            safe_error = getattr(exc, "safe_error", None)
+            if safe_error is None:
+                safe_error = make_safe_error(
+                    UNKNOWN_ERROR,
+                    message=str(exc),
+                )
             await self._emit(ExecutionEvent(
                 event_type=ExecutionEventType.turn_failed,
                 session_id=ctx.session_id,
                 turn_id=ctx.turn_id,
-                payload={"error": str(exc)},
+                payload={
+                    "error": str(exc),
+                    "safe_error": safe_error.to_frontend_dict(),
+                    "generation_failed": True,
+                },
             ))
             raise
 

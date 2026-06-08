@@ -18,8 +18,10 @@ This must match the Vector(768) column in document_chunks.embedding.
 from __future__ import annotations
 
 import logging
+import math
+import os
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,57 @@ EMBEDDING_DIM = 768
 
 class EmbeddingProviderError(RuntimeError):
     """Raised when an embedding provider fails in a non-retryable way."""
+
+
+def _validate_embedding_vector(
+    vector: Any,
+    expected_dim: int,
+    *,
+    context: str = "embedding",
+) -> list[float]:
+    """
+    Strict shape/value check for a single embedding vector.
+
+    Raises EmbeddingProviderError on:
+      • not a list/tuple
+      • wrong length
+      • non-numeric element
+      • NaN or +/- Inf
+
+    Returns the vector coerced to list[float].
+    """
+    if not isinstance(vector, (list, tuple)):
+        raise EmbeddingProviderError(
+            f"{context}: expected list/tuple, got {type(vector).__name__}"
+        )
+    if len(vector) != expected_dim:
+        raise EmbeddingProviderError(
+            f"{context}: expected dim={expected_dim}, got {len(vector)}"
+        )
+    out: list[float] = []
+    for i, v in enumerate(vector):
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise EmbeddingProviderError(
+                f"{context}: non-numeric value at index {i}: {type(v).__name__}"
+            )
+        f = float(v)
+        if math.isnan(f) or math.isinf(f):
+            raise EmbeddingProviderError(
+                f"{context}: NaN/Inf value at index {i}"
+            )
+        out.append(f)
+    return out
+
+
+def _is_test_environment() -> bool:
+    """True when running under pytest or APP_ENV is set to a test value."""
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
+    try:
+        from app.core.config import settings  # deferred
+        return settings.APP_ENV.lower() in {"test", "testing", "ci"}
+    except Exception:  # pragma: no cover — defensive
+        return False
 
 
 class EmbeddingService(ABC):
@@ -210,16 +263,12 @@ class OpenRouterEmbeddingService(EmbeddingService):
                 raise EmbeddingProviderError(
                     "OpenRouter embeddings: missing or empty 'embedding'"
                 )
-            if not all(isinstance(v, (int, float)) for v in vec):
-                raise EmbeddingProviderError(
-                    "OpenRouter embeddings: non-numeric value in vector"
+            # Strict validation: length, numeric, no NaN/Inf.
+            result.append(
+                _validate_embedding_vector(
+                    vec, self._dim, context="OpenRouter embeddings"
                 )
-            if len(vec) != self._dim:
-                raise EmbeddingProviderError(
-                    f"OpenRouter embeddings: expected dim={self._dim}, "
-                    f"got {len(vec)}"
-                )
-            result.append([float(v) for v in vec])
+            )
         return result
 
 
@@ -315,10 +364,19 @@ def get_embedding_service() -> EmbeddingService:
     """
     Return the singleton EmbeddingService instance.
 
-    Selection:
-      EMBEDDING_PROVIDER=openai  → OpenAIEmbeddingService (needs OPENAI_API_KEY)
-      EMBEDDING_PROVIDER=mock    → MockEmbeddingService (default; no API key needed)
-    Falls back to Mock with a warning if openai is selected but key is missing.
+    Selection is driven by ``settings.EMBEDDING_PROVIDER``:
+      • openrouter → OpenRouterEmbeddingService (needs OPENROUTER_API_KEY)
+      • openai     → OpenAIEmbeddingService (needs OPENAI_API_KEY)
+      • gemini     → GeminiEmbeddingService (needs GEMINI_API_KEY)
+      • mock       → MockEmbeddingService (zero vectors, for tests/offline dev)
+
+    Misconfiguration policy:
+      • Empty provider → raise (mock fallback only in test mode or when
+        EMBEDDING_ALLOW_MOCK_FALLBACK=True).
+      • Provider selected but API key missing → raise.
+      • Provider=mock is always honored (explicit opt-in).
+
+    Use ``set_embedding_service(instance)`` in tests to inject a fake.
     """
     global _instance
     if _instance is None:
@@ -326,68 +384,101 @@ def get_embedding_service() -> EmbeddingService:
     return _instance
 
 
+def set_embedding_service(instance: EmbeddingService) -> None:
+    """Override the singleton — used in tests to inject MockEmbeddingService."""
+    global _instance
+    _instance = instance
+
+
+def reset_embedding_service_for_tests() -> None:
+    """Reset the singleton — used in test teardown to restore default."""
+    global _instance
+    _instance = None
+
+
+def _allow_mock_fallback(settings: Any) -> bool:
+    """Mock fallback is allowed in test mode or when explicitly enabled."""
+    if _is_test_environment():
+        return True
+    return bool(getattr(settings, "EMBEDDING_ALLOW_MOCK_FALLBACK", False))
+
+
 def _make_service() -> EmbeddingService:
     from app.core.config import settings  # deferred — avoids circular import
 
-    provider = settings.EMBEDDING_PROVIDER.lower()
+    raw_provider = (settings.EMBEDDING_PROVIDER or "").strip()
+    provider = raw_provider.lower()
+    dim = int(settings.EMBEDDING_DIM)
+    model = settings.EMBEDDING_MODEL or ""
 
-    if provider == "gemini":
-        if not getattr(settings, "GEMINI_API_KEY", None):
-            logger.warning(
-                "EMBEDDING_PROVIDER=gemini but GEMINI_API_KEY is not set. "
-                "Falling back to MockEmbeddingService."
-            )
-        else:
-            model = getattr(settings, "EMBEDDING_MODEL", GeminiEmbeddingService._DEFAULT_MODEL)
-            # Strip OpenRouter-style prefix if someone left "google/text-embedding-004"
-            if "/" in model:
-                model = model.split("/", 1)[1]
-            logger.info("Embedding provider: Gemini (model=%s)", model)
-            return GeminiEmbeddingService(api_key=settings.GEMINI_API_KEY, model=model)
-
-    if provider == "openrouter":
-        if not settings.OPENROUTER_API_KEY:
-            logger.warning(
-                "EMBEDDING_PROVIDER=openrouter but OPENROUTER_API_KEY is not set. "
-                "Falling back to MockEmbeddingService."
-            )
-        else:
-            logger.info(
-                "Embedding provider: OpenRouter (model=%s, dim=%d)",
-                settings.EMBEDDING_MODEL,
-                settings.EMBEDDING_DIM,
-            )
-            return OpenRouterEmbeddingService(
-                api_key=settings.OPENROUTER_API_KEY,
-                model=settings.EMBEDDING_MODEL,
-                dimension=settings.EMBEDDING_DIM,
-                base_url=settings.OPENROUTER_BASE_URL,
-                site_url=settings.OPENROUTER_SITE_URL,
-                app_name=settings.OPENROUTER_APP_NAME,
-            )
-
-    if provider == "openai" and settings.OPENAI_API_KEY:
-        logger.info(
-            "Embedding provider: OpenAI (model=%s, dim=%d)",
-            settings.EMBEDDING_MODEL,
-            settings.EMBEDDING_DIM,
+    if not provider:
+        msg = (
+            "EMBEDDING_PROVIDER is empty. RAG cannot work without a real "
+            "embedding provider. Set EMBEDDING_PROVIDER=openrouter (recommended) "
+            "with OPENROUTER_API_KEY in your .env, or set EMBEDDING_PROVIDER=mock "
+            "explicitly if you want zero-vector embeddings for offline dev."
         )
-        return OpenAIEmbeddingService(
-            api_key=settings.OPENAI_API_KEY,
-            model=settings.EMBEDDING_MODEL,
-        )
-
-    if provider == "openai" and not settings.OPENAI_API_KEY:
-        logger.warning(
-            "EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set. "
-            "Falling back to MockEmbeddingService."
-        )
+        if _allow_mock_fallback(settings):
+            logger.warning("%s — falling back to MockEmbeddingService (test/dev mode).", msg)
+            return MockEmbeddingService()
+        raise EmbeddingProviderError(msg)
 
     if provider == "mock":
         logger.warning(
-            "Embedding provider: Mock (zero-vector). RAG retrieval will be "
-            "non-semantic — set EMBEDDING_PROVIDER=openrouter for real use."
+            "Embedding provider: MOCK (zero-vector, dim=%d). RAG retrieval "
+            "will return arbitrary results — set EMBEDDING_PROVIDER=openrouter "
+            "for real semantic search.",
+            dim,
         )
-    else:
-        logger.info("Embedding provider: Mock (zero-vector, no API calls)")
-    return MockEmbeddingService()
+        return MockEmbeddingService()
+
+    if provider == "openrouter":
+        if not settings.OPENROUTER_API_KEY:
+            raise EmbeddingProviderError(
+                "EMBEDDING_PROVIDER=openrouter but OPENROUTER_API_KEY is not set. "
+                "Add OPENROUTER_API_KEY=sk-or-... to your .env (key is never logged)."
+            )
+        base_url = (settings.EMBEDDING_BASE_URL or settings.OPENROUTER_BASE_URL).rstrip("/")
+        logger.info(
+            "Embedding provider: OpenRouter (model=%s, dim=%d, base_url=%s)",
+            model, dim, base_url,
+        )
+        return OpenRouterEmbeddingService(
+            api_key=settings.OPENROUTER_API_KEY,
+            model=model,
+            dimension=dim,
+            base_url=base_url,
+            site_url=settings.OPENROUTER_SITE_URL,
+            app_name=settings.OPENROUTER_APP_NAME,
+        )
+
+    if provider == "openai":
+        if not settings.OPENAI_API_KEY:
+            raise EmbeddingProviderError(
+                "EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set."
+            )
+        logger.info("Embedding provider: OpenAI (model=%s, dim=%d)", model, dim)
+        return OpenAIEmbeddingService(api_key=settings.OPENAI_API_KEY, model=model)
+
+    if provider == "gemini":
+        if not getattr(settings, "GEMINI_API_KEY", None):
+            raise EmbeddingProviderError(
+                "EMBEDDING_PROVIDER=gemini but GEMINI_API_KEY is not set."
+            )
+        gem_model = model
+        if "/" in gem_model:  # strip openrouter-style prefix if pasted by mistake
+            gem_model = gem_model.split("/", 1)[1]
+        if not gem_model:
+            gem_model = GeminiEmbeddingService._DEFAULT_MODEL
+        logger.info("Embedding provider: Gemini (model=%s, dim=%d)", gem_model, dim)
+        return GeminiEmbeddingService(api_key=settings.GEMINI_API_KEY, model=gem_model)
+
+    # Unknown provider value.
+    msg = (
+        f"Unknown EMBEDDING_PROVIDER={raw_provider!r}. "
+        "Valid values: openrouter, openai, gemini, mock."
+    )
+    if _allow_mock_fallback(settings):
+        logger.warning("%s — falling back to MockEmbeddingService (test/dev mode).", msg)
+        return MockEmbeddingService()
+    raise EmbeddingProviderError(msg)

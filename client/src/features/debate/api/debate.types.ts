@@ -107,6 +107,7 @@ export type WsEventType =
     | "agent_completed"
     | "message_created"
     | "round_completed"
+    | "round_failed"
     | "turn_completed"
     | "turn_failed";
 

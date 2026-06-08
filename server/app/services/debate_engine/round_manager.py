@@ -50,9 +50,26 @@ from app.services.debate_engine.prompts.followup_prompts import (
 )
 from app.services.debate_engine.prompts.personas import resolve_temperature
 from app.services.debate_engine.response_normalizer import normalize_round_output
-from app.services.debate_engine.two_stage_structurer import recover_json_with_llm
+from app.services.debate_engine.quality_guards import (
+    evaluate_round_quality,
+    validate_structured_output,
+)
+from app.services.debate_engine.two_stage_structurer import (
+    recover_json_with_llm,
+    repair_structured_output_with_moderator,
+)
 from app.services.llm.exceptions import LLMError
 from app.services.llm.service import LLMService, get_llm_service
+from app.services.llm.provider_error_classifier import (
+    classify_provider_error,
+    make_safe_error,
+    MODEL_EMPTY_RESPONSE,
+    MODEL_INVALID_JSON,
+    ROUND_ALL_AGENTS_FAILED,
+    STRUCTURED_VALIDATION_FAILED,
+    UNKNOWN_ERROR,
+    DebateSafeError,
+)
 from app.services.retrieval.retrieval_service import RetrievalService
 from app.services.retrieval.evidence import (
     EvidencePacket,
@@ -91,6 +108,27 @@ ROUND_TYPE_MAX_TOKENS: dict[str, int] = {
     "updated_synthesis": 2500,
     "synthesis_verdict": 2000,
 }
+
+
+# Phase 2: appended to the prompt on a single corrective regeneration when the
+# first answer leaked prompt / schema / role / formatting text into content.
+_LEAK_CORRECTION_SUFFIX = (
+    "\n\nIMPORTANT CORRECTION: Your previous answer leaked instruction, schema, "
+    "role, or formatting text into the user-facing content. Answer again as an "
+    "expert panelist debating the question directly for a human reader. Do NOT "
+    "mention JSON, schemas, field names, your role/persona, the instructions, "
+    "or your own process. Produce only the required JSON where every field "
+    "value is substantive debate content."
+)
+
+_STRUCTURED_CORRECTION_SUFFIX = (
+    "\n\nIMPORTANT CORRECTION: Your previous answer was malformed or incomplete. "
+    "Return a SINGLE valid JSON object only — no markdown, no code fences, no "
+    "commentary before or after. Every required field must be present and filled "
+    "with substantive debate content. Do NOT copy field descriptions, schema "
+    "hints, placeholders, word counts, or example scaffolding into the values. "
+    "The 'response' field must contain the full readable answer."
+)
 
 
 def _resolve_max_tokens(round_number: int, round_type: str | None = None) -> int:
@@ -158,6 +196,13 @@ class RoundManager:
         self._on_event = on_event
         self._step_controller = step_controller
         self._session_factory = session_factory or self._build_session_factory_from_db(db)
+        # Serializes round-level bookkeeping writes (create/complete/fail) on the
+        # shared ``self.db`` session. During the follow-up streaming overlap the
+        # response round's completion can run concurrently with the next round's
+        # creation; without this lock the two interleave their flush/commit on a
+        # single AsyncSession and one round's status update is silently dropped
+        # (leaving e.g. the follow-up response round stuck in ``running``).
+        self._round_write_lock = asyncio.Lock()
 
         configured_concurrency = (
             max_concurrent_agent_calls
@@ -214,7 +259,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 1."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
 
         await self._complete_round(round_record, ctx)
@@ -340,7 +385,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 2."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
 
         await self._complete_round(round_record, ctx)
@@ -413,7 +458,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 3."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
 
         # Step 37: neutral moderator aggregation across the three syntheses.
@@ -516,7 +561,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in follow-up response."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
         await self._complete_round(round_record, ctx)
         return results
@@ -667,7 +712,7 @@ class RoundManager:
             if self._all_agents_failed(gathered):
                 reason = "All agents failed in follow-up response."
                 try:
-                    await self._fail_round(round_record, reason)
+                    await self._fail_round(round_record, reason, ctx=ctx)
                 finally:
                     if not all_done_future.done():
                         all_done_future.set_exception(RuntimeError(reason))
@@ -789,7 +834,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in follow-up critique."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
         await self._complete_round(round_record, ctx)
         return results
@@ -901,7 +946,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in updated synthesis."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
 
         # Step 37: neutral moderator aggregation across the updated syntheses
@@ -1040,6 +1085,48 @@ class RoundManager:
             except TypeError:
                 # Backward compatibility: legacy single-arg builders.
                 prompt = plan.prompt_builder(chunks)
+
+            # ── Evidence-injection visibility (single consolidated log line).
+            # We capture the data once per agent turn so logs can be grepped
+            # for "evidence_injection" to audit RAG behavior end-to-end.
+            assigned_doc_count = len(plan.agent_ctx.assigned_document_ids or [])
+            packet_labels = [p.citation_label for p in packets if p.citation_label]
+            prompt_has_block = "AVAILABLE EVIDENCE" in prompt
+            logger.info(
+                "evidence_injection: session=%s turn=%s round=%d cycle=%d "
+                "agent=%s role=%s knowledge_mode=%s assigned_docs=%d "
+                "retrieved_chunks=%d evidence_packets=%d labels=%s "
+                "prompt_has_evidence_block=%s",
+                ctx.session_id,
+                ctx.turn_id,
+                round_record.round_number,
+                plan.cycle_number,
+                plan.agent_ctx.agent_id,
+                plan.agent_ctx.role,
+                plan.agent_ctx.knowledge_mode,
+                assigned_doc_count,
+                len(chunks),
+                len(packets),
+                packet_labels or "[]",
+                prompt_has_block,
+            )
+            # Warn loudly when documents are configured but nothing was
+            # retrieved — this is the most common silent-failure mode.
+            if (
+                plan.agent_ctx.knowledge_mode != "no_docs"
+                and not chunks
+            ):
+                logger.warning(
+                    "evidence_injection: NO chunks retrieved despite "
+                    "knowledge_mode=%s (session=%s agent=%s role=%s). "
+                    "Check /api/documents/rag-health and confirm documents "
+                    "are status=ready with non-null embeddings.",
+                    plan.agent_ctx.knowledge_mode,
+                    ctx.session_id,
+                    plan.agent_ctx.agent_id,
+                    plan.agent_ctx.role,
+                )
+
             result = await self._call_llm(
                 db=task_db,
                 agent_ctx=plan.agent_ctx,
@@ -1051,6 +1138,7 @@ class RoundManager:
                 sequence_no=plan.sequence_no,
                 agent_index=plan.agent_index,
                 retrieved_chunks=chunks,
+                evidence_packets=packets,
                 extra_payload_fields=plan.extra_payload_fields,
             )
 
@@ -1210,13 +1298,14 @@ class RoundManager:
             round_type=round_type,
             status=RoundStatus.queued,
         )
-        self.db.add(round_record)
-        await self.db.flush()
+        async with self._round_write_lock:
+            self.db.add(round_record)
+            await self.db.flush()
 
-        round_record.status = RoundStatus.running
-        round_record.started_at = datetime.now(timezone.utc)
-        await self.db.flush()
-        await self.db.commit()
+            round_record.status = RoundStatus.running
+            round_record.started_at = datetime.now(timezone.utc)
+            await self.db.flush()
+            await self.db.commit()
 
         logger.info(
             "Round %d running (id=%s, turn=%s)",
@@ -1243,10 +1332,11 @@ class RoundManager:
 
     async def _complete_round(self, round_record: Round, ctx: TurnContext) -> None:
         """Transition round: running → completed and emit round_completed."""
-        round_record.status = RoundStatus.completed
-        round_record.ended_at = datetime.now(timezone.utc)
-        await self.db.flush()
-        await self.db.commit()
+        async with self._round_write_lock:
+            round_record.status = RoundStatus.completed
+            round_record.ended_at = datetime.now(timezone.utc)
+            await self.db.flush()
+            await self.db.commit()
 
         logger.info("Round %d completed.", round_record.round_number)
         if self._on_event is not None:
@@ -1265,13 +1355,66 @@ class RoundManager:
                 )
             )
 
-    async def _fail_round(self, round_record: Round, reason: str) -> None:
-        """Transition round: running → failed."""
-        round_record.status = RoundStatus.failed
-        round_record.ended_at = datetime.now(timezone.utc)
-        await self.db.flush()
-        await self.db.commit()
+    async def _fail_round(
+        self,
+        round_record: Round,
+        reason: str,
+        *,
+        ctx: "TurnContext | None" = None,
+        safe_error: "DebateSafeError | None" = None,
+    ) -> None:
+        """Transition round: running → failed and emit round_failed event."""
+        async with self._round_write_lock:
+            round_record.status = RoundStatus.failed
+            round_record.ended_at = datetime.now(timezone.utc)
+            await self.db.flush()
+            await self.db.commit()
         logger.error("Round %d failed: %s", round_record.round_number, reason)
+
+        if self._on_event is not None and ctx is not None:
+            # Build a safe error if none was provided
+            if safe_error is None:
+                safe_error = make_safe_error(
+                    ROUND_ALL_AGENTS_FAILED,
+                    round_number=round_record.round_number,
+                    round_type=(
+                        round_record.round_type.value
+                        if round_record.round_type is not None
+                        else None
+                    ),
+                )
+            logger.info(
+                "WS emit round_failed round=%d turn=%s code=%s debug_id=%s",
+                round_record.round_number,
+                ctx.turn_id,
+                safe_error.code,
+                safe_error.debug_id,
+            )
+            try:
+                await self._on_event(
+                    ExecutionEvent(
+                        event_type=ExecutionEventType.round_failed,
+                        session_id=ctx.session_id,
+                        turn_id=ctx.turn_id,
+                        round_id=round_record.id,
+                        round_number=round_record.round_number,
+                        payload={
+                            "round_id": str(round_record.id),
+                            "round_number": round_record.round_number,
+                            "round_type": (
+                                round_record.round_type.value
+                                if round_record.round_type is not None
+                                else None
+                            ),
+                            "error": safe_error.to_frontend_dict(),
+                        },
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to emit round_failed WS event (round=%d)",
+                    round_record.round_number,
+                )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 37 — Synthesis Verdict (neutral moderator aggregation)
@@ -1320,13 +1463,14 @@ class RoundManager:
         )
         is_followup_cycle = cycle_number > 1 or round_type_value == "updated_synthesis"
 
-        # Use the first agent's provider/model for stability and to avoid
-        # introducing a new "moderator" agent config. Temperature is forced
-        # low: the moderator must be deterministic and neutral.
-        moderator_agent = ctx.agents[0]
-        moderator_provider = moderator_agent.provider
-        moderator_model = moderator_agent.model
-        moderator_temperature = 0.2
+        # Dedicated moderator config — always uses the settings-defined model
+        # regardless of which agent models were chosen for the debate itself.
+        # This ensures the final synthesis/verdict is always produced by a
+        # known, high-quality model and never silently inherits a cheap/fast
+        # agent model that may have been selected for debate rounds.
+        moderator_provider = settings.MODERATOR_PROVIDER
+        moderator_model = settings.MODERATOR_MODEL
+        moderator_temperature = settings.MODERATOR_TEMPERATURE
 
         agent_payload_blocks = [
             {"role": r.role, "structured": r.structured}
@@ -1359,10 +1503,7 @@ class RoundManager:
             model=moderator_model,
             prompt=prompt,
             temperature=moderator_temperature,
-            max_tokens=_resolve_max_tokens(
-                round_record.round_number,
-                round_type="synthesis_verdict",
-            ),
+            max_tokens=settings.MODERATOR_MAX_TOKENS,
         )
 
         sequence_no = self.next_seq
@@ -1374,6 +1515,21 @@ class RoundManager:
         error_msg: str | None = None
 
         try:
+            logger.info(
+                "FINAL_SYNTHESIS_MODEL provider=%s model=%s temperature=%s max_tokens=%s round=%s cycle=%s",
+                moderator_provider,
+                moderator_model,
+                moderator_temperature,
+                settings.MODERATOR_MAX_TOKENS,
+                round_record.round_number,
+                cycle_number,
+            )
+            logger.info(
+                "MODERATOR_PROMPT round=%d cycle=%d: %s",
+                round_record.round_number,
+                cycle_number,
+                prompt[:1500],
+            )
             response = await self._llm.generate(request)
             raw_content = (response.content or "").strip()
             if not raw_content:
@@ -1421,6 +1577,66 @@ class RoundManager:
                     else:
                         if recovered_normalized.payload.get("is_fallback") is False:
                             normalized = recovered_normalized
+
+            logger.info(
+                "MODERATOR_RESPONSE round=%d cycle=%d: %s",
+                round_record.round_number,
+                cycle_number,
+                raw_content[:1500],
+            )
+
+            # Phase 2/6: leak + quality guard on the verdict. Regenerate once if
+            # prompt / schema / role / formatting text leaked into the verdict.
+            verdict_report = evaluate_round_quality(
+                round_number=round_record.round_number,
+                round_type="synthesis_verdict",
+                payload=normalized.payload,
+            )
+            if not verdict_report.ok:
+                logger.warning(
+                    "QUALITY_GUARD moderator round=%d cycle=%d issues=%s",
+                    round_record.round_number,
+                    cycle_number,
+                    verdict_report.summary,
+                )
+            if verdict_report.has_leak:
+                logger.warning(
+                    "PROMPT_LEAK_DETECTED moderator round=%d cycle=%d codes=%s — regenerating once.",
+                    round_record.round_number,
+                    cycle_number,
+                    verdict_report.leak_codes,
+                )
+                corrective_request = request.model_copy(
+                    update={"prompt": prompt + _LEAK_CORRECTION_SUFFIX}
+                )
+                try:
+                    retry_response = await self._llm.generate(corrective_request)
+                    retry_raw = (retry_response.content or "").strip()
+                except Exception as retry_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Moderator leak-correction regeneration raised: %s — keeping original.",
+                        retry_exc,
+                    )
+                    retry_raw = ""
+                if retry_raw:
+                    retry_normalized = normalize_round_output(
+                        round_number=round_record.round_number,
+                        raw_text=retry_raw,
+                        round_type="synthesis_verdict",
+                    )
+                    retry_report = evaluate_round_quality(
+                        round_number=round_record.round_number,
+                        round_type="synthesis_verdict",
+                        payload=retry_normalized.payload,
+                    )
+                    if not retry_report.has_leak:
+                        logger.info(
+                            "Moderator leak-correction regeneration succeeded (round=%d cycle=%d).",
+                            round_record.round_number,
+                            cycle_number,
+                        )
+                        normalized = retry_normalized
+                        raw_content = retry_raw
 
             normalized_payload = normalized.payload
         except LLMError as exc:
@@ -1471,6 +1687,13 @@ class RoundManager:
         if followup_question:
             normalized_payload["followup_question"] = followup_question
             normalized_payload["followup_cycle"] = cycle_number
+
+        # Moderator metadata — additive only, never overwrites existing fields.
+        # Frontend consumers can display these without breaking old debates.
+        normalized_payload["moderator_provider"] = moderator_provider
+        normalized_payload["moderator_model"] = moderator_model
+        normalized_payload["moderator_temperature"] = moderator_temperature
+        normalized_payload["moderator_max_tokens"] = settings.MODERATOR_MAX_TOKENS
 
         content_json = json.dumps(normalized_payload, ensure_ascii=False)
 
@@ -1665,6 +1888,7 @@ class RoundManager:
         chunks: list[RetrievedChunk],
         max_chunks: int = RETRIEVAL_TOP_K,
         text_chars: int = 280,
+        packets: list[EvidencePacket] | None = None,
     ) -> dict[str, Any] | None:
         if not chunks:
             return None
@@ -1700,15 +1924,28 @@ class RoundManager:
                 {"text": text, "score": round(float(c.similarity_score), 3)}
             )
 
+        # Build a {document_id: [labels]} map from the supplied packets so the
+        # UI can show which [E#] labels were derived from each source.
+        labels_by_doc: dict[uuid.UUID, list[str]] = {}
+        for p in packets or []:
+            if p.citation_label:
+                labels_by_doc.setdefault(p.document_id, []).append(p.citation_label)
+
         documents = [
             {
                 "document_id": str(doc_id),
                 "document_name": names.get(doc_id, "Untitled document"),
                 "chunks": grouped[doc_id],
+                "evidence_labels": labels_by_doc.get(doc_id, []),
             }
             for doc_id in order
         ]
-        return {"documents": documents, "total_chunks": len(capped)}
+        all_labels = [lbl for labels in labels_by_doc.values() for lbl in labels]
+        return {
+            "documents": documents,
+            "total_chunks": len(capped),
+            "evidence_labels": all_labels,
+        }
 
     async def _call_llm(
         self,
@@ -1722,6 +1959,7 @@ class RoundManager:
         sequence_no: int,
         agent_index: int,
         retrieved_chunks: list[RetrievedChunk] | None = None,
+        evidence_packets: list[EvidencePacket] | None = None,
         extra_payload_fields: dict[str, Any] | None = None,
     ) -> AgentRoundResult:
         step_meta = {
@@ -1799,10 +2037,22 @@ class RoundManager:
             llm_started_at.isoformat(),
         )
 
+        # Phase 7 diagnostic: log the prompt actually sent (first 1500 chars).
+        logger.info(
+            "ROUND_%d_PROMPT agent=%s role=%s type=%s: %s",
+            round_record.round_number,
+            agent_ctx.agent_id,
+            agent_ctx.role,
+            message_type.value,
+            prompt[:1500],
+        )
+
         content = ""
         structured: dict[str, Any] = {}
         generation_status = "success"
         error_msg: str | None = None
+        failure_reason: str | None = None
+        _agent_safe_error: "DebateSafeError | None" = None
         prompt_tokens = 0
         completion_tokens = 0
         provider_latency_ms = 0
@@ -1908,7 +2158,230 @@ class RoundManager:
                             )
                             normalized = recovered_normalized
 
+            # Phase 7 diagnostic: log the raw model response (first 1500 chars).
+            logger.info(
+                "ROUND_%d_RESPONSE agent=%s role=%s type=%s: %s",
+                round_record.round_number,
+                agent_ctx.agent_id,
+                agent_ctx.role,
+                message_type.value,
+                (raw_content or "")[:1500],
+            )
+
+            # Phase 2/6: prompt-leak + quality guard. If the answer leaked
+            # prompt / schema / role / formatting text, regenerate once with a
+            # strict corrective instruction and re-normalize. Quality-only
+            # issues are logged for observability but never force a retry, to
+            # avoid over-rejecting otherwise valid debates.
+            rt_value = (
+                round_record.round_type.value
+                if round_record.round_type is not None
+                else None
+            )
+            quality_report = evaluate_round_quality(
+                round_number=round_record.round_number,
+                round_type=rt_value,
+                payload=normalized.payload,
+            )
+            if not quality_report.ok:
+                logger.warning(
+                    "QUALITY_GUARD agent=%s round=%d type=%s issues=%s",
+                    agent_ctx.agent_id,
+                    round_record.round_number,
+                    message_type.value,
+                    quality_report.summary,
+                )
+            if quality_report.has_leak:
+                logger.warning(
+                    "PROMPT_LEAK_DETECTED agent=%s round=%d codes=%s — regenerating once.",
+                    agent_ctx.agent_id,
+                    round_record.round_number,
+                    quality_report.leak_codes,
+                )
+                corrective_request = request.model_copy(
+                    update={
+                        "prompt": prompt + _LEAK_CORRECTION_SUFFIX,
+                        "temperature": min(0.4, request.temperature),
+                    }
+                )
+                try:
+                    retry_response = await self._llm.generate(corrective_request)
+                    retry_raw = retry_response.content or ""
+                except Exception as retry_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Leak-correction regeneration raised: %s — keeping original answer.",
+                        retry_exc,
+                    )
+                    retry_raw = ""
+                if retry_raw.strip():
+                    retry_normalized = normalize_round_output(
+                        round_number=round_record.round_number,
+                        raw_text=retry_raw,
+                        round_type=rt_value,
+                    )
+                    retry_report = evaluate_round_quality(
+                        round_number=round_record.round_number,
+                        round_type=rt_value,
+                        payload=retry_normalized.payload,
+                    )
+                    if not retry_report.has_leak:
+                        logger.info(
+                            "Leak-correction regeneration succeeded for agent %s round %d.",
+                            agent_ctx.agent_id,
+                            round_record.round_number,
+                        )
+                        normalized = retry_normalized
+                        raw_content = retry_raw
+                        completion_tokens += retry_response.completion_tokens
+                    else:
+                        logger.warning(
+                            "Leak persisted after regeneration for agent %s round %d codes=%s.",
+                            agent_ctx.agent_id,
+                            round_record.round_number,
+                            retry_report.leak_codes,
+                        )
+
+            # Phase 2/3/4: strict structured-output validation. If the final
+            # normalized payload is empty / fell back / placeholder / missing
+            # required fields, attempt (1) a same-model strict retry, then
+            # (2) a moderator-based JSON repair. If both fail, mark the node as
+            # failed so malformed content is never displayed or fed forward.
+            structured_reasons = validate_structured_output(
+                normalized.payload,
+                round_number=round_record.round_number,
+                round_type=rt_value,
+                raw_content=raw_content,
+            )
+            if structured_reasons:
+                logger.warning(
+                    "STRUCTURED_GUARD agent=%s round=%d type=%s reasons=%s — attempting recovery.",
+                    agent_ctx.agent_id,
+                    round_record.round_number,
+                    message_type.value,
+                    structured_reasons,
+                )
+
+                # (1) Same-model strict retry at a lower temperature.
+                strict_request = request.model_copy(
+                    update={
+                        "prompt": prompt + _STRUCTURED_CORRECTION_SUFFIX,
+                        "temperature": min(0.2, request.temperature),
+                    }
+                )
+                try:
+                    strict_response = await self._llm.generate(strict_request)
+                    strict_raw = strict_response.content or ""
+                except Exception as strict_exc:  # noqa: BLE001
+                    logger.warning(
+                        "Structured-correction retry raised: %s.", strict_exc
+                    )
+                    strict_raw = ""
+                if strict_raw.strip():
+                    strict_normalized = normalize_round_output(
+                        round_number=round_record.round_number,
+                        raw_text=strict_raw,
+                        round_type=rt_value,
+                    )
+                    if not validate_structured_output(
+                        strict_normalized.payload,
+                        round_number=round_record.round_number,
+                        round_type=rt_value,
+                        raw_content=strict_raw,
+                    ):
+                        logger.info(
+                            "Structured-correction retry succeeded for agent %s round %d.",
+                            agent_ctx.agent_id,
+                            round_record.round_number,
+                        )
+                        normalized = strict_normalized
+                        raw_content = strict_raw
+                        completion_tokens += getattr(
+                            strict_response, "completion_tokens", 0
+                        )
+                        structured_reasons = []
+
+                # (2) Moderator-based JSON repair (extract/format only).
+                if structured_reasons:
+                    try:
+                        repaired_payload = await repair_structured_output_with_moderator(
+                            raw_content,
+                            round_number=round_record.round_number,
+                            round_type=rt_value,
+                            llm_call=self._raw_llm_call,
+                            provider=settings.MODERATOR_PROVIDER,
+                            model=settings.MODERATOR_MODEL,
+                            temperature=0.0,
+                            max_tokens=900,
+                        )
+                    except Exception as repair_exc:  # noqa: BLE001
+                        logger.warning(
+                            "Moderator JSON repair raised: %s.", repair_exc
+                        )
+                        repaired_payload = None
+                    if repaired_payload is not None:
+                        repaired_normalized = normalize_round_output(
+                            round_number=round_record.round_number,
+                            raw_text=raw_content,
+                            parsed_payload=repaired_payload,
+                            round_type=rt_value,
+                        )
+                        if not validate_structured_output(
+                            repaired_normalized.payload,
+                            round_number=round_record.round_number,
+                            round_type=rt_value,
+                            raw_content=raw_content,
+                        ):
+                            logger.info(
+                                "Moderator JSON repair succeeded for agent %s round %d.",
+                                agent_ctx.agent_id,
+                                round_record.round_number,
+                            )
+                            normalized = repaired_normalized
+                            structured_reasons = []
+
+                # (3) Give up: mark the node as failed so malformed content is
+                # neither displayed nor used as evidence in later rounds.
+                if structured_reasons:
+                    # Classify the failure code based on the specific reasons.
+                    # json_parse_failed / empty_response  → MODEL_INVALID_JSON or MODEL_EMPTY_RESPONSE.
+                    # Everything else (missing fields, placeholder, too short) → STRUCTURED_VALIDATION_FAILED.
+                    if "empty_response" in structured_reasons:
+                        _struct_code = MODEL_EMPTY_RESPONSE
+                    elif "json_parse_failed_used_text_fallback" in structured_reasons:
+                        _struct_code = MODEL_INVALID_JSON
+                    else:
+                        _struct_code = STRUCTURED_VALIDATION_FAILED
+
+                    logger.warning(
+                        "STRUCTURED_GUARD_FAILED agent=%s round=%d reasons=%s code=%s — marking node failed.",
+                        agent_ctx.agent_id,
+                        round_record.round_number,
+                        structured_reasons,
+                        _struct_code,
+                    )
+                    generation_status = "failed"
+                    failure_reason = "malformed_structured_output"
+                    error_msg = (
+                        "Model returned malformed structured output: "
+                        + ", ".join(structured_reasons)
+                    )
+                    _agent_safe_error = make_safe_error(
+                        _struct_code,
+                        message=error_msg,
+                        provider=agent_ctx.provider,
+                        model=agent_ctx.model,
+                        agent_id=str(agent_ctx.agent_id),
+                        agent_name=agent_ctx.role,
+                        round_number=round_record.round_number,
+                        round_type=(
+                            round_record.round_type.value
+                            if round_record.round_type is not None
+                            else None
+                        ),
+                    )
+
             structured = normalized.payload
+
             # FIX-09: persist extra payload fields (e.g. follow-up question /
             # cycle number) so every saved message carries the context that
             # produced it. We use setdefault so an LLM that already returned
@@ -1923,7 +2396,25 @@ class RoundManager:
             error_msg = str(exc)
             content = json.dumps({"error": error_msg})
             generation_status = "failed"
-            logger.exception(
+            # Prefer a pre-classified safe_error attached by the provider wrapper.
+            # If none (e.g. internally-raised LLMError for empty response), classify now.
+            _agent_safe_error = getattr(exc, "safe_error", None)
+            if _agent_safe_error is None:
+                _agent_safe_error = classify_provider_error(
+                    exc,
+                    provider=agent_ctx.provider,
+                    model=agent_ctx.model,
+                    agent_id=str(agent_ctx.agent_id),
+                    agent_name=agent_ctx.role,
+                    round_number=round_record.round_number,
+                    round_type=(
+                        round_record.round_type.value
+                        if round_record.round_type is not None
+                        else None
+                    ),
+                )
+            failure_reason = _agent_safe_error.code
+            logger.warning(
                 "LLM failure for agent %s (%s) in round %d: %s",
                 agent_ctx.agent_id,
                 agent_ctx.role,
@@ -1934,6 +2425,8 @@ class RoundManager:
             error_msg = f"Unhandled provider error: {exc}"
             content = json.dumps({"error": error_msg})
             generation_status = "failed"
+            _agent_safe_error = getattr(exc, "safe_error", None)
+            failure_reason = "unknown"
             logger.exception(
                 "Unexpected LLM error for agent %s (%s) in round %d",
                 agent_ctx.agent_id,
@@ -1989,7 +2482,9 @@ class RoundManager:
 
         retrieval_summary: dict[str, Any] | None = None
         if retrieved_chunks:
-            retrieval_summary = await self._build_retrieval_summary(db, retrieved_chunks)
+            retrieval_summary = await self._build_retrieval_summary(
+                db, retrieved_chunks, packets=evidence_packets
+            )
 
         await db.commit()
 
@@ -2005,6 +2500,30 @@ class RoundManager:
                 "agent_role": agent_ctx.role,
                 "agent_index": agent_index,
             }
+            if failure_reason is not None:
+                event_payload["failure_reason"] = failure_reason
+            if generation_status == "failed":
+                # Attach a safe error object so the frontend can show a structured
+                # failure reason without raw tracebacks or API key exposure.
+                # _agent_safe_error is always set by the time we reach here:
+                # - structured guard path: set explicitly above
+                # - LLMError path: set via classify_provider_error above
+                # - Exception path: may still be None if exception had no .safe_error
+                _safe = _agent_safe_error if _agent_safe_error is not None else make_safe_error(
+                    UNKNOWN_ERROR,
+                    message=error_msg or "Agent generation failed",
+                    provider=agent_ctx.provider,
+                    model=agent_ctx.model,
+                    agent_id=str(agent_ctx.agent_id),
+                    agent_name=agent_ctx.role,
+                    round_number=round_record.round_number,
+                    round_type=(
+                        round_record.round_type.value
+                        if round_record.round_type is not None
+                        else None
+                    ),
+                )
+                event_payload["safe_error"] = _safe.to_frontend_dict()
             if generation_status == "success" and isinstance(structured, dict):
                 display_content = structured.get("display_content")
                 short_summary = structured.get("short_summary")
@@ -2045,6 +2564,7 @@ class RoundManager:
             structured=structured,
             generation_status=generation_status,
             error=error_msg,
+            failure_reason=failure_reason,
         )
 
     @staticmethod

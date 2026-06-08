@@ -13,6 +13,23 @@ Pipeline per uploaded file:
 
 If extraction/embedding fails after a successful storage upload, the file is
 removed from storage to avoid orphan blobs (Step 30).
+
+Step 45 — Background ingestion
+─────────────────────────────
+The pipeline is now split into two phases so HTTP responses stay fast:
+
+  * ``create_pending(...)`` — synchronous, request-scoped. Validates the
+    file, creates the Document row, uploads bytes to storage, sets
+    ``status=processing``. Returns immediately.
+  * ``process_in_background(session_factory, document_id)`` — runs after
+    the HTTP response, in its own fresh DB session. Reloads the Document,
+    skips work if the document was deleted or already in a terminal state,
+    clears any half-written chunks (idempotency on retry), then runs
+    extract → chunk → embed → knowledge → ``status=ready/failed``.
+
+The legacy ``ingest(...)`` method is preserved for tests and any caller
+that wants synchronous behaviour — it now simply calls both phases on the
+same request session.
 """
 
 from __future__ import annotations
@@ -21,8 +38,8 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.document import Document, DocumentStatus
 from app.models.document_chunk import DocumentChunk
@@ -67,9 +84,9 @@ class DocumentIngestionService:
         # avoid any LLM call. Failures NEVER block the document from going ready.
         self._knowledge = knowledge
 
-    # ── Main entry point ───────────────────────────────────────────────────────
+    # ── Phase A: synchronous, request-scoped ──────────────────────────────────
 
-    async def ingest(
+    async def create_pending(
         self,
         db: AsyncSession,
         session_id: uuid.UUID,
@@ -77,23 +94,22 @@ class DocumentIngestionService:
         file_bytes: bytes,
         content_type: str | None = None,
     ) -> Document:
-        """
-        Run the full ingestion pipeline for one uploaded file.
+        """Create the Document row, upload to storage, mark ``processing``.
 
-        Returns the persisted Document record (status='ready' on success).
+        Returns immediately after the storage upload. The actual text
+        extraction / chunking / embedding must be scheduled separately
+        via :meth:`process_in_background`.
 
         Raises:
-            DocumentIngestionError on unsupported type, extraction fail, or empty doc.
+            DocumentIngestionError on unsupported type or storage failure.
         """
         ext = extension_from_filename(filename)
-
         if ext not in supported_extensions():
             raise DocumentIngestionError(
                 f"Unsupported file type '{ext}'. "
                 f"Supported: {', '.join(sorted(supported_extensions()))}"
             )
 
-        # ── 1. Create Document record ─────────────────────────────────────────
         doc = Document(
             chat_session_id=session_id,
             filename=filename,
@@ -107,7 +123,6 @@ class DocumentIngestionService:
         db.add(doc)
         await db.flush()  # generates doc.id
 
-        # ── 2. Upload bytes to storage backend ────────────────────────────────
         logger.info(
             "document_upload_start session=%s document=%s filename=%s size=%d",
             session_id, doc.id, filename, len(file_bytes),
@@ -128,15 +143,132 @@ class DocumentIngestionService:
         _apply_stored_file(doc, stored)
         doc.status = DocumentStatus.processing
         await db.flush()
+        return doc
 
-        # ── 3–6. Extract → Chunk → Embed → Store ─────────────────────────────
+    # ── Phase B: background, uses its own DB session ──────────────────────────
+
+    async def process_in_background(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        document_id: uuid.UUID,
+    ) -> None:
+        """Run the heavy pipeline (extract → chunk → embed → knowledge) for
+        a previously-created Document, in a fresh DB session.
+
+        Safe to call from a FastAPI ``BackgroundTasks`` queue. Never
+        raises — every failure is logged and persisted on the Document
+        row as ``status=failed``.
+
+        Idempotency:
+          * If the Document was deleted, exits silently.
+          * If the Document is not in ``processing`` state any more
+            (``ready`` / ``failed`` / ``uploaded``), exits without work.
+          * Existing chunks for the document are wiped before re-insert
+            so a retried task never produces duplicates.
+        """
+        async with session_factory() as db:
+            try:
+                doc = await db.get(Document, document_id)
+                if doc is None:
+                    logger.info(
+                        "document_background_skip document=%s reason=deleted",
+                        document_id,
+                    )
+                    return
+                if doc.status != DocumentStatus.processing:
+                    logger.info(
+                        "document_background_skip document=%s status=%s",
+                        document_id, doc.status.value,
+                    )
+                    return
+
+                # Idempotency: clear any chunks left over from a previous
+                # failed attempt so we never accumulate duplicates.
+                await db.execute(
+                    delete(DocumentChunk).where(
+                        DocumentChunk.document_id == document_id
+                    )
+                )
+
+                # Load the raw bytes from storage so we don't rely on
+                # request-scoped buffers.
+                stored = self.stored_file_from_doc(doc)
+                file_bytes = await self._storage.download_bytes(stored)
+
+                await self._process_document(db, doc, file_bytes, doc.filename)
+                await db.commit()
+            except DocumentIngestionError as exc:
+                logger.warning(
+                    "document_background_failed document=%s reason=%s",
+                    document_id, exc,
+                )
+                await self._mark_failed(db, document_id)
+            except Exception as exc:  # noqa: BLE001 — never let bg task crash
+                logger.exception(
+                    "document_background_unexpected document=%s reason=%s",
+                    document_id, exc,
+                )
+                await self._mark_failed(db, document_id)
+
+    async def _mark_failed(
+        self,
+        db: AsyncSession,
+        document_id: uuid.UUID,
+    ) -> None:
+        """Best-effort: set status=failed in a new transaction. Swallows
+        all errors so the background task never raises."""
+        try:
+            await db.rollback()
+            doc = await db.get(Document, document_id)
+            if doc is None:
+                return
+            doc.status = DocumentStatus.failed
+            doc.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "document_background_mark_failed_failed document=%s",
+                document_id,
+            )
+
+    # ── Legacy combined entry point ──────────────────────────────────────────
+
+    async def ingest(
+        self,
+        db: AsyncSession,
+        session_id: uuid.UUID,
+        filename: str,
+        file_bytes: bytes,
+        content_type: str | None = None,
+    ) -> Document:
+        """Run the full pipeline synchronously on the caller's DB session.
+
+        Preserved for tests and any caller that needs the legacy "block
+        until ready" behaviour. New HTTP routes should use
+        :meth:`create_pending` + :meth:`process_in_background` so the
+        response returns quickly.
+
+        Returns the persisted Document record (status='ready' on success).
+
+        Raises:
+            DocumentIngestionError on unsupported type, extraction fail,
+            empty doc, or embedding failure.
+        """
+        doc = await self.create_pending(
+            db=db,
+            session_id=session_id,
+            filename=filename,
+            file_bytes=file_bytes,
+            content_type=content_type,
+        )
+
         try:
             await self._process_document(db, doc, file_bytes, filename)
         except DocumentIngestionError:
             doc.status = DocumentStatus.failed
             await db.flush()
-            # Best-effort: remove orphan storage object so we don't leak blobs.
             try:
+                stored = self.stored_file_from_doc(doc)
                 await self._storage.delete(stored)
             except Exception as cleanup_exc:  # noqa: BLE001
                 logger.warning(

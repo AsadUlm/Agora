@@ -82,9 +82,60 @@ export function deriveActiveNarration(args: {
     }
 
     if (execution.activeRound === 3) {
+        // If the synthesis node is already visible in the graph, the synthesis is
+        // functionally complete even if turn_completed hasn't arrived yet (e.g. race
+        // condition between DB commit and WS event delivery). Show "complete" narration
+        // immediately so the overlay disappears as soon as the node appears.
+        const synthesisNodeVisible = nodes.some(
+            (n) =>
+                (n.kind === "synthesis" ||
+                    n.kind === "followup-synthesis" ||
+                    n.id === "synthesis-node" ||
+                    (n.id?.includes("synthesis") === true)) &&
+                n.status !== "hidden" &&
+                n.status !== "entering",
+        );
+        if (synthesisNodeVisible) {
+            return {
+                title: "Debate Complete",
+                sublabel: "Synthesis finalized and all rounds closed",
+                relation: null,
+                sourceRole: null,
+                targetRole: null,
+            };
+        }
         return {
             title: "Synthesizing conclusions...",
             sublabel: "Consolidating all perspectives into final answer",
+            relation: null,
+            sourceRole: "Synthesis",
+            targetRole: null,
+        };
+    }
+
+    // Follow-up synthesis rounds (round > 3, round type updated_synthesis).
+    // These are functionally the same as round 3 but for follow-up cycles.
+    if (execution.activeRound > 3) {
+        const followupSynthesisVisible = nodes.some(
+            (n) =>
+                (n.kind === "followup-synthesis" ||
+                    n.kind === "synthesis" ||
+                    n.id?.includes("synthesis") === true) &&
+                n.status !== "hidden" &&
+                n.status !== "entering",
+        );
+        if (followupSynthesisVisible) {
+            return {
+                title: "Follow-up cycle complete",
+                sublabel: "Updated synthesis finalized",
+                relation: null,
+                sourceRole: null,
+                targetRole: null,
+            };
+        }
+        return {
+            title: "Updating synthesis...",
+            sublabel: "Consolidating follow-up perspectives",
             relation: null,
             sourceRole: "Synthesis",
             targetRole: null,

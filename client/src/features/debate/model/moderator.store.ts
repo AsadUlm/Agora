@@ -74,16 +74,19 @@ export const useModeratorStore = create<ModeratorStore>((set, get) => ({
                 break;
             case "round_completed": {
                 const rn = event.round_number ?? 0;
-                updates.explanation = `Round ${rn} complete. ${rn < 3
-                    ? "Preparing next round..."
-                    : "Finalizing synthesis..."
+                const isFollowupFinal = rn > 3;
+                const isFinalRound = rn === 3 || isFollowupFinal;
+                updates.explanation = `Round ${rn} complete. ${isFinalRound
+                        ? "Finalizing synthesis..."
+                        : "Preparing next round..."
                     }`;
                 break;
             }
             case "turn_completed":
                 updates.status = "Completed";
-                updates.explanation =
-                    "The debate has concluded. Review the graph to explore all arguments and the final synthesis.";
+                updates.explanation = event.payload?.["follow_up"]
+                    ? "Follow-up cycle complete. Review the updated synthesis or ask another follow-up question."
+                    : "The debate has concluded. Review the graph to explore all arguments and the final synthesis.";
                 updates.watchFor = [];
                 break;
             case "turn_failed":

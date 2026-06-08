@@ -19,6 +19,7 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError
 
 from app.schemas.contracts import LLMRequest, LLMResponse
 from app.services.llm.exceptions import LLMGenerationError
+from app.services.llm.provider_error_classifier import classify_provider_error
 from app.services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
@@ -49,11 +50,25 @@ class GeminiProvider(LLMService):
                 max_tokens=request.max_tokens,
             )
         except APITimeoutError as exc:
-            raise LLMGenerationError(f"Gemini API timeout: {exc}") from exc
+            safe = classify_provider_error(exc, provider="gemini", model=model)
+            err = LLMGenerationError(f"Gemini API timeout: {exc}")
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
         except APIStatusError as exc:
-            raise LLMGenerationError(f"Gemini API error {exc.status_code}: {exc.message}") from exc
+            safe = classify_provider_error(
+                exc,
+                provider="gemini",
+                model=model,
+                status_code=exc.status_code,
+            )
+            err = LLMGenerationError(f"Gemini API error {exc.status_code}: {exc.message}")
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
         except Exception as exc:
-            raise LLMGenerationError(f"Gemini unexpected error: {exc}") from exc
+            safe = classify_provider_error(exc, provider="gemini", model=model)
+            err = LLMGenerationError(f"Gemini unexpected error: {exc}")
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
 
         latency_ms = int((time.monotonic() - t_start) * 1000)
         content = response.choices[0].message.content or ""

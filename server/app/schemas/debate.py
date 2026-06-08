@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.schemas.agent import AgentCreate
 
@@ -18,6 +18,28 @@ class DebateStartRequest(BaseModel):
     # "auto" runs the entire debate without pausing (legacy behavior).
     # "manual" pauses before each agent until /debates/{id}/next-step is called.
     execution_mode: str = "auto"
+
+    @field_validator("question")
+    @classmethod
+    def validate_question_basic(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("Debate topic must not be empty.")
+        if len(stripped) > 2000:
+            raise ValueError("Debate topic is too long (max 2000 characters).")
+        return stripped
+
+    @field_validator("agents")
+    @classmethod
+    def validate_max_agents(cls, agents: list[AgentCreate]) -> list[AgentCreate]:
+        from app.core.config import settings
+        max_agents = settings.MAX_DEBATE_AGENTS
+        if agents and len(agents) > max_agents:
+            raise ValueError(
+                f"A debate can use at most {max_agents} agents. "
+                f"Received {len(agents)}."
+            )
+        return agents
 
 
 # ── Response schemas (Step 6 — structured, frontend-ready) ────────────────────

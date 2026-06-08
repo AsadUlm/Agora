@@ -19,6 +19,7 @@
 import { useMemo } from "react";
 import { useDebateStore } from "../model/debate.store";
 import { cn } from "@/shared/lib/cn";
+import SessionRagSummary from "./SessionRagSummary";
 import SynthesisVerdictCard, {
     isSynthesisVerdictPayload,
     type SynthesisVerdictPayload,
@@ -172,6 +173,7 @@ export default function DebateEvolutionPanel() {
             </div>
 
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+                <SessionRagSummary />
                 {items.map((item, idx) => {
                     const conclusion =
                         pickString(item.payload, [

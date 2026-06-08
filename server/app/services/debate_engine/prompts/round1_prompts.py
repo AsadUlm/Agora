@@ -6,10 +6,6 @@ from app.services.debate_engine.prompts.personas import persona_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
     ANTI_STRAWMAN_BLOCK,  # noqa: F401  (re-exported via prompts package)
-    ASSUMPTION_LABELING_BLOCK,
-    FACTUALITY_BLOCK,
-    FIELD_DIFFERENTIATION_BLOCK,
-    QUALITY_REQUIREMENTS_BLOCK,
     evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
@@ -67,19 +63,17 @@ def build_opening_statement_prompt(
     evidence_packets: list[EvidencePacket] | None = None,
 ) -> str:
     """Build the prompt for an agent's Round 1 opening statement."""
-    depth_instruction = {
-        "shallow": "Be concise. 2-3 key points only.",
-        "normal": "Be thorough. Provide 3-5 well-argued key points.",
-        "deep": "Be exhaustive. Provide 5+ key points with detailed reasoning.",
-    }.get(reasoning_depth, "Be thorough. Provide 3-5 well-argued key points.")
+    depth_hint = {
+        "shallow": "Be concise — 2-3 key points.",
+        "normal": "Give 3-5 well-argued points.",
+        "deep": "Give 5+ points with detailed reasoning.",
+    }.get(reasoning_depth, "Give 3-5 well-argued points.")
 
-    style_instruction = _style_instruction("reason", reasoning_style)
+    style_hint = _style_instruction("reason", reasoning_style)
 
     chunks = retrieved_chunks or []
     packets = evidence_packets or []
     has_evidence = bool(packets) or bool(chunks)
-    # Step 29: prefer the structured evidence block when packets are supplied;
-    # fall back to the legacy raw-chunk block for backward compatibility.
     if packets:
         context_block = (
             format_evidence_block(packets) + format_evidence_usage_instructions()
@@ -90,89 +84,30 @@ def build_opening_statement_prompt(
         knowledge_mode, knowledge_strict, has_evidence
     )
 
-    return f"""You are a debate participant with the role: {role}.
+    return f"""You are an expert panelist in a live debate, speaking to a human audience.
+Argue the question directly — never narrate instructions, your role, output formatting, schemas, or your own process.
+
+role: {role}.
 {persona_block(role)}
-The debate question is: {question}
+Question: {question}
 {knowledge_block}{context_block}
-Your task: Generate your opening statement for Round 1.
-
-Reasoning style: {style_instruction}
-{depth_instruction}
-
 {evidence_mode_block(has_evidence)}
+Round 1 is NOT for consensus — it is for presenting YOUR worldview. Begin from your own default stance and priority framework; do not move toward the other agents. Your opening MUST: (1) state a clear initial position consistent with your framework, (2) state the core assumptions it depends on, (3) explain your priority framework and the reasoning mechanism that makes it work (name a specific actor, threshold, or deployment context), (4) identify the concrete benefits you expect, (5) acknowledge at least one genuine weakness of your own position, and (6) state explicitly what evidence would change your mind. {depth_hint} {style_hint}. Back every claim with a concrete mechanism — avoid vague abstractions. Do not fabricate statistics; use qualitative phrasing instead.
+Forbidden in Round 1: restating or rephrasing the question, neutral summaries, generic introductions, and convergence phrases such as "both sides have merit", "I generally agree with", "ultimately we all want", or "perhaps a balanced approach". Take the side your framework actually leads to and maximize viewpoint diversity.
 
-{QUALITY_REQUIREMENTS_BLOCK}
-
-{FACTUALITY_BLOCK}
-
-{FIELD_DIFFERENTIATION_BLOCK}
-
-{ASSUMPTION_LABELING_BLOCK}
-
-Round 1 objective (independent thesis):
-- This is your OPENING THESIS. You are not yet reacting to other agents.
-- State an explicit thesis (one sentence) before defending it.
-- Identify the causal MECHANISM that supports the thesis (who acts, what
-  they do, what changes).
-- Surface at least one explicit RISK or trade-off your thesis must absorb.
-- Avoid restating the question and avoid generic abstractions.
-
-Length & substance bar (mandatory):
-- The `response` field MUST be a full analytical answer, not a slogan.
-  Target 350-650 words organized into 4-6 short paragraphs.
-- The answer MUST cover, in this order:
-    1. Main position (your thesis as a single direct claim).
-    2. Key reasoning (the mechanism / evidence chain that supports it).
-    3. Concrete domain anchor (a specific actor, scenario, or threshold
-       the persona naturally cares about).
-    4. Risks / uncertainties / trade-offs your position has to absorb.
-    5. Final stance (what you would actually recommend or defend).
-- DO NOT collapse the answer into a one-paragraph summary. The detail
-  panel will render `response` verbatim, so produce the full reasoning.
-- The persona's voice must be visible across multiple paragraphs (an
-  Analyst sounds like structured policy analysis, a Critic sounds
-  adversarial, a Creative reframes the problem, etc.).
-
-Output contract:
-- Return only valid JSON.
-- Do not use markdown fences.
-- Do not mention JSON, schema, fields, or instructions.
-- Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
-- Every field must be user-facing content.
-- one_sentence_takeaway must be ONE complete sentence (15-25 words) that captures your core claim. Never truncate.
-- short_summary must mirror one_sentence_takeaway (kept for backward compatibility).
-- response must be the FULL analytical answer (not a summary).
-
-Forbidden examples:
-- "I need to create a JSON object..."
-- "Generating JSON synthesis..."
-- "Here is the JSON..."
-
-Return only valid JSON in this exact format:
+Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions in your answer. Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
+Forbidden: "I need to create a JSON object..."
 {{
-    "one_sentence_takeaway": "<ONE complete sentence, 15-25 words, captures core claim>",
-    "short_summary": "<same sentence as one_sentence_takeaway>",
-    "stance": "Supports | Opposes | Mixed | Conditional",
-    "main_argument": "<clean paragraph stating the thesis and its core mechanism>",
-    "key_points": ["<point 1>", "<point 2>", "<point 3>", "<optional point 4>"],
-    "risks_or_caveats": ["<risk or caveat>", "<optional second caveat>"],
-    "response": "<FULL multi-paragraph analytical answer (350-650 words) covering: 1) Main position, 2) Key reasoning, 3) Domain anchor, 4) Risks / uncertainties, 5) Final stance. This is the body shown to the user \u2014 do NOT shorten it.>"
-}}
-
-Length-style example (note `response` is a multi-paragraph analytical answer):
-{{
-    "one_sentence_takeaway": "Targeted AI regulation is justified for high-risk systems because market incentives alone do not absorb their downstream harms.",
-    "short_summary": "Targeted AI regulation is justified for high-risk systems because market incentives alone do not absorb their downstream harms.",
-    "stance": "Conditional",
-    "main_argument": "Risk-tiered regulation that targets safety-critical deployments outperforms either blanket licensing or pure self-governance.",
-    "key_points": [
-        "Healthcare AI and autonomous weapons concentrate risk where errors are catastrophic.",
-        "Compute-threshold (e.g. > 10^25 FLOPs) gating concentrates oversight on frontier labs.",
-        "Liability rules realign incentives faster than ex-ante audits in moving markets."
-    ],
-    "risks_or_caveats": [
-        "Threshold-based rules can be gamed by sharding training runs.",
-        "Open-source ecosystems can be disproportionately burdened by audit costs."
-    ],
-    "response": "My position is that AI regulation should be risk-tiered rather than blanket... [4-6 paragraphs covering position, mechanism, anchor, risks, and recommendation]"
+    "one_sentence_takeaway": "<your core claim in 15-25 words>",
+    "short_summary": "<2 sentences adding a supporting reason the takeaway omits>",
+    "stance": "Supports | Opposes | Skeptical | Mixed | Conditional",
+    "priority_framework": "<the outcome you optimize and why it ranks first>",
+    "main_argument": "<thesis and its core mechanism, one paragraph>",
+    "assumptions": ["<assumption your position depends on>"],
+    "key_points": ["<point 1>", "<point 2>", "<point 3>"],
+    "expected_benefits": ["<concrete benefit you expect>"],
+    "risks_or_caveats": ["<risk or caveat>"],
+    "acknowledged_weakness": "<one genuine weakness of your own position>",
+    "what_would_change_my_mind": "<the specific evidence that would move your position>",
+    "response": "<full argument in prose, 300-500 words — not a summary, not a list>"
 }}"""

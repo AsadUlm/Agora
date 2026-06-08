@@ -17,6 +17,7 @@ import { usePlaybackStore } from "../model/playback.store";
 import { useDebateStore } from "../model/debate.store";
 import type { DebateGraphNode, DebateGraphEdge, GraphEdgeKind } from "../model/graph.types";
 import { useDebateExecutionState } from "../model/useDebateExecutionState";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import { deriveActiveNarration, getGeneratingNodeId, getLoadingCopy, inferRound2Relation } from "../model/execution-ux";
 import { AGENT_COLOR_PALETTE } from "../model/agent-config.types";
 
@@ -233,6 +234,7 @@ function edgeRevealRank(edge: DebateGraphEdge, indexById: Map<string, number>): 
 // ── Component ─────────────────────────────────────────────────────────
 
 export default function DebateGraphCanvas() {
+    const isMobile = useIsMobile();
     const graph = useGraphStore((s) => s.graph);
     const agents = useDebateStore((s) => s.agents);
     const agentColorsByPosition = useDebateStore((s) => s.agentColorsByPosition);
@@ -518,6 +520,23 @@ export default function DebateGraphCanvas() {
     }, [graph.edges, visibleCycleNodeIdSet]);
 
     const generatingNodeId = useMemo(() => getGeneratingNodeId(execution), [execution]);
+
+    // True when a synthesis node is already visible in the graph — used to suppress
+    // the "Synthesizing..." overlay before turn_completed arrives (race condition fix).
+    // Covers both initial (synthesis) and follow-up (followup-synthesis) cycle completions.
+    const synthesisNodeVisible = useMemo(
+        () =>
+            visibleCycleNodes.some(
+                (n) =>
+                    (n.kind === "synthesis" ||
+                        n.kind === "followup-synthesis" ||
+                        n.id === "synthesis-node" ||
+                        (n.id?.includes("synthesis") === true)) &&
+                    n.status !== "hidden" &&
+                    n.status !== "entering",
+            ),
+        [visibleCycleNodes],
+    );
 
     const narration = useMemo(
         () => deriveActiveNarration({
@@ -946,23 +965,26 @@ export default function DebateGraphCanvas() {
                 />
                 <Controls
                     showInteractive={false}
+                    position={isMobile ? "top-right" : "bottom-left"}
                     className="!bg-agora-surface !border-agora-border"
                 />
-                <MiniMap
-                    nodeStrokeColor="#4b5563"
-                    nodeColor={(n) => {
-                        if (n.type === "question") return "#6366f1";
-                        if (n.type === "synthesis") return "#a78bfa";
-                        return "#4b5563";
-                    }}
-                    maskColor="rgba(10, 14, 26, 0.8)"
-                    className="!bg-agora-surface"
-                />
+                {!isMobile && (
+                    <MiniMap
+                        nodeStrokeColor="#4b5563"
+                        nodeColor={(n) => {
+                            if (n.type === "question") return "#6366f1";
+                            if (n.type === "synthesis") return "#a78bfa";
+                            return "#4b5563";
+                        }}
+                        maskColor="rgba(10, 14, 26, 0.8)"
+                        className="!bg-agora-surface"
+                    />
+                )}
             </ReactFlow>
 
             <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex flex-col items-center gap-2 px-3">
                 <AnimatePresence>
-                    {(execution.debateStatus === "queued" || execution.debateStatus === "running") && (
+                    {(execution.debateStatus === "queued" || execution.debateStatus === "running") && !synthesisNodeVisible && (
                         <motion.div
                             key="active-narration"
                             initial={{ opacity: 0, y: -10, scale: 0.98 }}

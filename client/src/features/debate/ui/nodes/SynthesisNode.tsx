@@ -41,7 +41,7 @@ export default function SynthesisNode({
                 initial={{ opacity: 0, scale: 0.95, y: 8 }}
                 animate={{
                     scale: nodeStatus === "hidden" ? 0.95 : isGeneratingFocus ? 1.045 : selected ? 1.02 : 1,
-                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.26 : 1,
+                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.45 : 1,
                     y: nodeStatus === "hidden" ? 8 : 0,
                 }}
                 transition={{

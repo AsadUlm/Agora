@@ -63,6 +63,13 @@ from app.schemas.debate import (
 from app.schemas.dto import serialize_session, serialize_turn, _agents_index
 from app.services.execution_runner import run_turn_background
 from app.services.followup_runner import run_followup_cycle
+from app.services.topic_guard.topic_guard_service import (
+    CATEGORY_SUGGESTIONS,
+    TopicGateDecision,
+    get_topic_guard,
+    validate_initial_topic,
+    validate_followup_topic,
+)
 from app.services.ws_manager import ws_manager
 
 router = APIRouter()
@@ -110,6 +117,43 @@ async def start_debate(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="At least one agent is required.",
+        )
+
+    # ── 0. Pre-debate topic validation ────────────────────────────────────────
+    # Hybrid guard: Stage 1 deterministic (instant), Stage 2 LLM only for
+    # borderline inputs. Neither stage creates any DB records.
+    has_attachments = bool(request.session_id)  # attachments are tied to a session
+    gate = await validate_initial_topic(request.question, has_attachments=has_attachments)
+
+    if not gate.should_start_debate:
+        logger.info(
+            "[Debate] Topic rejected by guard: decision=%s source=%s reason=%s topic=%.80r",
+            gate.decision,
+            gate.source,
+            gate.reason_code,
+            request.question,
+        )
+        user_message = gate.user_message or "This does not look like a valid debate topic."
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                # New gate contract (primary)
+                "error": gate.decision.value,
+                "gate": {
+                    "decision": gate.decision.value,
+                    "reason_code": gate.reason_code,
+                    "user_message": gate.user_message,
+                    "confidence": gate.confidence,
+                    "source": gate.source,
+                },
+                # Legacy fields (backward compat for existing frontend handler)
+                "code": "INVALID_DEBATE_TOPIC",
+                "category": gate.category,
+                "message": user_message,
+                "reason": gate.reason_code,
+                "suggested_topic": None,
+                "suggestions": CATEGORY_SUGGESTIONS.get(gate.category, []),
+            },
         )
 
     # ── 1. Create or reuse ChatSession ─────────────────────────────────────
@@ -291,11 +335,36 @@ async def create_follow_up(
       - Returns 201 immediately so the UI can subscribe over WebSocket
     """
     question = (request.question or "").strip()
-    if not question:
+
+    # ── Follow-up gate (relaxed — prior debate context exists) ────────────────
+    fgate = validate_followup_topic(question, has_previous_context=True)
+    if not fgate.should_start_debate:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Follow-up question must not be empty.",
+            detail={
+                "error": fgate.decision.value,
+                "gate": {
+                    "decision": fgate.decision.value,
+                    "reason_code": fgate.reason_code,
+                    "user_message": fgate.user_message,
+                    "confidence": fgate.confidence,
+                    "source": fgate.source,
+                },
+                "code": "INVALID_DEBATE_TOPIC",
+                "category": fgate.category,
+                "message": fgate.user_message or "Follow-up question must not be empty.",
+                "reason": fgate.reason_code,
+                "suggested_topic": None,
+                "suggestions": [],
+            },
         )
+
+    logger.info(
+        "[FollowUp] request received debate_id=%s has_question=%s question_length=%d",
+        debate_id,
+        bool(question),
+        len(question),
+    )
 
     # 1. Ownership + load latest turn with rounds
     session_check = await db.execute(

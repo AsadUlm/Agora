@@ -26,10 +26,10 @@ interface DocGroup {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const STATUS_STYLES: Record<string, string> = {
-    ready:      "bg-emerald-500/15 text-emerald-300 border-emerald-500/25",
+    ready: "bg-emerald-500/15 text-emerald-300 border-emerald-500/25",
     processing: "bg-indigo-500/15 text-indigo-300 border-indigo-500/25",
-    uploaded:   "bg-gray-500/15 text-gray-300 border-gray-500/25",
-    failed:     "bg-red-500/15 text-red-300 border-red-500/25",
+    uploaded: "bg-gray-500/15 text-gray-300 border-gray-500/25",
+    failed: "bg-red-500/15 text-red-300 border-red-500/25",
 };
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -58,10 +58,10 @@ function groupByFilename(docs: DocumentAllItemDTO[]): DocGroup[] {
 function FileIcon({ sourceType }: { sourceType: string }) {
     const ext = (sourceType ?? "").toLowerCase();
     const color =
-        ext === "pdf"                    ? "text-red-400" :
-        ext === "docx" || ext === "doc"  ? "text-blue-400" :
-        ext === "txt"  || ext === "md"   ? "text-gray-400" :
-        "text-agora-text-muted";
+        ext === "pdf" ? "text-red-400" :
+            ext === "docx" || ext === "doc" ? "text-blue-400" :
+                ext === "txt" || ext === "md" ? "text-gray-400" :
+                    "text-agora-text-muted";
     return (
         <div className={cn(
             "w-9 h-9 rounded-lg bg-agora-surface-light flex items-center justify-center text-[10px] font-bold uppercase shrink-0",
@@ -158,17 +158,17 @@ export default function DocumentsPage() {
     useEffect(() => { setPage(1); }, [filter]);
 
     const counts = {
-        all:        allGroups.length,
-        ready:      allGroups.filter((g) => g.copies.some((c) => c.status === "ready")).length,
+        all: allGroups.length,
+        ready: allGroups.filter((g) => g.copies.some((c) => c.status === "ready")).length,
         processing: allGroups.filter((g) => g.copies.some((c) => c.status === "processing")).length,
-        failed:     allGroups.filter((g) => g.copies.some((c) => c.status === "failed")).length,
+        failed: allGroups.filter((g) => g.copies.some((c) => c.status === "failed")).length,
     };
 
     return (
         <div className="flex-1 flex flex-col min-h-0 bg-agora-bg">
             {/* Header */}
-            <div className="px-8 py-6">
-                <div className="flex items-center justify-between">
+            <div className="px-4 sm:px-8 py-5 sm:py-6">
+                <div className="flex items-start justify-between gap-3">
                     <div>
                         <h1 className="text-lg font-semibold text-white">Documents</h1>
                         <p className="text-xs text-agora-text-muted mt-0.5">
@@ -184,7 +184,7 @@ export default function DocumentsPage() {
                 </div>
 
                 {/* Filter tabs */}
-                <div className="flex gap-1 mt-4">
+                <div className="flex flex-wrap gap-1 mt-4">
                     {(["all", "ready", "processing", "failed"] as const).map((tab) => (
                         <button
                             key={tab}
@@ -205,7 +205,7 @@ export default function DocumentsPage() {
             </div>
 
             {/* List */}
-            <div className="flex-1 overflow-y-auto px-8 py-4">
+            <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-4">
                 {loading ? (
                     <div className="flex items-center justify-center h-40 text-agora-text-muted text-sm">
                         Loading…
@@ -227,218 +227,218 @@ export default function DocumentsPage() {
                     </div>
                 ) : (
                     <>
-                    <div className="space-y-2">
-                        <AnimatePresence initial={false}>
-                            {visibleGroups.map((group, idx) => {
-                                const isExpanded = expanded.has(group.filename.toLowerCase());
-                                const multi = group.copies.length > 1;
+                        <div className="space-y-2">
+                            <AnimatePresence initial={false}>
+                                {visibleGroups.map((group, idx) => {
+                                    const isExpanded = expanded.has(group.filename.toLowerCase());
+                                    const multi = group.copies.length > 1;
 
-                                return (
-                                    <motion.div
-                                        key={group.filename.toLowerCase()}
-                                        initial={{ opacity: 0, y: 8 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        exit={{ opacity: 0, scale: 0.97 }}
-                                        transition={{ delay: idx * 0.02 }}
-                                        className="rounded-xl border border-agora-border bg-agora-surface/50 overflow-hidden"
-                                    >
-                                        {/* ── Collapsed / header row ── */}
-                                        <div className="flex items-center gap-4 px-4 py-3 group hover:bg-agora-surface/80 transition-colors">
-                                            <FileIcon sourceType={group.source_type} />
+                                    return (
+                                        <motion.div
+                                            key={group.filename.toLowerCase()}
+                                            initial={{ opacity: 0, y: 8 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            exit={{ opacity: 0, scale: 0.97 }}
+                                            transition={{ delay: idx * 0.02 }}
+                                            className="rounded-xl border border-agora-border bg-agora-surface/50 overflow-hidden"
+                                        >
+                                            {/* ── Collapsed / header row ── */}
+                                            <div className="flex items-center gap-4 px-4 py-3 group hover:bg-agora-surface/80 transition-colors">
+                                                <FileIcon sourceType={group.source_type} />
 
-                                            <div className="flex-1 min-w-0">
-                                                {/* Filename — click to open the most-recent copy */}
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleOpen(group.copies[0])}
-                                                    disabled={opening === group.copies[0].id}
-                                                    className="text-sm font-medium text-white hover:text-indigo-300 transition-colors truncate text-left max-w-full disabled:opacity-50"
-                                                    title={group.filename}
-                                                >
-                                                    {opening === group.copies[0].id ? "Opening…" : group.filename}
-                                                </button>
-
-                                                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                                                    <span className={cn(
-                                                        "text-[10px] font-medium px-1.5 py-0.5 rounded border",
-                                                        STATUS_STYLES[group.status] ?? STATUS_STYLES.uploaded,
-                                                    )}>
-                                                        {group.status}
-                                                    </span>
-                                                    <span className="text-[11px] text-agora-text-muted/60">
-                                                        {formatBytes(group.bytes)}
-                                                    </span>
-                                                    <span className="text-[11px] text-agora-text-muted/60">
-                                                        {formatRelativeTime(group.copies[0].created_at)}
-                                                    </span>
-                                                </div>
-                                            </div>
-
-                                            {/* Debate count badge / expand toggle */}
-                                            {multi ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => toggleExpand(group.filename.toLowerCase())}
-                                                    className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-agora-surface-light/60 text-agora-text-muted hover:text-white hover:bg-agora-surface-light transition-colors border border-agora-border"
-                                                >
-                                                    {group.copies.length} debates
-                                                    <svg
-                                                        width="10" height="10" viewBox="0 0 10 10" fill="none"
-                                                        className={cn("transition-transform", isExpanded && "rotate-180")}
-                                                    >
-                                                        <path d="M2 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                                                    </svg>
-                                                </button>
-                                            ) : (
-                                                group.copies[0].session_title && (
+                                                <div className="flex-1 min-w-0">
+                                                    {/* Filename — click to open the most-recent copy */}
                                                     <button
                                                         type="button"
-                                                        onClick={() => navigate(`/debates/${group.copies[0].session_id}`)}
-                                                        className="shrink-0 text-[11px] text-agora-text-muted hover:text-indigo-300 transition-colors truncate max-w-[200px] text-right"
-                                                        title={group.copies[0].session_title}
+                                                        onClick={() => handleOpen(group.copies[0])}
+                                                        disabled={opening === group.copies[0].id}
+                                                        className="text-sm font-medium text-white hover:text-indigo-300 transition-colors truncate text-left max-w-full disabled:opacity-50"
+                                                        title={group.filename}
                                                     >
-                                                        {group.copies[0].session_title}
+                                                        {opening === group.copies[0].id ? "Opening…" : group.filename}
                                                     </button>
-                                                )
-                                            )}
 
-                                            {/* Delete (single copy) */}
-                                            {!multi && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleDelete(group.copies[0])}
-                                                    disabled={deleting === group.copies[0].id}
-                                                    className={cn(
-                                                        "shrink-0 opacity-0 group-hover:opacity-100 transition-opacity",
-                                                        "p-1.5 rounded-lg text-agora-text-muted hover:text-red-400 hover:bg-red-500/10",
-                                                        deleting === group.copies[0].id && "opacity-50 cursor-not-allowed",
-                                                    )}
-                                                    title="Delete"
-                                                >
-                                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                                                        <path d="M2 4h12M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v5M10 7v5M3 4l1 9a1 1 0 001 1h6a1 1 0 001-1l1-9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                                                    </svg>
-                                                </button>
-                                            )}
-                                        </div>
+                                                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                                        <span className={cn(
+                                                            "text-[10px] font-medium px-1.5 py-0.5 rounded border",
+                                                            STATUS_STYLES[group.status] ?? STATUS_STYLES.uploaded,
+                                                        )}>
+                                                            {group.status}
+                                                        </span>
+                                                        <span className="text-[11px] text-agora-text-muted/60">
+                                                            {formatBytes(group.bytes)}
+                                                        </span>
+                                                        <span className="text-[11px] text-agora-text-muted/60">
+                                                            {formatRelativeTime(group.copies[0].created_at)}
+                                                        </span>
+                                                    </div>
+                                                </div>
 
-                                        {/* ── Expanded: per-debate rows ── */}
-                                        <AnimatePresence initial={false}>
-                                            {isExpanded && (
-                                                <motion.div
-                                                    initial={{ height: 0, opacity: 0 }}
-                                                    animate={{ height: "auto", opacity: 1 }}
-                                                    exit={{ height: 0, opacity: 0 }}
-                                                    transition={{ duration: 0.18 }}
-                                                    className="overflow-hidden border-t border-agora-border/50"
-                                                >
-                                                    {group.copies.map((copy) => (
-                                                        <div
-                                                            key={copy.id}
-                                                            className="flex items-center gap-3 px-4 py-2.5 hover:bg-agora-surface-light/20 transition-colors group/row"
+                                                {/* Debate count badge / expand toggle */}
+                                                {multi ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => toggleExpand(group.filename.toLowerCase())}
+                                                        className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-agora-surface-light/60 text-agora-text-muted hover:text-white hover:bg-agora-surface-light transition-colors border border-agora-border"
+                                                    >
+                                                        {group.copies.length} debates
+                                                        <svg
+                                                            width="10" height="10" viewBox="0 0 10 10" fill="none"
+                                                            className={cn("transition-transform", isExpanded && "rotate-180")}
                                                         >
-                                                            <div className="w-1.5 h-1.5 rounded-full bg-agora-border shrink-0 ml-1" />
+                                                            <path d="M2 3.5l3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                                                        </svg>
+                                                    </button>
+                                                ) : (
+                                                    group.copies[0].session_title && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => navigate(`/debates/${group.copies[0].session_id}`)}
+                                                            className="shrink-0 text-[11px] text-agora-text-muted hover:text-indigo-300 transition-colors truncate max-w-[200px] text-right"
+                                                            title={group.copies[0].session_title}
+                                                        >
+                                                            {group.copies[0].session_title}
+                                                        </button>
+                                                    )
+                                                )}
 
-                                                            <div className="flex-1 min-w-0">
-                                                                {copy.session_title ? (
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={() => navigate(`/debates/${copy.session_id}`)}
-                                                                        className="text-[11px] text-agora-text-muted hover:text-indigo-300 transition-colors truncate text-left max-w-full"
-                                                                        title={copy.session_title}
-                                                                    >
-                                                                        {copy.session_title}
-                                                                    </button>
-                                                                ) : (
-                                                                    <span className="text-[11px] text-agora-text-muted/40 italic">
-                                                                        Untitled debate
-                                                                    </span>
-                                                                )}
-                                                                <div className="text-[10px] text-agora-text-muted/50 mt-0.5">
-                                                                    {formatRelativeTime(copy.created_at)}
+                                                {/* Delete (single copy) */}
+                                                {!multi && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDelete(group.copies[0])}
+                                                        disabled={deleting === group.copies[0].id}
+                                                        className={cn(
+                                                            "shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity",
+                                                            "p-1.5 rounded-lg text-agora-text-muted hover:text-red-400 hover:bg-red-500/10",
+                                                            deleting === group.copies[0].id && "opacity-50 cursor-not-allowed",
+                                                        )}
+                                                        title="Delete"
+                                                    >
+                                                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                                                            <path d="M2 4h12M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v5M10 7v5M3 4l1 9a1 1 0 001 1h6a1 1 0 001-1l1-9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                                                        </svg>
+                                                    </button>
+                                                )}
+                                            </div>
+
+                                            {/* ── Expanded: per-debate rows ── */}
+                                            <AnimatePresence initial={false}>
+                                                {isExpanded && (
+                                                    <motion.div
+                                                        initial={{ height: 0, opacity: 0 }}
+                                                        animate={{ height: "auto", opacity: 1 }}
+                                                        exit={{ height: 0, opacity: 0 }}
+                                                        transition={{ duration: 0.18 }}
+                                                        className="overflow-hidden border-t border-agora-border/50"
+                                                    >
+                                                        {group.copies.map((copy) => (
+                                                            <div
+                                                                key={copy.id}
+                                                                className="flex items-center gap-3 px-4 py-2.5 hover:bg-agora-surface-light/20 transition-colors group/row"
+                                                            >
+                                                                <div className="w-1.5 h-1.5 rounded-full bg-agora-border shrink-0 ml-1" />
+
+                                                                <div className="flex-1 min-w-0">
+                                                                    {copy.session_title ? (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => navigate(`/debates/${copy.session_id}`)}
+                                                                            className="text-[11px] text-agora-text-muted hover:text-indigo-300 transition-colors truncate text-left max-w-full"
+                                                                            title={copy.session_title}
+                                                                        >
+                                                                            {copy.session_title}
+                                                                        </button>
+                                                                    ) : (
+                                                                        <span className="text-[11px] text-agora-text-muted/40 italic">
+                                                                            Untitled debate
+                                                                        </span>
+                                                                    )}
+                                                                    <div className="text-[10px] text-agora-text-muted/50 mt-0.5">
+                                                                        {formatRelativeTime(copy.created_at)}
+                                                                    </div>
                                                                 </div>
+
+                                                                <span className={cn(
+                                                                    "shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border",
+                                                                    STATUS_STYLES[copy.status] ?? STATUS_STYLES.uploaded,
+                                                                )}>
+                                                                    {copy.status}
+                                                                </span>
+
+                                                                {/* Open this specific copy */}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleOpen(copy)}
+                                                                    disabled={opening === copy.id}
+                                                                    className="shrink-0 opacity-0 group-hover/row:opacity-100 transition-opacity p-1.5 rounded-lg text-agora-text-muted hover:text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-40"
+                                                                    title="Open file"
+                                                                >
+                                                                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                                                                        <path d="M6 3H3a1 1 0 00-1 1v9a1 1 0 001 1h10a1 1 0 001-1v-3M9 2h5v5M14 2L8 8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                                                                    </svg>
+                                                                </button>
+
+                                                                {/* Delete this specific copy */}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleDelete(copy)}
+                                                                    disabled={deleting === copy.id}
+                                                                    className="shrink-0 opacity-0 group-hover/row:opacity-100 transition-opacity p-1.5 rounded-lg text-agora-text-muted hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40"
+                                                                    title="Remove from this debate"
+                                                                >
+                                                                    <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                                                                        <path d="M2 4h12M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v5M10 7v5M3 4l1 9a1 1 0 001 1h6a1 1 0 001-1l1-9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                                                                    </svg>
+                                                                </button>
                                                             </div>
-
-                                                            <span className={cn(
-                                                                "shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded border",
-                                                                STATUS_STYLES[copy.status] ?? STATUS_STYLES.uploaded,
-                                                            )}>
-                                                                {copy.status}
-                                                            </span>
-
-                                                            {/* Open this specific copy */}
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleOpen(copy)}
-                                                                disabled={opening === copy.id}
-                                                                className="shrink-0 opacity-0 group-hover/row:opacity-100 transition-opacity p-1.5 rounded-lg text-agora-text-muted hover:text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-40"
-                                                                title="Open file"
-                                                            >
-                                                                <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                                                                    <path d="M6 3H3a1 1 0 00-1 1v9a1 1 0 001 1h10a1 1 0 001-1v-3M9 2h5v5M14 2L8 8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                                                                </svg>
-                                                            </button>
-
-                                                            {/* Delete this specific copy */}
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => handleDelete(copy)}
-                                                                disabled={deleting === copy.id}
-                                                                className="shrink-0 opacity-0 group-hover/row:opacity-100 transition-opacity p-1.5 rounded-lg text-agora-text-muted hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40"
-                                                                title="Remove from this debate"
-                                                            >
-                                                                <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                                                                    <path d="M2 4h12M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v5M10 7v5M3 4l1 9a1 1 0 001 1h6a1 1 0 001-1l1-9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                                                                </svg>
-                                                            </button>
-                                                        </div>
-                                                    ))}
-                                                </motion.div>
-                                            )}
-                                        </AnimatePresence>
-                                    </motion.div>
-                                );
-                            })}
-                        </AnimatePresence>
-                    </div>
-
-                    {totalPages > 1 && (
-                        <div className="mt-6 pt-4 border-t border-agora-border">
-                            <div className="flex items-center justify-center gap-1">
-                                <button
-                                    type="button"
-                                    onClick={() => setPage((p) => p - 1)}
-                                    disabled={page === 1}
-                                    className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                                >
-                                    ← Prev
-                                </button>
-                                {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
-                                    <button
-                                        key={p}
-                                        type="button"
-                                        onClick={() => setPage(p)}
-                                        className={cn(
-                                            "w-8 h-8 rounded-lg text-xs font-medium transition-colors border",
-                                            p === page
-                                                ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"
-                                                : "border-transparent text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50",
-                                        )}
-                                    >
-                                        {p}
-                                    </button>
-                                ))}
-                                <button
-                                    type="button"
-                                    onClick={() => setPage((p) => p + 1)}
-                                    disabled={page === totalPages}
-                                    className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                                >
-                                    Next →
-                                </button>
-                            </div>
+                                                        ))}
+                                                    </motion.div>
+                                                )}
+                                            </AnimatePresence>
+                                        </motion.div>
+                                    );
+                                })}
+                            </AnimatePresence>
                         </div>
-                    )}
+
+                        {totalPages > 1 && (
+                            <div className="mt-6 pt-4 border-t border-agora-border">
+                                <div className="flex items-center justify-center gap-1">
+                                    <button
+                                        type="button"
+                                        onClick={() => setPage((p) => p - 1)}
+                                        disabled={page === 1}
+                                        className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                    >
+                                        ← Prev
+                                    </button>
+                                    {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+                                        <button
+                                            key={p}
+                                            type="button"
+                                            onClick={() => setPage(p)}
+                                            className={cn(
+                                                "w-8 h-8 rounded-lg text-xs font-medium transition-colors border",
+                                                p === page
+                                                    ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"
+                                                    : "border-transparent text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50",
+                                            )}
+                                        >
+                                            {p}
+                                        </button>
+                                    ))}
+                                    <button
+                                        type="button"
+                                        onClick={() => setPage((p) => p + 1)}
+                                        disabled={page === totalPages}
+                                        className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                    >
+                                        Next →
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </>
                 )}
             </div>

@@ -48,6 +48,7 @@ from app.models.chat_turn import ChatTurn, ChatTurnStatus
 from app.schemas.contracts import ExecutionEvent, ExecutionEventType, OnEventCallback
 from app.services.chat_engine import ChatEngine
 from app.services.debate_engine.step_controller import step_controller
+from app.services.llm.provider_error_classifier import make_safe_error, UNKNOWN_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -110,13 +111,20 @@ async def run_turn_background(
                 turn_obj.status = ChatTurnStatus.failed
                 turn_obj.ended_at = datetime.now(timezone.utc)
                 await db.flush()
+                safe_error = getattr(exc, "safe_error", None)
+                if safe_error is None:
+                    safe_error = make_safe_error(UNKNOWN_ERROR, message=str(exc))
                 try:
                     await on_event(
                         ExecutionEvent(
                             event_type=ExecutionEventType.turn_failed,
                             session_id=session_id,
                             turn_id=turn_id,
-                            payload={"error": str(exc)},
+                            payload={
+                                "error": str(exc),
+                                "safe_error": safe_error.to_frontend_dict(),
+                                "generation_failed": True,
+                            },
                         )
                     )
                 except Exception:
@@ -193,6 +201,10 @@ async def _force_fail_turn(
 
     if marked_failed:
         # Notify clients only when we actually changed the DB state here.
+        safe_error = make_safe_error(
+            UNKNOWN_ERROR,
+            message="Execution state could not be persisted due to a database error.",
+        )
         try:
             await on_event(
                 ExecutionEvent(
@@ -200,7 +212,9 @@ async def _force_fail_turn(
                     session_id=session_id,
                     turn_id=turn_id,
                     payload={
-                        "error": "Execution state could not be persisted due to a database error."
+                        "error": "Execution state could not be persisted due to a database error.",
+                        "safe_error": safe_error.to_frontend_dict(),
+                        "generation_failed": True,
                     },
                 )
             )

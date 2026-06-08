@@ -31,6 +31,15 @@ _MOCK_STRUCTURED = {
     "what_changed": "The critique round highlighted nuances not initially considered.",
     "remaining_concerns": "The opposing view raises valid points on implementation.",
     "recommendation": "A balanced approach incorporating both perspectives is optimal.",
+    # Readable body shared across rounds so normalization yields real content.
+    "main_argument": "A balanced, evidence-based position is the strongest overall.",
+    "conclusion": "On balance, a measured approach best serves the question at hand.",
+    "response": (
+        "On balance, this question is best answered with a measured, "
+        "evidence-based approach: the strongest arguments on each side point "
+        "toward a balanced position that weighs benefits against risks rather "
+        "than adopting either extreme."
+    ),
 }
 
 

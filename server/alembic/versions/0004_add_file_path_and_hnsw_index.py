@@ -8,6 +8,9 @@ Adds:
   - documents.file_path  VARCHAR(1024)  (local path where uploaded file is stored)
   - HNSW index on document_chunks.embedding for fast approximate-NN retrieval
     (pgvector >= 0.5 required; existing cosine-distance queries use this automatically)
+
+Environment-safe: HNSW index creation is skipped when pgvector is not
+installed on the local PostgreSQL server.
 """
 
 from typing import Sequence, Union
@@ -30,18 +33,21 @@ def upgrade() -> None:
     # Remove server_default after adding so new rows rely on application code
     op.alter_column("documents", "file_path", server_default=None)
 
-    # 2. HNSW index on document_chunks.embedding for cosine similarity
-    #    Using m=16, ef_construction=64 — good default for up to ~1M vectors.
-    #    The operator class `vector_cosine_ops` matches the <=> operator used
-    #    in the retrieval query.
-    op.execute("""
-        CREATE INDEX IF NOT EXISTS ix_document_chunks_embedding_hnsw
-        ON document_chunks
-        USING hnsw (embedding vector_cosine_ops)
-        WITH (m = 16, ef_construction = 64)
-    """)
+    # 2. HNSW index on document_chunks.embedding — only when pgvector is available
+    #    and the embedding column is actually a vector type.
+    conn = op.get_bind()
+    has_pgvector = conn.execute(
+        sa.text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+    ).fetchone()
+    if has_pgvector:
+        op.execute(sa.text(
+            "CREATE INDEX IF NOT EXISTS ix_document_chunks_embedding_hnsw"
+            " ON document_chunks"
+            " USING hnsw (embedding vector_cosine_ops)"
+            " WITH (m = 16, ef_construction = 64)"
+        ))
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS ix_document_chunks_embedding_hnsw")
+    op.execute(sa.text("DROP INDEX IF EXISTS ix_document_chunks_embedding_hnsw"))
     op.drop_column("documents", "file_path")

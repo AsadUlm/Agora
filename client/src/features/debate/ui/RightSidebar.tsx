@@ -27,11 +27,11 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
 const TAB_WIDTHS: Record<Tab, string> = {
     moderator: "clamp(150px, 21vw, 340px)",
     evolution: "clamp(160px, 25vw, 420px)",
-    agents:    "clamp(150px, 22vw, 360px)",
-    raw:       "clamp(155px, 23vw, 380px)",
+    agents: "clamp(150px, 22vw, 360px)",
+    raw: "clamp(155px, 23vw, 380px)",
 };
 
-export default function RightSidebar() {
+export default function RightSidebar({ mobile = false }: { mobile?: boolean }) {
     const [active, setActive] = useState<Tab>("moderator");
     const followUps = useDebateStore((s) => s.session?.latest_turn?.follow_ups ?? []);
     // Auto-switch to Evolution tab the first time a follow-up cycle exists,
@@ -46,8 +46,11 @@ export default function RightSidebar() {
 
     return (
         <div
-            className="h-full border-l border-agora-border bg-agora-surface/60 backdrop-blur-sm flex flex-col transition-[width] duration-300 ease-out shrink-0"
-            style={{ width: TAB_WIDTHS[active] }}
+            className={cn(
+                "h-full bg-agora-surface/60 backdrop-blur-sm flex flex-col transition-[width] duration-300 ease-out shrink-0",
+                mobile ? "w-full" : "border-l border-agora-border",
+            )}
+            style={mobile ? undefined : { width: TAB_WIDTHS[active] }}
         >
             <div className="flex items-center px-1 pt-1 gap-0.5 border-b border-agora-border bg-agora-bg/40">
                 {TABS.map((t) => (

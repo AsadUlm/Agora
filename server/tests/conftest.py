@@ -20,6 +20,7 @@ from app.db.base import Base
 from app.db.session import get_db, get_session_factory
 from app.main import app
 from app.services.llm import _factory as llm_factory
+from app.services.embeddings import embedding_service as embedding_factory
 from app.services.llm.providers.mock_provider import MockProvider
 from app.core.auth import get_current_user, get_ws_current_user
 from app.models.user import User
@@ -76,6 +77,7 @@ async def _create_tables(_test_engine):
     """Create all tables before each test and drop them after."""
     # Register PostgreSQL-specific type overrides for the SQLite dialect.
     from sqlalchemy.ext.compiler import compiles
+    from sqlalchemy.dialects.postgresql import ARRAY
     from pgvector.sqlalchemy import Vector
 
     @compiles(JSONB, "sqlite")
@@ -85,6 +87,11 @@ async def _create_tables(_test_engine):
     @compiles(Vector, "sqlite")
     def _compile_vector_sqlite(type_, compiler, **kw):
         return "TEXT"
+
+    @compiles(ARRAY, "sqlite")
+    def _compile_array_sqlite(type_, compiler, **kw):
+        # SQLite has no native ARRAY — fall back to JSON storage so DDL compiles.
+        return "JSON"
 
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -122,6 +129,10 @@ async def client(_test_session_factory):
     # Inject mock LLM service (using the factory's public override API)
     llm_factory.set_service(MockProvider())
 
+    # Inject mock embedding service so the strict factory never tries to
+    # talk to OpenRouter during tests.
+    embedding_factory.set_embedding_service(embedding_factory.MockEmbeddingService())
+
     # Bypass JWT auth — return a deterministic fake user for all protected routes
     _fake_user = User(
         id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
@@ -144,3 +155,4 @@ async def client(_test_session_factory):
 
     app.dependency_overrides.clear()
     llm_factory.reset_service()
+    embedding_factory.reset_embedding_service_for_tests()
