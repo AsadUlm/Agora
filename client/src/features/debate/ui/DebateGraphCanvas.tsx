@@ -521,6 +521,23 @@ export default function DebateGraphCanvas() {
 
     const generatingNodeId = useMemo(() => getGeneratingNodeId(execution), [execution]);
 
+    // True when a synthesis node is already visible in the graph — used to suppress
+    // the "Synthesizing..." overlay before turn_completed arrives (race condition fix).
+    // Covers both initial (synthesis) and follow-up (followup-synthesis) cycle completions.
+    const synthesisNodeVisible = useMemo(
+        () =>
+            visibleCycleNodes.some(
+                (n) =>
+                    (n.kind === "synthesis" ||
+                        n.kind === "followup-synthesis" ||
+                        n.id === "synthesis-node" ||
+                        (n.id?.includes("synthesis") === true)) &&
+                    n.status !== "hidden" &&
+                    n.status !== "entering",
+            ),
+        [visibleCycleNodes],
+    );
+
     const narration = useMemo(
         () => deriveActiveNarration({
             execution,
@@ -967,7 +984,7 @@ export default function DebateGraphCanvas() {
 
             <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex flex-col items-center gap-2 px-3">
                 <AnimatePresence>
-                    {(execution.debateStatus === "queued" || execution.debateStatus === "running") && (
+                    {(execution.debateStatus === "queued" || execution.debateStatus === "running") && !synthesisNodeVisible && (
                         <motion.div
                             key="active-narration"
                             initial={{ opacity: 0, y: -10, scale: 0.98 }}

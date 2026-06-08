@@ -1247,7 +1247,9 @@ export function buildModeratorState(
         status: statusLabels[turnStatus] ?? turnStatus,
         explanation:
             explanations[currentRound] ??
-            "The debate is in progress.",
+            (turnStatus === "completed"
+                ? "The debate has concluded. Review the final synthesis or ask a follow-up question."
+                : "The debate is in progress."),
         watchFor: watchForItems[currentRound] ?? [],
         activityFeed: feed,
     };

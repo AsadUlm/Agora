@@ -438,7 +438,7 @@ export default function ModeratorPanel() {
     const canClickNext =
         !stepBusy
         && currentlyGenerating === null
-        && (turnStatus === "queued" || turnStatus === "running");
+        && (execution.debateStatus === "queued" || execution.debateStatus === "running");
 
     /**
      * roundInfo only drives the *supplementary* "Why this matters" block.
@@ -622,7 +622,7 @@ export default function ModeratorPanel() {
             )}
 
             {/* ── Guided Narrator ─────────────────────────────────── */}
-            {!isInterpretationMode && (turnStatus === "queued" || turnStatus === "running" || (turnStatus === "completed" && queuedForReveal > 0)) && (
+            {!isInterpretationMode && (execution.debateStatus === "queued" || execution.debateStatus === "running" || (execution.debateStatus === "completed" && queuedForReveal > 0)) && (
                 <div className="px-4 py-3 border-b border-agora-border bg-indigo-500/5 space-y-2.5">
                     {/* Current Step */}
                     <div>
@@ -671,7 +671,7 @@ export default function ModeratorPanel() {
                             }
                             return (
                                 <p className="text-xs text-agora-text-muted leading-relaxed">
-                                    {currentStepDescription || "Waiting for the next response..."}
+                                    {currentStepDescription || "Generating next round response..."}
                                 </p>
                             );
                         })()}

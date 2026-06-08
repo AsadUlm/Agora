@@ -60,6 +60,16 @@ from app.services.debate_engine.two_stage_structurer import (
 )
 from app.services.llm.exceptions import LLMError
 from app.services.llm.service import LLMService, get_llm_service
+from app.services.llm.provider_error_classifier import (
+    classify_provider_error,
+    make_safe_error,
+    MODEL_EMPTY_RESPONSE,
+    MODEL_INVALID_JSON,
+    ROUND_ALL_AGENTS_FAILED,
+    STRUCTURED_VALIDATION_FAILED,
+    UNKNOWN_ERROR,
+    DebateSafeError,
+)
 from app.services.retrieval.retrieval_service import RetrievalService
 from app.services.retrieval.evidence import (
     EvidencePacket,
@@ -186,6 +196,13 @@ class RoundManager:
         self._on_event = on_event
         self._step_controller = step_controller
         self._session_factory = session_factory or self._build_session_factory_from_db(db)
+        # Serializes round-level bookkeeping writes (create/complete/fail) on the
+        # shared ``self.db`` session. During the follow-up streaming overlap the
+        # response round's completion can run concurrently with the next round's
+        # creation; without this lock the two interleave their flush/commit on a
+        # single AsyncSession and one round's status update is silently dropped
+        # (leaving e.g. the follow-up response round stuck in ``running``).
+        self._round_write_lock = asyncio.Lock()
 
         configured_concurrency = (
             max_concurrent_agent_calls
@@ -242,7 +259,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 1."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
 
         await self._complete_round(round_record, ctx)
@@ -368,7 +385,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 2."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
 
         await self._complete_round(round_record, ctx)
@@ -441,7 +458,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 3."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
 
         # Step 37: neutral moderator aggregation across the three syntheses.
@@ -544,7 +561,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in follow-up response."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
         await self._complete_round(round_record, ctx)
         return results
@@ -695,7 +712,7 @@ class RoundManager:
             if self._all_agents_failed(gathered):
                 reason = "All agents failed in follow-up response."
                 try:
-                    await self._fail_round(round_record, reason)
+                    await self._fail_round(round_record, reason, ctx=ctx)
                 finally:
                     if not all_done_future.done():
                         all_done_future.set_exception(RuntimeError(reason))
@@ -817,7 +834,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in follow-up critique."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
         await self._complete_round(round_record, ctx)
         return results
@@ -929,7 +946,7 @@ class RoundManager:
         results = await self._execute_round_parallel(ctx, round_record, plans)
         if self._all_agents_failed(results):
             reason = "All agents failed in updated synthesis."
-            await self._fail_round(round_record, reason)
+            await self._fail_round(round_record, reason, ctx=ctx)
             raise RuntimeError(reason)
 
         # Step 37: neutral moderator aggregation across the updated syntheses
@@ -1281,13 +1298,14 @@ class RoundManager:
             round_type=round_type,
             status=RoundStatus.queued,
         )
-        self.db.add(round_record)
-        await self.db.flush()
+        async with self._round_write_lock:
+            self.db.add(round_record)
+            await self.db.flush()
 
-        round_record.status = RoundStatus.running
-        round_record.started_at = datetime.now(timezone.utc)
-        await self.db.flush()
-        await self.db.commit()
+            round_record.status = RoundStatus.running
+            round_record.started_at = datetime.now(timezone.utc)
+            await self.db.flush()
+            await self.db.commit()
 
         logger.info(
             "Round %d running (id=%s, turn=%s)",
@@ -1314,10 +1332,11 @@ class RoundManager:
 
     async def _complete_round(self, round_record: Round, ctx: TurnContext) -> None:
         """Transition round: running → completed and emit round_completed."""
-        round_record.status = RoundStatus.completed
-        round_record.ended_at = datetime.now(timezone.utc)
-        await self.db.flush()
-        await self.db.commit()
+        async with self._round_write_lock:
+            round_record.status = RoundStatus.completed
+            round_record.ended_at = datetime.now(timezone.utc)
+            await self.db.flush()
+            await self.db.commit()
 
         logger.info("Round %d completed.", round_record.round_number)
         if self._on_event is not None:
@@ -1336,13 +1355,66 @@ class RoundManager:
                 )
             )
 
-    async def _fail_round(self, round_record: Round, reason: str) -> None:
-        """Transition round: running → failed."""
-        round_record.status = RoundStatus.failed
-        round_record.ended_at = datetime.now(timezone.utc)
-        await self.db.flush()
-        await self.db.commit()
+    async def _fail_round(
+        self,
+        round_record: Round,
+        reason: str,
+        *,
+        ctx: "TurnContext | None" = None,
+        safe_error: "DebateSafeError | None" = None,
+    ) -> None:
+        """Transition round: running → failed and emit round_failed event."""
+        async with self._round_write_lock:
+            round_record.status = RoundStatus.failed
+            round_record.ended_at = datetime.now(timezone.utc)
+            await self.db.flush()
+            await self.db.commit()
         logger.error("Round %d failed: %s", round_record.round_number, reason)
+
+        if self._on_event is not None and ctx is not None:
+            # Build a safe error if none was provided
+            if safe_error is None:
+                safe_error = make_safe_error(
+                    ROUND_ALL_AGENTS_FAILED,
+                    round_number=round_record.round_number,
+                    round_type=(
+                        round_record.round_type.value
+                        if round_record.round_type is not None
+                        else None
+                    ),
+                )
+            logger.info(
+                "WS emit round_failed round=%d turn=%s code=%s debug_id=%s",
+                round_record.round_number,
+                ctx.turn_id,
+                safe_error.code,
+                safe_error.debug_id,
+            )
+            try:
+                await self._on_event(
+                    ExecutionEvent(
+                        event_type=ExecutionEventType.round_failed,
+                        session_id=ctx.session_id,
+                        turn_id=ctx.turn_id,
+                        round_id=round_record.id,
+                        round_number=round_record.round_number,
+                        payload={
+                            "round_id": str(round_record.id),
+                            "round_number": round_record.round_number,
+                            "round_type": (
+                                round_record.round_type.value
+                                if round_record.round_type is not None
+                                else None
+                            ),
+                            "error": safe_error.to_frontend_dict(),
+                        },
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to emit round_failed WS event (round=%d)",
+                    round_record.round_number,
+                )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 37 — Synthesis Verdict (neutral moderator aggregation)
@@ -1980,6 +2052,7 @@ class RoundManager:
         generation_status = "success"
         error_msg: str | None = None
         failure_reason: str | None = None
+        _agent_safe_error: "DebateSafeError | None" = None
         prompt_tokens = 0
         completion_tokens = 0
         provider_latency_ms = 0
@@ -2269,17 +2342,42 @@ class RoundManager:
                 # (3) Give up: mark the node as failed so malformed content is
                 # neither displayed nor used as evidence in later rounds.
                 if structured_reasons:
+                    # Classify the failure code based on the specific reasons.
+                    # json_parse_failed / empty_response  → MODEL_INVALID_JSON or MODEL_EMPTY_RESPONSE.
+                    # Everything else (missing fields, placeholder, too short) → STRUCTURED_VALIDATION_FAILED.
+                    if "empty_response" in structured_reasons:
+                        _struct_code = MODEL_EMPTY_RESPONSE
+                    elif "json_parse_failed_used_text_fallback" in structured_reasons:
+                        _struct_code = MODEL_INVALID_JSON
+                    else:
+                        _struct_code = STRUCTURED_VALIDATION_FAILED
+
                     logger.warning(
-                        "STRUCTURED_GUARD_FAILED agent=%s round=%d reasons=%s — marking node failed.",
+                        "STRUCTURED_GUARD_FAILED agent=%s round=%d reasons=%s code=%s — marking node failed.",
                         agent_ctx.agent_id,
                         round_record.round_number,
                         structured_reasons,
+                        _struct_code,
                     )
                     generation_status = "failed"
                     failure_reason = "malformed_structured_output"
                     error_msg = (
                         "Model returned malformed structured output: "
                         + ", ".join(structured_reasons)
+                    )
+                    _agent_safe_error = make_safe_error(
+                        _struct_code,
+                        message=error_msg,
+                        provider=agent_ctx.provider,
+                        model=agent_ctx.model,
+                        agent_id=str(agent_ctx.agent_id),
+                        agent_name=agent_ctx.role,
+                        round_number=round_record.round_number,
+                        round_type=(
+                            round_record.round_type.value
+                            if round_record.round_type is not None
+                            else None
+                        ),
                     )
 
             structured = normalized.payload
@@ -2298,7 +2396,25 @@ class RoundManager:
             error_msg = str(exc)
             content = json.dumps({"error": error_msg})
             generation_status = "failed"
-            logger.exception(
+            # Prefer a pre-classified safe_error attached by the provider wrapper.
+            # If none (e.g. internally-raised LLMError for empty response), classify now.
+            _agent_safe_error = getattr(exc, "safe_error", None)
+            if _agent_safe_error is None:
+                _agent_safe_error = classify_provider_error(
+                    exc,
+                    provider=agent_ctx.provider,
+                    model=agent_ctx.model,
+                    agent_id=str(agent_ctx.agent_id),
+                    agent_name=agent_ctx.role,
+                    round_number=round_record.round_number,
+                    round_type=(
+                        round_record.round_type.value
+                        if round_record.round_type is not None
+                        else None
+                    ),
+                )
+            failure_reason = _agent_safe_error.code
+            logger.warning(
                 "LLM failure for agent %s (%s) in round %d: %s",
                 agent_ctx.agent_id,
                 agent_ctx.role,
@@ -2309,6 +2425,8 @@ class RoundManager:
             error_msg = f"Unhandled provider error: {exc}"
             content = json.dumps({"error": error_msg})
             generation_status = "failed"
+            _agent_safe_error = getattr(exc, "safe_error", None)
+            failure_reason = "unknown"
             logger.exception(
                 "Unexpected LLM error for agent %s (%s) in round %d",
                 agent_ctx.agent_id,
@@ -2384,6 +2502,28 @@ class RoundManager:
             }
             if failure_reason is not None:
                 event_payload["failure_reason"] = failure_reason
+            if generation_status == "failed":
+                # Attach a safe error object so the frontend can show a structured
+                # failure reason without raw tracebacks or API key exposure.
+                # _agent_safe_error is always set by the time we reach here:
+                # - structured guard path: set explicitly above
+                # - LLMError path: set via classify_provider_error above
+                # - Exception path: may still be None if exception had no .safe_error
+                _safe = _agent_safe_error if _agent_safe_error is not None else make_safe_error(
+                    UNKNOWN_ERROR,
+                    message=error_msg or "Agent generation failed",
+                    provider=agent_ctx.provider,
+                    model=agent_ctx.model,
+                    agent_id=str(agent_ctx.agent_id),
+                    agent_name=agent_ctx.role,
+                    round_number=round_record.round_number,
+                    round_type=(
+                        round_record.round_type.value
+                        if round_record.round_type is not None
+                        else None
+                    ),
+                )
+                event_payload["safe_error"] = _safe.to_frontend_dict()
             if generation_status == "success" and isinstance(structured, dict):
                 display_content = structured.get("display_content")
                 short_summary = structured.get("short_summary")

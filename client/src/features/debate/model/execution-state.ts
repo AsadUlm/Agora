@@ -108,6 +108,13 @@ export function deriveDebateExecutionState(
     const synthesisCompleted =
         Boolean(turn?.final_summary) ||
         round3?.status === "completed" ||
+        // Also detect completed follow-up synthesis rounds (updated_synthesis round type
+        // or any round with round_type "updated_synthesis" that has messages).
+        (turn?.rounds ?? []).some(
+            (r) =>
+                (r.round_type === "updated_synthesis" || r.round_type === "final") &&
+                r.status === "completed",
+        ) ||
         debateStatus === "completed";
 
     const activeRound = inferActiveRound(

@@ -4,6 +4,9 @@
 
 export type KnowledgeMode = "no_docs" | "shared_session_docs" | "assigned_docs_only";
 
+/** Maximum number of agents allowed in a single debate. Must match server MAX_DEBATE_AGENTS. */
+export const MAX_DEBATE_AGENTS = 4;
+
 // ── Agent color palette ──────────────────────────────────────────────────────
 
 export interface AgentColorEntry {

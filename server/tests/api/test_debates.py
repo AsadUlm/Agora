@@ -306,3 +306,43 @@ async def test_list_debates_returns_list(client: AsyncClient):
     for item in items:
         for field in ("id", "title", "question", "status", "created_at"):
             assert field in item, f"List item missing field: {field}"
+
+
+# ── Max agent limit ───────────────────────────────────────────────────────────
+
+async def test_exactly_four_agents_allowed(client: AsyncClient):
+    """Exactly MAX_DEBATE_AGENTS (4) agents must be accepted."""
+    payload = _valid_payload(num_agents=4)
+    resp = await client.post("/debates/start", json=payload)
+    assert resp.status_code == 201, resp.text
+
+
+async def test_five_agents_returns_422(client: AsyncClient):
+    """5 agents must be rejected with HTTP 422."""
+    payload = _valid_payload(num_agents=5)
+    resp = await client.post("/debates/start", json=payload)
+    assert resp.status_code == 422
+    detail = resp.json().get("detail", "")
+    detail_str = str(detail)
+    assert "4" in detail_str or "agent" in detail_str.lower(), \
+        f"Expected agent limit message, got: {detail_str}"
+
+
+async def test_ten_agents_returns_422(client: AsyncClient):
+    """Attempt with many agents also rejected."""
+    payload = _valid_payload(num_agents=10)
+    resp = await client.post("/debates/start", json=payload)
+    assert resp.status_code == 422
+
+
+async def test_four_agent_debate_completes_and_loadable(client: AsyncClient):
+    """A debate with exactly 4 agents runs to completion and remains loadable."""
+    resp = await client.post("/debates/start", json=_valid_payload(num_agents=4))
+    assert resp.status_code == 201
+    debate_id = resp.json()["debate_id"]
+
+    get_resp = await client.get(f"/debates/{debate_id}")
+    assert get_resp.status_code == 200
+    body = get_resp.json()
+    assert body["status"] == "completed"
+    assert len(body["agents"]) == 4

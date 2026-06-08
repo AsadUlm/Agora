@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import type { AgentConfig } from "../model/agent-config.types";
 import {
     AGENT_PRESETS,
+    MAX_DEBATE_AGENTS,
     createAgentConfig,
     createAgentFromPreset,
 } from "../model/agent-config.types";
@@ -57,6 +58,7 @@ export default function AgentConfigDrawer({
     onDeleteDocument,
 }: AgentConfigDrawerProps) {
     const enabledCount = agents.filter((a) => a.enabled).length;
+    const atAgentLimit = agents.length >= MAX_DEBATE_AGENTS;
     const navigate = useNavigate();
 
     // ── Preset catalog (system + user) ────────────────────────────────
@@ -141,6 +143,7 @@ export default function AgentConfigDrawer({
 
     // ── Preset selection → add agent ──────────────────────────────────
     const addAgentFromBackendPreset = (preset: BackendAgentPreset) => {
+        if (atAgentLimit) return;
         const base = createAgentConfig({ role: preset.name });
         const updates = applyPresetToAgentConfig(preset, base, { overrideRole: true });
         const merged: AgentConfig = { ...base, ...updates, enabled: true };
@@ -149,6 +152,7 @@ export default function AgentConfigDrawer({
     };
 
     const addAgentFromLocalPreset = (key: string) => {
+        if (atAgentLimit) return;
         const p = AGENT_PRESETS.find((x) => x.key === key);
         if (!p) return;
         onAdd(createAgentFromPreset(p));
@@ -256,11 +260,18 @@ export default function AgentConfigDrawer({
                                 <div className="flex items-center gap-2 flex-wrap">
                                     <button
                                         onClick={() => onAdd()}
-                                        className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-dashed border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 transition-all"
+                                        disabled={atAgentLimit}
+                                        title={atAgentLimit ? `Maximum ${MAX_DEBATE_AGENTS} agents allowed` : "Add a new agent"}
+                                        className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium border border-dashed border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-agora-text-muted disabled:hover:border-agora-border"
                                     >
                                         <span className="text-base leading-none">+</span>
                                         Add Agent
                                     </button>
+                                    {atAgentLimit && (
+                                        <span className="text-[11px] text-amber-400/80 font-medium">
+                                            Maximum {MAX_DEBATE_AGENTS} agents reached
+                                        </span>
+                                    )}
                                     <div className="relative" ref={presetMenuRef}>
                                         <button
                                             type="button"
@@ -284,11 +295,17 @@ export default function AgentConfigDrawer({
                                                     <div className="px-3 pt-2 pb-1 text-[9px] uppercase tracking-widest text-indigo-400/80 font-semibold">
                                                         System Presets
                                                     </div>
+                                                    {atAgentLimit && (
+                                                        <div className="px-3 py-2 text-[11px] text-amber-400/80">
+                                                            Maximum {MAX_DEBATE_AGENTS} agents reached. Remove an agent first.
+                                                        </div>
+                                                    )}
                                                     {hasBackendSystem ? (
                                                         systemPresets.map((p) => (
                                                             <button
                                                                 key={p.id}
                                                                 onClick={() => addAgentFromBackendPreset(p)}
+                                                                disabled={atAgentLimit}
                                                                 className="w-full text-left px-3 py-2 hover:bg-agora-surface-light/50 transition-colors flex items-start gap-2"
                                                             >
                                                                 <div className="flex-1 min-w-0">

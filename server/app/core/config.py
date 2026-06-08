@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_CONCURRENT_AGENT_CALLS: int = 3
 
+    # ── Debate limits ─────────────────────────────────────────────────────
+    # Maximum number of agents allowed in a single debate.
+    # Enforced at the API (422) and service level.
+    MAX_DEBATE_AGENTS: int = 4
+
     # ── Dedicated Moderator (Final Synthesis Verdict) ─────────────────────
     # These settings are used exclusively by _generate_synthesis_verdict.
     # Normal debate agent rounds are not affected.
@@ -45,6 +50,23 @@ class Settings(BaseSettings):
     MODERATOR_MODEL: str = "anthropic/claude-sonnet-4-6"
     MODERATOR_TEMPERATURE: float = 0.2
     MODERATOR_MAX_TOKENS: int = 2000
+
+    # ── Topic Guard (pre-debate validation) ───────────────────────────────────
+    # Stage-2 LLM classifier runs only when Stage-1 (deterministic) passes.
+    # Set TOPIC_GUARD_ENABLED=false to bypass LLM classification entirely
+    # (Stage-1 deterministic checks still run).
+    TOPIC_GUARD_ENABLED: bool = True
+    # Cheap/fast model used exclusively for the pre-screening classifier.
+    # Does NOT affect debate agent models or the moderator.
+    TOPIC_GUARD_MODEL: str = "google/gemini-flash-1.5"
+    TOPIC_GUARD_MAX_TOKENS: int = 300
+    # Hard timeout (seconds) for the LLM classifier call.
+    # If the call times out the topic is passed through (fail-open).
+    TOPIC_GUARD_TIMEOUT_S: float = 4.0
+    # TTL (seconds) for the in-memory validation-result cache.
+    TOPIC_GUARD_CACHE_TTL_S: int = 3600
+    # Minimum LLM confidence to accept debate_ready; below this → needs_clarification.
+    TOPIC_GUARD_MIN_CONFIDENCE: float = 0.75
 
     # ── LLM API keys (optional — server starts without them, falls back to mock)
     GROQ_API_KEY: str | None = None

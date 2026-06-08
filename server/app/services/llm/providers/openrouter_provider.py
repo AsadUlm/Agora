@@ -14,6 +14,7 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError
 
 from app.schemas.contracts import LLMRequest, LLMResponse
 from app.services.llm.exceptions import LLMGenerationError
+from app.services.llm.provider_error_classifier import classify_provider_error
 from app.services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
@@ -86,15 +87,27 @@ class OpenRouterProvider(LLMService):
                 max_tokens=max_tokens,
             )
         except APITimeoutError as exc:
-            raise LLMGenerationError(f"OpenRouter API timeout: {exc}") from exc
+            safe = classify_provider_error(exc, provider="openrouter", model=model)
+            err = LLMGenerationError(f"OpenRouter API timeout: {exc}")
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
         except APIStatusError as exc:
-            raise LLMGenerationError(
+            safe = classify_provider_error(
+                exc,
+                provider="openrouter",
+                model=model,
+                status_code=exc.status_code,
+            )
+            err = LLMGenerationError(
                 f"OpenRouter API error {exc.status_code}: {exc.message}"
-            ) from exc
+            )
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
         except Exception as exc:
-            raise LLMGenerationError(
-                f"OpenRouter unexpected error: {exc}"
-            ) from exc
+            safe = classify_provider_error(exc, provider="openrouter", model=model)
+            err = LLMGenerationError(f"OpenRouter unexpected error: {exc}")
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
 
         latency_ms = int((time.monotonic() - t_start) * 1000)
         choice = response.choices[0] if response.choices else None

@@ -355,6 +355,14 @@ _REQUIRED_FIELDS: dict[str, tuple[tuple[str, ...], ...]] = {
     "round3": (
         ("response", "conclusion", "final_position"),
     ),
+    # Follow-up response rounds use the follow-up schema produced by
+    # ``response_normalizer._normalize_followup_response`` (``answer_to_followup``
+    # / ``response`` instead of ``stance``). They MUST NOT be validated against
+    # round1's ``stance`` requirement or every follow-up answer is wrongly
+    # flagged ``missing_required_fields`` and the whole cycle fails.
+    "followup_response": (
+        ("response", "answer_to_followup", "main_argument"),
+    ),
     "synthesis_verdict": (
         ("response", "recommended_answer"),
     ),
@@ -383,6 +391,8 @@ def _required_groups_for(round_number: int, round_type: str | None) -> tuple[tup
         return _REQUIRED_FIELDS["synthesis_verdict"]
     if dispatch in ("final", "updated_synthesis") or round_number == 3:
         return _REQUIRED_FIELDS["round3"]
+    if dispatch == "followup_response":
+        return _REQUIRED_FIELDS["followup_response"]
     return _REQUIRED_FIELDS["round1"]
 
 

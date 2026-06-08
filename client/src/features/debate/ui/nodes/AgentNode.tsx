@@ -19,7 +19,7 @@ type AgentNodeData = DebateGraphNode & {
 const statusStyles: Record<string, string> = {
     hidden: "opacity-0 scale-0",
     entering: "opacity-100 border-white/40 ring-1 ring-white/10",
-    visible: "opacity-80 border-gray-600",
+    visible: "opacity-95 border-gray-500/70",
     active:
         "opacity-100 border-indigo-400 shadow-md shadow-indigo-500/30 ring-2 ring-indigo-500/20",
     completed: "opacity-100 border-emerald-500/60",
@@ -121,7 +121,7 @@ export default function AgentNode({
                 initial={{ opacity: 0, scale: 0.95, y: 8 }}
                 animate={{
                     scale: nodeStatus === "hidden" ? 0.95 : isGeneratingFocus ? 1.045 : selected ? 1.02 : 1,
-                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.26 : 1,
+                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.45 : 1,
                     y: nodeStatus === "hidden" ? 8 : 0,
                 }}
                 transition={{
@@ -205,10 +205,14 @@ export default function AgentNode({
                 )}
 
                 {nodeStatus === "failed" && (
-                    <div className="mt-2 text-[10px] text-red-200/90">
+                    <div className="mt-2 text-[10px] text-red-200/90 space-y-0.5">
                         {data.metadata?.["malformed"] ? (
                             <span className="inline-flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 font-medium text-red-100">
                                 ⚠ Malformed output
+                            </span>
+                        ) : data.metadata?.["safeError"] ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 font-medium text-red-100 leading-snug">
+                                ⚠ {String((data.metadata["safeError"] as Record<string, unknown>)["userMessage"] ?? "Response failed")}
                             </span>
                         ) : (
                             "This response failed to generate."

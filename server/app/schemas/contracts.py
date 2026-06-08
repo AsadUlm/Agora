@@ -138,6 +138,7 @@ class ExecutionEventType(str, Enum):
     agent_completed = "agent_completed"
     message_created = "message_created"
     round_completed = "round_completed"
+    round_failed = "round_failed"
     turn_completed = "turn_completed"
     turn_failed = "turn_failed"
 
