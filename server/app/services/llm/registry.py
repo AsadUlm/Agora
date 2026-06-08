@@ -40,7 +40,7 @@ class OpenRouterModel(str, Enum):
     KIMI_K2_5 = "moonshot/kimi-k2.5"
     # ── Meta (Llama) ──────────────────────────────────────────────────────
     LLAMA_3_1_8B = "meta-llama/llama-3.1-8b-instruct"
-    # ── Mistral ──────────────────────────────────────────────────────────
+
     # ── Anthropic (legacy) ────────────────────────────────────────────────
     CLAUDE_3_HAIKU = "anthropic/claude-3-haiku"
 
@@ -84,8 +84,6 @@ MODERN_OPENROUTER_MODELS: tuple[tuple[OpenRouterModel, str, int], ...] = (
     (OpenRouterModel.KIMI_K2_5, "Kimi K2.5", 262144),
     # Meta (Llama)
     (OpenRouterModel.LLAMA_3_1_8B, "Llama 3.1 8B Instruct", 131072),
-    # Mistral
-    (OpenRouterModel.MISTRAL_7B, "Mistral 7B Instruct", 32768),
     # Anthropic (legacy)
     (OpenRouterModel.CLAUDE_3_HAIKU, "Claude 3 Haiku", 200000),
 )
