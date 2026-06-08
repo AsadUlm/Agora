@@ -25,9 +25,9 @@ export function useLLMCatalog(): UseLLMCatalogResult {
         const promise = _inflight ?? (_inflight = fetchLLMProviders());
         promise
             .then((data) => {
-                _cache = data;
+                _cache = Array.isArray(data) ? data : [];
                 if (!cancelled) {
-                    setProviders(data);
+                    setProviders(_cache);
                     setLoading(false);
                 }
             })

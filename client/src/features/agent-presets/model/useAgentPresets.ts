@@ -30,7 +30,7 @@ export const useAgentPresetCache = create<PresetCacheState>((set, get) => ({
         set({ loading: true, error: null });
         try {
             const items = await listAgentPresets({});
-            set({ presets: items, loading: false, loaded: true });
+            set({ presets: Array.isArray(items) ? items : [], loading: false, loaded: true });
         } catch {
             set({ loading: false, error: "Failed to load presets" });
         }

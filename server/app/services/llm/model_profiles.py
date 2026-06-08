@@ -19,7 +19,7 @@ STABLE_STRUCTURED_MODELS: frozenset[str] = frozenset(
         "anthropic/claude-opus-4-7",
         "openai/gpt-5.5",
         "openai/gpt-5.5-pro",
-        "google/gemini-3.1-pro",
+        "google/gemini-3.1-pro-preview",
         "deepseek/deepseek-v4-pro",
     }
 )

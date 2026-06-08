@@ -293,6 +293,10 @@ async def upload_documents_batch(
                 filename=filename, error=f"Unexpected error: {exc}",
             ))
 
+    # Commit the outer transaction so the document rows are visible to
+    # the background task's separate DB session before it runs.
+    await db.commit()
+
     # Schedule background ingestion only for files whose pending rows
     # were successfully committed.
     for document_id in scheduled_ids:

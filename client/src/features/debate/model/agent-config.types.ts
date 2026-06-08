@@ -299,7 +299,7 @@ export const MODEL_OPTIONS: Record<string, string[]> = {
         "openai/gpt-4.1-mini",
         // Google
         "google/gemini-3.5-flash",
-        "google/gemini-3.1-pro",
+        "google/gemini-3.1-pro-preview",
         // xAI
         "xai/grok-4.3",
         "x-ai/grok-4",

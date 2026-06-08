@@ -126,14 +126,30 @@ class CloudinaryDocumentStorage(DocumentStorageService):
         return stored
 
     async def download_bytes(self, stored: StoredFile) -> bytes:
-        url = stored.secure_url or stored.url
-        if not url:
+        import cloudinary
+        import cloudinary.utils
+
+        if not stored.public_id:
             raise DocumentStorageError(
-                "Cloudinary stored file has no secure_url to download from."
+                "Cloudinary stored file has no public_id to download from."
+            )
+        resource_type = stored.resource_type or self._resource_type
+        # Generate a short-lived signed URL so private/authenticated assets
+        # can be downloaded without a 401.
+        signed_url, _ = await asyncio.to_thread(
+            cloudinary.utils.cloudinary_url,
+            stored.public_id,
+            resource_type=resource_type,
+            sign_url=True,
+            expires_at=int(__import__("time").time()) + 300,
+        )
+        if not signed_url:
+            raise DocumentStorageError(
+                "Cloudinary could not generate a signed URL for download."
             )
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(signed_url)
                 resp.raise_for_status()
                 return resp.content
         except httpx.HTTPError as exc:

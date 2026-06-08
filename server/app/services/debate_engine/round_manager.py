@@ -2341,17 +2341,21 @@ class RoundManager:
 
                 # (3) Give up: mark the node as failed so malformed content is
                 # neither displayed nor used as evidence in later rounds.
-                if structured_reasons:
+                # Exception: if the only reason is json_parse_failed_used_text_fallback
+                # (i.e. content was recovered via fallback), don't fail the agent —
+                # the text fallback is good enough to continue.
+                hard_failures = [
+                    r for r in structured_reasons
+                    if r != "json_parse_failed_used_text_fallback"
+                ]
+                if hard_failures:
                     # Classify the failure code based on the specific reasons.
-                    # json_parse_failed / empty_response  → MODEL_INVALID_JSON or MODEL_EMPTY_RESPONSE.
-                    # Everything else (missing fields, placeholder, too short) → STRUCTURED_VALIDATION_FAILED.
                     if "empty_response" in structured_reasons:
                         _struct_code = MODEL_EMPTY_RESPONSE
                     elif "json_parse_failed_used_text_fallback" in structured_reasons:
                         _struct_code = MODEL_INVALID_JSON
                     else:
                         _struct_code = STRUCTURED_VALIDATION_FAILED
-
                     logger.warning(
                         "STRUCTURED_GUARD_FAILED agent=%s round=%d reasons=%s code=%s — marking node failed.",
                         agent_ctx.agent_id,
@@ -2378,6 +2382,13 @@ class RoundManager:
                             if round_record.round_type is not None
                             else None
                         ),
+                    )
+                elif structured_reasons:
+                    logger.warning(
+                        "STRUCTURED_GUARD soft fail agent=%s round=%d reasons=%s — using text fallback.",
+                        agent_ctx.agent_id,
+                        round_record.round_number,
+                        structured_reasons,
                     )
 
             structured = normalized.payload
