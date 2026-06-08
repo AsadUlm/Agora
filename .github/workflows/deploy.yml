@@ -14,10 +14,11 @@ env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   CLOUD_RUN_SERVICE: agora-service
   CLOUD_RUN_REGION: asia-northeast3
+  MIGRATION_JOB: agora-migrate
 
 jobs:
   deploy:
-    name: Build, push, and deploy
+    name: Build, migrate, and deploy
     runs-on: ubuntu-latest
 
     steps:
@@ -50,6 +51,20 @@ jobs:
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Update migration job image
+        run: |
+          gcloud run jobs update "$MIGRATION_JOB" \
+            --image="docker.io/$DOCKER_USERNAME/$IMAGE_NAME:$IMAGE_TAG" \
+            --region="$CLOUD_RUN_REGION" \
+            --project="$GCP_PROJECT_ID"
+
+      - name: Run database migrations
+        run: |
+          gcloud run jobs execute "$MIGRATION_JOB" \
+            --region="$CLOUD_RUN_REGION" \
+            --project="$GCP_PROJECT_ID" \
+            --wait
 
       - name: Deploy to Cloud Run
         run: |
