@@ -10,6 +10,7 @@ import {
     resumeDebate,
     getStepState,
     nextStep as nextStepApi,
+    postFollowUp,
     startDebate as startDebateApi,
     switchToAutoRun as switchToAutoRunApi,
 } from "../api/debate.api";
@@ -20,6 +21,33 @@ import { usePlaybackStore } from "./playback.store";
 import { useAnimationStore } from "./animation/animation.store";
 import { formatRound1Summary, formatRound2Summary, getTurnSummary, normalizeSummary } from "./formatters";
 import { shouldSkipGraphInference } from "./error-normalizer";
+
+/**
+ * Extract a human-readable message from an API error, preferring the backend's
+ * FastAPI ``detail`` field (e.g. the 409 "A debate cycle is already in
+ * progress" message) over the generic axios "Request failed…" text.
+ */
+function extractApiErrorMessage(err: unknown, fallback: string): string {
+    const detail = (
+        err as { response?: { data?: { detail?: unknown } } }
+    )?.response?.data?.detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+    if (err instanceof Error && err.message) return err.message;
+    return fallback;
+}
+
+export interface GenerationError {
+    code: string;
+    message: string;
+    userMessage: string;
+    retryable: boolean;
+    provider?: string | null;
+    model?: string | null;
+    statusCode?: number | null;
+    roundNumber?: number | null;
+    roundType?: string | null;
+    timestamp?: string;
+}
 
 interface PendingStepInfo {
     round_number: number;
@@ -46,7 +74,14 @@ interface DebateStore {
     turnStatus: string | null;
     currentRound: number;
     loading: boolean;
+    /** Load error — set when the debate cannot be loaded at all (404, 500, network). */
     error: string | null;
+    /**
+     * Generation error — set when the debate loaded but generation failed.
+     * This does NOT trigger a full-page error; the debate page stays loaded
+     * and shows a controlled error banner/panel instead.
+     */
+    generationError: GenerationError | null;
     wsConnected: boolean;
     executionMode: "auto" | "manual";
     currentlyGenerating: PendingStepInfo | null;
@@ -67,6 +102,15 @@ interface DebateStore {
     renderedNodeCount: number;
     renderedEdgeCount: number;
     lastWsEventType: string | null;
+    /**
+     * FIX-12: Whether retrieval-augmented generation is active for the
+     * current turn. ``null`` means the backend has not yet reported, ``false``
+     * is a normal state (reasoning-only mode) — never an error.
+     */
+    ragActive: boolean | null;
+    documentCount: number;
+    /** Position-index → color key, set when a debate is started from the form. */
+    agentColorsByPosition: Record<number, string>;
 
     startDebate: (
         question: string,
@@ -78,8 +122,12 @@ interface DebateStore {
     handleWsEvent: (event: WsEvent) => void;
     requestNextStep: () => Promise<void>;
     enableAutoRun: () => Promise<void>;
+    submitFollowUp: (question: string) => Promise<void>;
     syncStepState: () => Promise<void>;
     reset: () => void;
+
+    /** Store agent colors by position (frontend-only, set from AgentConfig before start). */
+    setAgentColors: (colors: Record<number, string>) => void;
 
     /** Toggle visual reveal mode (frontend only). */
     setPlaybackMode: (mode: PlaybackMode) => void;
@@ -107,6 +155,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
     currentRound: 0,
     loading: false,
     error: null,
+    generationError: null,
     wsConnected: false,
     executionMode: "auto",
     currentlyGenerating: null,
@@ -124,6 +173,9 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
     renderedNodeCount: 0,
     renderedEdgeCount: 0,
     lastWsEventType: null,
+    ragActive: null,
+    documentCount: 0,
+    agentColorsByPosition: {},
 
     startDebate: async (question, agents, executionMode = "auto", options) => {
         set({ loading: true, error: null, executionMode });
@@ -183,7 +235,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         const previousDebateId = get().debateId;
         const previousTurnId = get().turnId;
         if (!silent) {
-            set({ loading: true, error: null });
+            set({ loading: true, error: null, generationError: null });
         }
 
         try {
@@ -276,12 +328,19 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 }
             }
         } catch (err) {
-            const msg =
-                err instanceof Error ? err.message : "Failed to load debate";
+            // This is a LOAD error (network, 404, 500) — not a generation error.
+            // Only set the full-page `error` when loading itself fails.
+            const status = (err as { response?: { status?: number } })?.response?.status;
+            const isNotFound = status === 404;
+            const msg = isNotFound
+                ? "Debate not found."
+                : err instanceof Error ? err.message : "Failed to load debate";
             if (!silent) {
                 set({ error: msg, loading: false });
             } else {
-                console.warn("[Agora] Silent debate refresh failed:", msg);
+                if (import.meta.env.DEV) {
+                    console.warn("[Agora] Silent debate refresh failed:", msg);
+                }
             }
         }
     },
@@ -314,47 +373,141 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         }
 
         switch (event.type) {
-            case "turn_started":
-                set({ turnStatus: "running" });
+            case "turn_started": {
+                // FIX-12: hydrate RAG mode flags from the backend so the UI
+                // can render a neutral indicator. Reasoning-only is normal.
+                const payload = event.payload ?? {};
+                const ragActive = typeof payload.rag_active === "boolean"
+                    ? payload.rag_active
+                    : null;
+                const documentCount = typeof payload.document_count === "number"
+                    ? payload.document_count
+                    : 0;
+                set({
+                    turnStatus: "running",
+                    ragActive,
+                    documentCount,
+                    // Clear any previous generation error when a new turn starts
+                    generationError: null,
+                    stepBusy: false,
+                    currentlyGenerating: null,
+                    pendingStep: null,
+                });
                 break;
+            }
 
             case "round_started":
+                // Stale event protection: if the turn is already completed, a stale
+                // round_started from the same turn must not regress state to running.
+                if (state.turnStatus === "completed" || state.turnStatus === "failed") {
+                    if (import.meta.env.DEV) {
+                        console.debug("[Debate UI] Ignoring stale round_started after terminal state", {
+                            turnStatus: state.turnStatus,
+                            roundNumber: event.round_number,
+                        });
+                    }
+                    break;
+                }
                 set({ currentRound: event.round_number ?? state.currentRound });
                 usePlaybackStore
                     .getState()
                     .setCurrentRound(event.round_number ?? state.currentRound);
+                // Follow-up cycles (rounds > 3): refresh canonical session so
+                // the mapper can lay out the new cycle's nodes.
+                if ((event.round_number ?? 0) > 3 && state.debateId) {
+                    void get().loadDebate(state.debateId, { silent: true });
+                }
                 break;
 
             case "turn_completed":
-                set({ turnStatus: "completed" });
+                set({
+                    turnStatus: "completed",
+                    stepBusy: false,
+                    currentlyGenerating: null,
+                    pendingStep: null,
+                });
                 // Reload full session once to capture final summary/synthesis.
                 if (state.debateId) {
                     getDebateDetail(state.debateId).then((session) => {
                         const turn = session.latest_turn;
+                        // Never regress from "completed" to "running" via a stale API response.
+                        // The turn_completed WS event is the authoritative completion signal;
+                        // the REST snapshot may lag behind by a few milliseconds.
+                        const safeTurnStatus =
+                            turn?.status === "running" || turn?.status === "queued"
+                                ? "completed"
+                                : (turn?.status ?? "completed");
                         set({
                             session,
                             agents: session.agents ?? [],
-                            turnStatus: turn?.status ?? "completed",
+                            turnStatus: safeTurnStatus,
                             currentRound: 3,
+                            stepBusy: false,
+                            currentlyGenerating: null,
+                            pendingStep: null,
                         });
                         useGraphStore.getState().mergeFromSession(session);
                         useModeratorStore.getState().updateFromSession(session, 3);
+                        if (import.meta.env.DEV) {
+                            console.debug("[Debate UI] turn completed", {
+                                debateId: state.debateId,
+                                turnId: turn?.id,
+                                fetchedStatus: turn?.status,
+                                appliedStatus: safeTurnStatus,
+                            });
+                        }
+                    }).catch(() => {
+                        // API refresh failed — keep the completed state we already set
                     });
                 }
                 break;
 
-            case "turn_failed":
+            case "turn_failed": {
+                // Build a safe generation error — never use raw error string for full-page crash.
+                // The debate page must remain loaded; we show a controlled banner instead.
+                const p = event.payload ?? {};
+                const safeErrorPayload = p["safe_error"] as Record<string, unknown> | undefined;
+                const generationErr: GenerationError = safeErrorPayload
+                    ? {
+                        code: String(safeErrorPayload["code"] ?? "UNKNOWN_ERROR"),
+                        message: String(safeErrorPayload["message"] ?? "Debate generation failed"),
+                        userMessage: String(
+                            safeErrorPayload["user_message"] ??
+                            "The debate generation failed. Please check your API key and retry."
+                        ),
+                        retryable: Boolean(safeErrorPayload["retryable"] ?? true),
+                        provider: (safeErrorPayload["provider"] as string) ?? null,
+                        model: (safeErrorPayload["model"] as string) ?? null,
+                        statusCode: (safeErrorPayload["status_code"] as number) ?? null,
+                        roundNumber: (safeErrorPayload["round_number"] as number) ?? null,
+                        roundType: (safeErrorPayload["round_type"] as string) ?? null,
+                        timestamp: (safeErrorPayload["timestamp"] as string) ?? undefined,
+                    }
+                    : {
+                        code: "UNKNOWN_ERROR",
+                        message: typeof p["error"] === "string"
+                            ? (p["error"] as string)
+                            : "Debate generation failed",
+                        userMessage: "The debate generation failed. Please check your API key or model selection and retry.",
+                        retryable: true,
+                    };
                 set({
                     turnStatus: "failed",
                     currentlyGenerating: null,
                     pendingStep: null,
-                    error:
-                        typeof event.payload?.["error"] === "string"
-                            ? (event.payload["error"] as string)
-                            : "Debate execution failed",
+                    // CRITICAL: set generationError, NOT error, so the debate page stays loaded.
+                    generationError: generationErr,
                 });
                 useGraphStore.getState().markRunningNodesFailed();
+                if (import.meta.env.DEV) {
+                    console.debug("[Debate UI] turn_failed", {
+                        debateId: event.session_id,
+                        code: generationErr.code,
+                        retryable: generationErr.retryable,
+                    });
+                }
                 break;
+            }
 
             case "agent_started": {
                 // agent_started fires BEFORE the gate wait — this step is
@@ -380,6 +533,42 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 set({ currentlyGenerating: null, pendingStep: null, stepError: null });
                 break;
 
+            case "round_failed": {
+                // A round failed — keep the debate page loaded; show error in moderator/UI.
+                // generationError already gets set when turn_failed arrives; this just logs.
+                const rfPayload = event.payload ?? {};
+                const rfError = rfPayload["error"] as Record<string, unknown> | undefined;
+                if (import.meta.env.DEV) {
+                    console.debug("[Debate UI] round_failed", {
+                        debateId: event.session_id,
+                        roundNumber: rfPayload["round_number"],
+                        code: rfError?.["code"],
+                    });
+                }
+                // If we only have round_failed (no turn_failed yet), set generationError so
+                // the UI can show an informational banner even before the turn resolves.
+                if (!get().generationError && rfError) {
+                    set({
+                        generationError: {
+                            code: String(rfError["code"] ?? "ROUND_ALL_AGENTS_FAILED"),
+                            message: String(rfError["message"] ?? "Round failed"),
+                            userMessage: String(
+                                rfError["user_message"] ??
+                                "A debate round failed. Please check your API key or model selection and retry."
+                            ),
+                            retryable: Boolean(rfError["retryable"] ?? true),
+                            roundNumber: typeof rfPayload["round_number"] === "number"
+                                ? (rfPayload["round_number"] as number)
+                                : null,
+                            roundType: typeof rfPayload["round_type"] === "string"
+                                ? (rfPayload["round_type"] as string)
+                                : null,
+                        },
+                    });
+                }
+                break;
+            }
+
             default:
                 break;
         }
@@ -391,6 +580,14 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             const payload = event.payload ?? {};
             const skipGraphInference = shouldSkipGraphInference(payload);
             const rn = event.round_number ?? 1;
+
+            // Follow-up cycles (rounds > 3): defer to silent loadDebate.
+            if (rn > 3) {
+                if (state.debateId) {
+                    void get().loadDebate(state.debateId, { silent: true });
+                }
+                return;
+            }
             const rawContent =
                 typeof payload["content"] === "string"
                     ? (payload["content"] as string)
@@ -404,11 +601,42 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     ? String(payload["short_summary"]).trim()
                     : "";
             const isFallbackHint = payload["is_fallback"] === true;
+            const parseStatus =
+                typeof payload["parse_status"] === "string"
+                    ? String(payload["parse_status"]).toLowerCase()
+                    : "";
+            const failureReason =
+                typeof payload["failure_reason"] === "string"
+                    ? String(payload["failure_reason"])
+                    : "";
+            // Safe error object attached by the backend for provider failures.
+            const safeErrorPayload = payload["safe_error"] as Record<string, unknown> | undefined;
+            const agentSafeError = safeErrorPayload
+                ? {
+                    code: String(safeErrorPayload["code"] ?? "UNKNOWN_ERROR"),
+                    userMessage: String(
+                        safeErrorPayload["user_message"] ??
+                        "This agent failed to generate a response."
+                    ),
+                    retryable: Boolean(safeErrorPayload["retryable"] ?? true),
+                    provider: (safeErrorPayload["provider"] as string | null) ?? null,
+                    model: (safeErrorPayload["model"] as string | null) ?? null,
+                }
+                : null;
             const generationStatus =
                 typeof payload["generation_status"] === "string"
                     ? String(payload["generation_status"]).toLowerCase()
                     : "success";
-            const failed = generationStatus === "failed" || skipGraphInference;
+            // Phase 6: a fallback / fallback-parse payload is malformed output
+            // and must be shown as a failed node, never as valid debate content.
+            const malformed = isFallbackHint || parseStatus === "fallback";
+            const failed =
+                generationStatus === "failed" || malformed || skipGraphInference;
+            const failMessage = agentSafeError?.userMessage
+                ?? (malformed
+                    ? "This model returned malformed output. Please retry this agent or choose a more stable model."
+                    : "This agent response failed to generate.");
+
             const agentObj = state.agents.find(
                 (a) => a.id === event.agent_id,
             );
@@ -449,7 +677,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 });
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
-                        ? "This agent response failed to generate."
+                        ? failMessage
                         : normalizeSummary(
                             shortSummaryHint || formatRound1Summary(rawContent),
                             safeContent || rawContent || "Initial position prepared.",
@@ -459,9 +687,18 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     metadata: {
                         loading: false,
                         failed,
+                        malformed,
+                        failureReason,
+                        safeError: agentSafeError,
                         isFallback: isFallbackHint,
                         rawOutput: rawContent,
                         displayContent: safeContent,
+                        // RAG visibility: forward the optional retrieval blob
+                        // attached by the backend so the UI can render the
+                        // evidence badge and source-chunk panel.
+                        ...(payload["retrieval"] && typeof payload["retrieval"] === "object"
+                            ? { retrieval: payload["retrieval"] }
+                            : {}),
                     },
                 });
                 ensureVisible(nodeId);
@@ -517,7 +754,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 );
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
-                        ? "This agent response failed to generate."
+                        ? failMessage
                         : normalizeSummary(
                             shortSummaryHint || formatRound2Summary(
                                 rawContent,
@@ -531,9 +768,15 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     metadata: {
                         loading: false,
                         failed,
+                        malformed,
+                        failureReason,
+                        safeError: agentSafeError,
                         isFallback: isFallbackHint,
                         rawOutput: rawContent,
                         displayContent: safeContent,
+                        ...(payload["retrieval"] && typeof payload["retrieval"] === "object"
+                            ? { retrieval: payload["retrieval"] }
+                            : {}),
                     },
                 });
                 ensureVisible(nodeId);
@@ -552,7 +795,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 });
                 graphStore.updateNodeData(nodeId, {
                     summary: failed
-                        ? "This agent response failed to generate."
+                        ? failMessage
                         : normalizeSummary(
                             shortSummaryHint || getTurnSummary({
                                 raw: rawContent,
@@ -566,9 +809,15 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     metadata: {
                         loading: false,
                         failed,
+                        malformed,
+                        failureReason,
+                        safeError: agentSafeError,
                         isFallback: isFallbackHint,
                         rawOutput: rawContent,
                         displayContent: safeContent,
+                        ...(payload["retrieval"] && typeof payload["retrieval"] === "object"
+                            ? { retrieval: payload["retrieval"] }
+                            : {}),
                     },
                 });
                 ensureVisible(nodeId);
@@ -677,6 +926,54 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         } catch (err) {
             const msg = err instanceof Error ? err.message : "Failed to enable auto run";
             set({ error: msg });
+        }
+    },
+
+    submitFollowUp: async (question: string) => {
+        const { debateId, turnId, turnStatus } = get();
+        if (!debateId || !turnId) return;
+        const trimmed = question.trim();
+        if (!trimmed) return;
+        if (turnStatus !== "completed") return;
+        if (import.meta.env.DEV) {
+            console.debug("[FollowUp UI] submitting", {
+                debateId,
+                turnId,
+                questionLength: trimmed.length,
+            });
+        }
+        set({ stepBusy: true, stepError: null });
+        try {
+            const res = await postFollowUp(debateId, trimmed);
+            if (import.meta.env.DEV) {
+                console.debug("[FollowUp UI] response received", {
+                    hasData: Boolean(res),
+                    followUpId: res?.follow_up_id,
+                    cycleNumber: res?.cycle_number,
+                    status: res?.status,
+                });
+            }
+            // Re-attach WS to the same turn (it was closed when turn completed)
+            debateWs.disconnect();
+            debateWs.connect(res.turn_id);
+            debateWs.subscribe(get().handleWsEvent);
+            set({
+                turnStatus: "queued",
+                wsConnected: true,
+                playbackMode: "auto",
+                openedAsCompleted: false,
+                staleQueuedPolls: 0,
+            });
+            // Refresh detail in background to pull new follow-up record
+            void get().loadDebate(debateId, { silent: true });
+        } catch (err) {
+            const msg = extractApiErrorMessage(err, "Failed to start follow-up");
+            if (import.meta.env.DEV) {
+                console.error("[FollowUp UI] failed", err);
+            }
+            set({ stepError: msg });
+        } finally {
+            set({ stepBusy: false });
         }
     },
 
@@ -880,6 +1177,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             currentRound: 0,
             loading: false,
             error: null,
+            generationError: null,
             wsConnected: false,
             executionMode: "auto",
             currentlyGenerating: null,
@@ -897,12 +1195,17 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             renderedNodeCount: 0,
             renderedEdgeCount: 0,
             lastWsEventType: null,
+            ragActive: null,
+            documentCount: 0,
+            agentColorsByPosition: {},
         });
         useGraphStore.getState().reset();
         useModeratorStore.getState().reset();
         usePlaybackStore.getState().reset();
         useAnimationStore.getState().reset();
     },
+
+    setAgentColors: (colors) => set({ agentColorsByPosition: colors }),
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────

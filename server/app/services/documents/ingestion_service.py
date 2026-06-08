@@ -2,7 +2,8 @@
 Document Ingestion Service — orchestrates the full RAG ingestion pipeline.
 
 Pipeline per uploaded file:
-  1. Save raw bytes to local filesystem (UPLOAD_DIR / {document_id}{ext})
+  1. Persist raw bytes via the configured DocumentStorageService
+     (local disk or Cloudinary).
   2. Update Document.status = processing
   3. Extract text  (extractor.py)
   4. Chunk text    (chunker.py)
@@ -10,20 +11,25 @@ Pipeline per uploaded file:
   6. Persist DocumentChunk rows with embeddings
   7. Update Document.status = ready (or failed on any error)
 
-The service is async throughout and uses the provided AsyncSession directly —
-no background tasks added here; callers decide whether to run inline or as a
-background task (the route does inline for small files; it's fast enough).
+If extraction/embedding fails after a successful storage upload, the file is
+removed from storage to avoid orphan blobs (Step 30).
 
-Ownership:
-  Documents are always tied to a ChatSession (chat_session_id).  The session
-  belongs to a user, so selecting Document WHERE chat_session.user_id = current_user
-  enforces ownership without adding a redundant user_id FK to documents.
+Step 45 — Background ingestion
+─────────────────────────────
+The pipeline is now split into two phases so HTTP responses stay fast:
 
-Failure handling:
-  - UnsupportedFileType   → Document.status = failed, error stored, re-raised
-  - ExtractionError       → same
-  - EmbeddingError        → chunks saved without embedding (partial), status = failed
-  - Empty text            → status = failed, re-raised
+  * ``create_pending(...)`` — synchronous, request-scoped. Validates the
+    file, creates the Document row, uploads bytes to storage, sets
+    ``status=processing``. Returns immediately.
+  * ``process_in_background(session_factory, document_id)`` — runs after
+    the HTTP response, in its own fresh DB session. Reloads the Document,
+    skips work if the document was deleted or already in a terminal state,
+    clears any half-written chunks (idempotency on retry), then runs
+    extract → chunk → embed → knowledge → ``status=ready/failed``.
+
+The legacy ``ingest(...)`` method is preserved for tests and any caller
+that wants synchronous behaviour — it now simply calls both phases on the
+same request session.
 """
 
 from __future__ import annotations
@@ -31,12 +37,10 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.config import settings
 from app.models.document import Document, DocumentStatus
 from app.models.document_chunk import DocumentChunk
 from app.services.documents.extractor import (
@@ -47,6 +51,13 @@ from app.services.documents.extractor import (
 )
 from app.services.documents.chunker import chunk_text
 from app.services.embeddings.embedding_service import get_embedding_service
+from app.services.knowledge import KnowledgeExtractionService
+from app.services.storage import (
+    DocumentStorageError,
+    DocumentStorageService,
+    StoredFile,
+    get_storage_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +73,165 @@ class DocumentIngestionService:
     Instantiated per request (stateless — holds no mutable state).
     """
 
-    # ── Upload helpers ─────────────────────────────────────────────────────────
+    def __init__(
+        self,
+        storage: DocumentStorageService | None = None,
+        knowledge: KnowledgeExtractionService | None = None,
+    ) -> None:
+        self._storage = storage or get_storage_service()
+        # Step 31: knowledge extractor is optional and best-effort. ``None`` ⇒
+        # auto-construct on first use; pass an explicit instance in tests to
+        # avoid any LLM call. Failures NEVER block the document from going ready.
+        self._knowledge = knowledge
 
-    @staticmethod
-    def _upload_path(document_id: uuid.UUID, ext: str) -> Path:
-        upload_dir = Path(settings.UPLOAD_DIR)
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        return upload_dir / f"{document_id}{ext}"
+    # ── Phase A: synchronous, request-scoped ──────────────────────────────────
 
-    # ── Main entry point ───────────────────────────────────────────────────────
+    async def create_pending(
+        self,
+        db: AsyncSession,
+        session_id: uuid.UUID,
+        filename: str,
+        file_bytes: bytes,
+        content_type: str | None = None,
+    ) -> Document:
+        """Create the Document row, upload to storage, mark ``processing``.
+
+        Returns immediately after the storage upload. The actual text
+        extraction / chunking / embedding must be scheduled separately
+        via :meth:`process_in_background`.
+
+        Raises:
+            DocumentIngestionError on unsupported type or storage failure.
+        """
+        ext = extension_from_filename(filename)
+        if ext not in supported_extensions():
+            raise DocumentIngestionError(
+                f"Unsupported file type '{ext}'. "
+                f"Supported: {', '.join(sorted(supported_extensions()))}"
+            )
+
+        doc = Document(
+            chat_session_id=session_id,
+            filename=filename,
+            file_path=None,
+            source_type=ext.lstrip("."),
+            status=DocumentStatus.uploaded,
+            storage_provider=self._storage.provider_name,
+            original_filename=filename,
+            content_type=content_type,
+        )
+        db.add(doc)
+        await db.flush()  # generates doc.id
+
+        logger.info(
+            "document_upload_start session=%s document=%s filename=%s size=%d",
+            session_id, doc.id, filename, len(file_bytes),
+        )
+        try:
+            stored = await self._storage.upload_bytes(
+                content=file_bytes,
+                document_id=doc.id,
+                session_id=session_id,
+                filename=filename,
+                content_type=content_type,
+            )
+        except DocumentStorageError as exc:
+            doc.status = DocumentStatus.failed
+            await db.flush()
+            raise DocumentIngestionError(f"Storage upload failed: {exc}") from exc
+
+        _apply_stored_file(doc, stored)
+        doc.status = DocumentStatus.processing
+        await db.flush()
+        return doc
+
+    # ── Phase B: background, uses its own DB session ──────────────────────────
+
+    async def process_in_background(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        document_id: uuid.UUID,
+    ) -> None:
+        """Run the heavy pipeline (extract → chunk → embed → knowledge) for
+        a previously-created Document, in a fresh DB session.
+
+        Safe to call from a FastAPI ``BackgroundTasks`` queue. Never
+        raises — every failure is logged and persisted on the Document
+        row as ``status=failed``.
+
+        Idempotency:
+          * If the Document was deleted, exits silently.
+          * If the Document is not in ``processing`` state any more
+            (``ready`` / ``failed`` / ``uploaded``), exits without work.
+          * Existing chunks for the document are wiped before re-insert
+            so a retried task never produces duplicates.
+        """
+        async with session_factory() as db:
+            try:
+                doc = await db.get(Document, document_id)
+                if doc is None:
+                    logger.info(
+                        "document_background_skip document=%s reason=deleted",
+                        document_id,
+                    )
+                    return
+                if doc.status != DocumentStatus.processing:
+                    logger.info(
+                        "document_background_skip document=%s status=%s",
+                        document_id, doc.status.value,
+                    )
+                    return
+
+                # Idempotency: clear any chunks left over from a previous
+                # failed attempt so we never accumulate duplicates.
+                await db.execute(
+                    delete(DocumentChunk).where(
+                        DocumentChunk.document_id == document_id
+                    )
+                )
+
+                # Load the raw bytes from storage so we don't rely on
+                # request-scoped buffers.
+                stored = self.stored_file_from_doc(doc)
+                file_bytes = await self._storage.download_bytes(stored)
+
+                await self._process_document(db, doc, file_bytes, doc.filename)
+                await db.commit()
+            except DocumentIngestionError as exc:
+                logger.warning(
+                    "document_background_failed document=%s reason=%s",
+                    document_id, exc,
+                )
+                await self._mark_failed(db, document_id)
+            except Exception as exc:  # noqa: BLE001 — never let bg task crash
+                logger.exception(
+                    "document_background_unexpected document=%s reason=%s",
+                    document_id, exc,
+                )
+                await self._mark_failed(db, document_id)
+
+    async def _mark_failed(
+        self,
+        db: AsyncSession,
+        document_id: uuid.UUID,
+    ) -> None:
+        """Best-effort: set status=failed in a new transaction. Swallows
+        all errors so the background task never raises."""
+        try:
+            await db.rollback()
+            doc = await db.get(Document, document_id)
+            if doc is None:
+                return
+            doc.status = DocumentStatus.failed
+            doc.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "document_background_mark_failed_failed document=%s",
+                document_id,
+            )
+
+    # ── Legacy combined entry point ──────────────────────────────────────────
 
     async def ingest(
         self,
@@ -78,52 +239,42 @@ class DocumentIngestionService:
         session_id: uuid.UUID,
         filename: str,
         file_bytes: bytes,
+        content_type: str | None = None,
     ) -> Document:
-        """
-        Run the full ingestion pipeline for one uploaded file.
+        """Run the full pipeline synchronously on the caller's DB session.
+
+        Preserved for tests and any caller that needs the legacy "block
+        until ready" behaviour. New HTTP routes should use
+        :meth:`create_pending` + :meth:`process_in_background` so the
+        response returns quickly.
 
         Returns the persisted Document record (status='ready' on success).
 
         Raises:
-            DocumentIngestionError on unsupported type, extraction fail, or empty doc.
+            DocumentIngestionError on unsupported type, extraction fail,
+            empty doc, or embedding failure.
         """
-        ext = extension_from_filename(filename)
-
-        if ext not in supported_extensions():
-            raise DocumentIngestionError(
-                f"Unsupported file type '{ext}'. "
-                f"Supported: {', '.join(sorted(supported_extensions()))}"
-            )
-
-        # ── 1. Create Document record ─────────────────────────────────────────
-        doc = Document(
-            chat_session_id=session_id,
+        doc = await self.create_pending(
+            db=db,
+            session_id=session_id,
             filename=filename,
-            file_path="",  # filled after we know the ID
-            source_type=ext.lstrip("."),
-            status=DocumentStatus.uploaded,
-        )
-        db.add(doc)
-        await db.flush()  # generates doc.id
-
-        # ── 2. Save file to disk ──────────────────────────────────────────────
-        file_path = self._upload_path(doc.id, ext)
-        file_path.write_bytes(file_bytes)
-        doc.file_path = str(file_path)
-        doc.status = DocumentStatus.processing
-        await db.flush()
-
-        logger.info(
-            "Document %s: saved %d bytes to %s",
-            doc.id, len(file_bytes), file_path,
+            file_bytes=file_bytes,
+            content_type=content_type,
         )
 
-        # ── 3–6. Extract → Chunk → Embed → Store ─────────────────────────────
         try:
             await self._process_document(db, doc, file_bytes, filename)
         except DocumentIngestionError:
             doc.status = DocumentStatus.failed
             await db.flush()
+            try:
+                stored = self.stored_file_from_doc(doc)
+                await self._storage.delete(stored)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                logger.warning(
+                    "document_upload_orphan_cleanup_failed document=%s reason=%s",
+                    doc.id, cleanup_exc,
+                )
             raise
 
         return doc
@@ -144,12 +295,17 @@ class DocumentIngestionService:
         if not text.strip():
             raise DocumentIngestionError("Document contains no extractable text.")
 
+        logger.info("document_extract_done document=%s chars=%d", doc.id, len(text))
+
         # 4. Chunk
         chunks = chunk_text(text)
         if not chunks:
             raise DocumentIngestionError("Chunking produced zero chunks.")
 
-        logger.info("Document %s: %d chunks from %d chars", doc.id, len(chunks), len(text))
+        logger.info(
+            "document_chunks_created document=%s count=%d",
+            doc.id, len(chunks),
+        )
 
         # 5. Embed (batch — one API call for all chunks)
         embedding_svc = get_embedding_service()
@@ -178,11 +334,73 @@ class DocumentIngestionService:
                 embedding=vector,
             ))
 
+        # 7. Step 31 — Knowledge intelligence layer (best-effort, never blocks).
+        await self._extract_knowledge_metadata(doc, chunks)
+
         doc.status = DocumentStatus.ready
         doc.updated_at = datetime.now(timezone.utc)
         await db.flush()
 
-        logger.info("Document %s: ingestion complete (status=ready)", doc.id)
+        logger.info(
+            "document_embedding_done document=%s chunks=%d status=ready",
+            doc.id, len(chunks),
+        )
+
+    async def _extract_knowledge_metadata(
+        self,
+        doc: Document,
+        chunks: list[str],
+    ) -> None:
+        """Run the knowledge extractor and copy results onto ``doc``.
+
+        Any failure is swallowed — knowledge metadata is augmentation, not a
+        gate. The ingestion path stays green even if the LLM is unreachable.
+        """
+        try:
+            if self._knowledge is None:
+                self._knowledge = KnowledgeExtractionService()
+
+            metadata = await self._knowledge.extract(
+                chunks,
+                filename=doc.filename,
+                source_type=doc.source_type or "",
+            )
+            doc.document_type = metadata.document_type
+            doc.document_summary = metadata.summary or None
+            doc.knowledge_metadata = metadata.to_dict()
+
+            logger.info(
+                "document_knowledge_extracted document=%s status=%s type=%s "
+                "topics=%d claims=%d",
+                doc.id,
+                metadata.extraction_status,
+                metadata.document_type,
+                len(metadata.main_topics),
+                len(metadata.key_claims),
+            )
+        except Exception as exc:  # noqa: BLE001 — knowledge is best-effort
+            logger.warning(
+                "document_knowledge_extraction_failed document=%s reason=%s",
+                doc.id, exc,
+            )
+
+    # ── Storage helpers used by routes ────────────────────────────────────────
+
+    @staticmethod
+    def stored_file_from_doc(doc: Document) -> StoredFile:
+        """Reconstruct a StoredFile handle from a persisted Document row."""
+        return StoredFile(
+            storage_provider=doc.storage_provider or "local",
+            original_filename=doc.original_filename or doc.filename,
+            public_id=doc.storage_public_id,
+            url=doc.storage_url,
+            secure_url=doc.storage_secure_url,
+            resource_type=doc.storage_resource_type,
+            format=doc.storage_format,
+            bytes=doc.storage_bytes,
+            content_type=doc.content_type,
+            local_path=doc.file_path,
+        )
 
     # ── Query helpers used by the route ───────────────────────────────────────
 
@@ -192,7 +410,7 @@ class DocumentIngestionService:
         session_id: uuid.UUID,
     ) -> list[Document]:
         """Return all documents for a given chat session, newest first."""
-        from app.models.chat_session import ChatSession  # noqa: PLC0415
+        from app.models.chat_session import ChatSession  # noqa: PLC0415, F401
         stmt = (
             select(Document)
             .where(Document.chat_session_id == session_id)
@@ -200,6 +418,22 @@ class DocumentIngestionService:
         )
         result = await db.execute(stmt)
         return list(result.scalars().all())
+
+    @staticmethod
+    async def get_all_for_user(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+    ) -> list[tuple[Document, str | None]]:
+        """Return (Document, session_title) tuples for all documents owned by user, newest first."""
+        from app.models.chat_session import ChatSession  # noqa: PLC0415
+        stmt = (
+            select(Document, ChatSession.title)
+            .join(ChatSession, Document.chat_session_id == ChatSession.id)
+            .where(ChatSession.user_id == user_id)
+            .order_by(Document.created_at.desc())
+        )
+        result = await db.execute(stmt)
+        return [(row.Document, row.title) for row in result.all()]
 
     @staticmethod
     async def get_by_id(
@@ -215,3 +449,19 @@ class DocumentIngestionService:
         )
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+
+def _apply_stored_file(doc: Document, stored: StoredFile) -> None:
+    """Copy storage metadata from a StoredFile back onto a Document row."""
+    doc.storage_provider = stored.storage_provider
+    doc.storage_public_id = stored.public_id
+    doc.storage_url = stored.url
+    doc.storage_secure_url = stored.secure_url
+    doc.storage_resource_type = stored.resource_type
+    doc.storage_format = stored.format
+    doc.storage_bytes = stored.bytes
+    doc.content_type = stored.content_type or doc.content_type
+    doc.original_filename = stored.original_filename or doc.original_filename
+    if stored.local_path:
+        doc.file_path = stored.local_path
+

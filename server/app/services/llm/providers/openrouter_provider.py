@@ -14,15 +14,17 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError
 
 from app.schemas.contracts import LLMRequest, LLMResponse
 from app.services.llm.exceptions import LLMGenerationError
+from app.services.llm.provider_error_classifier import classify_provider_error
 from app.services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# Hard safety ceiling. Mirrors `MAX_ALLOWED_TOKENS` in the round manager so
-# even ad-hoc callers cannot blow the OpenRouter credit budget.
-MAX_ALLOWED_TOKENS = 1200
+# Hard safety ceiling. Raised to 4000 to support the dedicated moderator
+# verdict call (MODERATOR_MAX_TOKENS=2000) and other high-budget rounds
+# without silent truncation.
+MAX_ALLOWED_TOKENS = 4000
 DEFAULT_MAX_TOKENS = 850
 
 
@@ -62,9 +64,10 @@ class OpenRouterProvider(LLMService):
         max_tokens = min(requested_max, MAX_ALLOWED_TOKENS)
         if request.max_tokens is not None and request.max_tokens > MAX_ALLOWED_TOKENS:
             logger.warning(
-                "OpenRouterProvider: requested max_tokens=%d exceeds ceiling, clamped to %d",
+                "OpenRouter max_tokens capped: requested=%s capped=%s model=%s",
                 request.max_tokens,
-                MAX_ALLOWED_TOKENS,
+                max_tokens,
+                model,
             )
 
         logger.debug(
@@ -84,15 +87,27 @@ class OpenRouterProvider(LLMService):
                 max_tokens=max_tokens,
             )
         except APITimeoutError as exc:
-            raise LLMGenerationError(f"OpenRouter API timeout: {exc}") from exc
+            safe = classify_provider_error(exc, provider="openrouter", model=model)
+            err = LLMGenerationError(f"OpenRouter API timeout: {exc}")
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
         except APIStatusError as exc:
-            raise LLMGenerationError(
+            safe = classify_provider_error(
+                exc,
+                provider="openrouter",
+                model=model,
+                status_code=exc.status_code,
+            )
+            err = LLMGenerationError(
                 f"OpenRouter API error {exc.status_code}: {exc.message}"
-            ) from exc
+            )
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
         except Exception as exc:
-            raise LLMGenerationError(
-                f"OpenRouter unexpected error: {exc}"
-            ) from exc
+            safe = classify_provider_error(exc, provider="openrouter", model=model)
+            err = LLMGenerationError(f"OpenRouter unexpected error: {exc}")
+            err.safe_error = safe  # type: ignore[attr-defined]
+            raise err from exc
 
         latency_ms = int((time.monotonic() - t_start) * 1000)
         choice = response.choices[0] if response.choices else None

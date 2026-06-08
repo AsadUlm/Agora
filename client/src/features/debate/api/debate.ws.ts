@@ -3,9 +3,18 @@ import type { WsEvent } from "./debate.types";
 
 type EventHandler = (event: WsEvent) => void;
 
-const WS_BASE =
-    (import.meta.env.VITE_WS_BASE_URL as string | undefined) ??
-    "ws://localhost:8000";
+// Derive WebSocket base from VITE_WS_BASE_URL when set, otherwise use same
+// origin so the production Docker image (http → ws, https → wss) works without
+// any env configuration.
+function _getWsBase(): string {
+    if (import.meta.env.VITE_WS_BASE_URL) {
+        return import.meta.env.VITE_WS_BASE_URL as string;
+    }
+    // Runtime same-origin derivation (evaluated once at module load).
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${window.location.host}`;
+}
+const WS_BASE = _getWsBase();
 
 export class DebateWebSocket {
     private ws: WebSocket | null = null;

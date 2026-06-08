@@ -1,7 +1,11 @@
+# Test documents
+test_docs/
+
 # Dependencies
 node_modules/
 client/node_modules/
 server/node_modules/
+server/uploads/
 
 # Build outputs
 dist/
@@ -33,5 +37,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
-
+KO_DEV_NOTES.md
 report
+CLAUDE.md

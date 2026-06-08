@@ -4,9 +4,12 @@ import { AnimatePresence, motion } from "motion/react";
 import type { DebateGraphNode } from "../../model/graph.types";
 import { useGraphStore } from "../../model/graph.store";
 import { truncateNodeText } from "../../model/formatters";
+import { AGENT_COLOR_PALETTE } from "../../model/agent-config.types";
+import { parseEvidenceRetrieval } from "../../model/evidence.types";
 
 type AgentNodeData = DebateGraphNode & {
     label: string;
+    agentColor?: string;
     dimmedByRound?: boolean;
     dimmedBySelection?: boolean;
     dimmedByGeneration?: boolean;
@@ -16,13 +19,20 @@ type AgentNodeData = DebateGraphNode & {
 const statusStyles: Record<string, string> = {
     hidden: "opacity-0 scale-0",
     entering: "opacity-100 border-white/40 ring-1 ring-white/10",
-    visible: "opacity-80 border-gray-600",
+    visible: "opacity-95 border-gray-500/70",
     active:
         "opacity-100 border-indigo-400 shadow-md shadow-indigo-500/30 ring-2 ring-indigo-500/20",
     completed: "opacity-100 border-emerald-500/60",
     failed: "opacity-100 border-red-500/60 ring-1 ring-red-500/20",
 };
 
+// Color gradients keyed by AGENT_COLOR_PALETTE key.
+const COLOR_GRADIENTS: Record<string, string> = {
+    ...Object.fromEntries(AGENT_COLOR_PALETTE.map((c) => [c.key, c.gradient])),
+    default: "from-slate-600/80 to-slate-800/80",
+};
+
+// Legacy role-name fallback (for old nodes that don’t have agentColor yet).
 const roleColors: Record<string, string> = {
     analyst: "from-blue-600/80 to-blue-800/80",
     critic: "from-rose-600/80 to-rose-800/80",
@@ -51,13 +61,37 @@ function getRoleEmoji(role: string | undefined): string {
     return "🤖";
 }
 
+function modelShortName(model: string): string {
+    const lower = model.toLowerCase();
+    if (lower.includes("gpt-5")) return "GPT-5";
+    if (lower.includes("gpt-4.1-mini")) return "GPT-4.1m";
+    if (lower.includes("gemini-2.5-flash")) return "Gemini";
+    if (lower.includes("claude-haiku")) return "Haiku";
+    if (lower.includes("claude-sonnet")) return "Sonnet";
+    if (lower.includes("grok-4-fast")) return "Grok fast";
+    if (lower.includes("grok-4")) return "Grok";
+    if (lower.includes("deepseek")) return "DeepSeek";
+    if (lower.includes("kimi-k2-thinking")) return "Kimi K2.5";
+    if (lower.includes("kimi-k2")) return "Kimi K2";
+    if (lower.includes("llama-4-scout")) return "L4 Scout";
+    if (lower.includes("llama-4-maverick")) return "L4 Mav";
+    if (lower.includes("llama-3.3")) return "L3.3-70B";
+    if (lower.includes("qwen")) return "Qwen3";
+    if (lower.includes("mock")) return "Mock";
+    // fallback: last segment after /
+    const parts = model.split("/");
+    return parts[parts.length - 1].slice(0, 10);
+}
+
 export default function AgentNode({
     data,
     id,
     selected,
 }: NodeProps & { data: AgentNodeData }) {
     const nodeStatus = data.status ?? "visible";
-    const gradient = getRoleGradient(data.agentRole);
+    const gradient = data.agentColor
+        ? (COLOR_GRADIENTS[data.agentColor] ?? COLOR_GRADIENTS.default)
+        : getRoleGradient(data.agentRole);
     const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
     const dimmedByFocus = focusedNodeId != null && focusedNodeId !== id;
     const dimmed = dimmedByFocus || data.dimmedByRound || data.dimmedBySelection || data.dimmedByGeneration;
@@ -73,13 +107,21 @@ export default function AgentNode({
         ? `${loadingLabel}...`
         : truncateNodeText(data.summary || data.content || data.label, maxLen) || data.label;
 
+    // Small "evidence used" hint shown when the backend attached retrieval
+    // metadata with >0 chunks. Distinct from the static `knowledge` doc-count
+    // chip: that one shows how many docs were *available*; this one shows how
+    // many were *actually used* in this response.
+    const evidence = parseEvidenceRetrieval(data.metadata);
+    const evidenceChunks = evidence?.total_chunks ?? 0;
+    const evidenceLabels = evidence?.evidence_labels ?? [];
+
     return (
         <AnimatePresence>
             <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 8 }}
                 animate={{
                     scale: nodeStatus === "hidden" ? 0.95 : isGeneratingFocus ? 1.045 : selected ? 1.02 : 1,
-                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.26 : 1,
+                    opacity: nodeStatus === "hidden" ? 0 : dimmed ? 0.45 : 1,
                     y: nodeStatus === "hidden" ? 8 : 0,
                 }}
                 transition={{
@@ -108,6 +150,11 @@ export default function AgentNode({
                     <span className="text-[10px] uppercase tracking-wider text-white/60 font-semibold">
                         {data.agentRole ?? "Agent"}
                     </span>
+                    {data.agentModel && (
+                        <span className="ml-auto text-[8px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 font-medium truncate max-w-[70px]" title={data.agentModel}>
+                            {modelShortName(data.agentModel)}
+                        </span>
+                    )}
                     {data.kind === "intermediate" && (
                         <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 font-medium">
                             R2
@@ -135,6 +182,21 @@ export default function AgentNode({
                     {displayText}
                 </div>
 
+                {evidenceChunks > 0 && (
+                    <div
+                        className="mt-1.5 inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-indigo-500/25 border border-indigo-400/40 text-indigo-100 font-medium max-w-full truncate"
+                        title={`Evidence used: ${evidenceChunks} chunk${evidenceChunks === 1 ? "" : "s"}${evidenceLabels.length ? ` · ${evidenceLabels.join(", ")}` : ""}`}
+                    >
+                        <span aria-hidden>📑</span>
+                        <span className="truncate">
+                            {evidenceLabels.length > 0
+                                ? evidenceLabels.slice(0, 3).join(", ")
+                                : `${evidenceChunks}c`}
+                            {evidenceLabels.length > 3 && ` +${evidenceLabels.length - 3}`}
+                        </span>
+                    </div>
+                )}
+
                 {isLoading && (
                     <div className="mt-2 text-[10px] text-cyan-100/90 flex items-center gap-1.5 rounded-md bg-white/10 px-2 py-1">
                         <span>{loadingLabel}</span>
@@ -143,8 +205,18 @@ export default function AgentNode({
                 )}
 
                 {nodeStatus === "failed" && (
-                    <div className="mt-2 text-[10px] text-red-200/90">
-                        This response failed to generate.
+                    <div className="mt-2 text-[10px] text-red-200/90 space-y-0.5">
+                        {data.metadata?.["malformed"] ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 font-medium text-red-100">
+                                ⚠ Malformed output
+                            </span>
+                        ) : data.metadata?.["safeError"] ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 font-medium text-red-100 leading-snug">
+                                ⚠ {String((data.metadata["safeError"] as Record<string, unknown>)["userMessage"] ?? "Response failed")}
+                            </span>
+                        ) : (
+                            "This response failed to generate."
+                        )}
                     </div>
                 )}
 

@@ -10,14 +10,32 @@ from pydantic import BaseModel
 
 
 class OpenRouterModel(str, Enum):
+    # ── Anthropic ──────────────────────────────────────────────────────────
+    CLAUDE_SONNET_4_6 = "anthropic/claude-sonnet-4-6"
     CLAUDE_SONNET_4_5 = "anthropic/claude-sonnet-4.5"
     CLAUDE_HAIKU_4_5 = "anthropic/claude-haiku-4.5"
+    CLAUDE_OPUS_4_8 = "anthropic/claude-opus-4-8"
+    CLAUDE_OPUS_4_7 = "anthropic/claude-opus-4-7"
+    # ── OpenAI ────────────────────────────────────────────────────────────
     GPT_5_5 = "openai/gpt-5.5"
+    GPT_5_5_PRO = "openai/gpt-5.5-pro"
     GPT_4_1_MINI = "openai/gpt-4.1-mini"
-    DEEPSEEK_V3_2 = "deepseek/deepseek-v3.2"
-    GROK_4_1_FAST = "x-ai/grok-4.1-fast"
+    # ── Google ────────────────────────────────────────────────────────────
+    GEMINI_3_5_FLASH = "google/gemini-3.5-flash"
+    GEMINI_3_1_PRO = "google/gemini-3.1-pro"
+    # ── xAI ───────────────────────────────────────────────────────────────
+    GROK_4_3 = "xai/grok-4.3"
     GROK_4_THINKING = "x-ai/grok-4"
-    KIMI_K2_5 = "moonshotai/kimi-k2.5"
+    # ── DeepSeek ──────────────────────────────────────────────────────────
+    DEEPSEEK_V4_FLASH = "deepseek/deepseek-v4-flash"
+    DEEPSEEK_V4_PRO = "deepseek/deepseek-v4-pro"
+    DEEPSEEK_V3_2 = "deepseek/deepseek-v3.2"
+    # ── Xiaomi MiMo ───────────────────────────────────────────────────────
+    MIMO_V2_5 = "xiaomi/mimo-v2.5"
+    MIMO_V2_5_PRO = "xiaomi/mimo-v2.5-pro"
+    # ── Moonshot (Kimi) ───────────────────────────────────────────────────
+    KIMI_K2_6 = "moonshot/kimi-k2.6"
+    KIMI_K2_5 = "moonshot/kimi-k2.5"
 
 
 class ModelPresetInfo(BaseModel):
@@ -29,26 +47,52 @@ class ModelPresetInfo(BaseModel):
 
 
 MODERN_OPENROUTER_MODELS: tuple[tuple[OpenRouterModel, str, int], ...] = (
+    # Anthropic
+    (OpenRouterModel.CLAUDE_SONNET_4_6, "Claude Sonnet 4.6", 200000),
     (OpenRouterModel.CLAUDE_SONNET_4_5, "Claude Sonnet 4.5", 200000),
     (OpenRouterModel.CLAUDE_HAIKU_4_5, "Claude Haiku 4.5", 200000),
+    (OpenRouterModel.CLAUDE_OPUS_4_8, "Claude Opus 4.8", 200000),
+    (OpenRouterModel.CLAUDE_OPUS_4_7, "Claude Opus 4.7", 200000),
+    # OpenAI
     (OpenRouterModel.GPT_5_5, "GPT-5.5", 400000),
+    (OpenRouterModel.GPT_5_5_PRO, "GPT-5.5 Pro", 400000),
     (OpenRouterModel.GPT_4_1_MINI, "GPT-4.1 Mini", 1047576),
-    (OpenRouterModel.DEEPSEEK_V3_2, "DeepSeek V3.2", 163840),
-    (OpenRouterModel.GROK_4_1_FAST, "Grok 4.1 Fast", 2000000),
+    # Google
+    (OpenRouterModel.GEMINI_3_5_FLASH, "Gemini 3.5 Flash", 1000000),
+    (OpenRouterModel.GEMINI_3_1_PRO, "Gemini 3.1 Pro", 1000000),
+    # xAI
+    (OpenRouterModel.GROK_4_3, "Grok 4.3", 256000),
     (OpenRouterModel.GROK_4_THINKING, "Grok 4 (Thinking)", 256000),
+    # DeepSeek
+    (OpenRouterModel.DEEPSEEK_V4_FLASH, "DeepSeek V4 Flash", 163840),
+    (OpenRouterModel.DEEPSEEK_V4_PRO, "DeepSeek V4 Pro", 163840),
+    (OpenRouterModel.DEEPSEEK_V3_2, "DeepSeek V3.2", 163840),
+    # Xiaomi MiMo
+    (OpenRouterModel.MIMO_V2_5, "MiMo-V2.5", 131072),
+    (OpenRouterModel.MIMO_V2_5_PRO, "MiMo-V2.5 Pro", 131072),
+    # Moonshot (Kimi)
+    (OpenRouterModel.KIMI_K2_6, "Kimi K2.6", 262144),
     (OpenRouterModel.KIMI_K2_5, "Kimi K2.5", 262144),
 )
 
+# Backward-compatibility routing for deprecated model IDs.  These IDs are no
+# longer in the active catalog but may appear in historical debate records.
+# Routing them to OpenRouter prevents replay/export from crashing.
+_DEPRECATED_MODEL_ROUTES: dict[str, str] = {
+    "x-ai/grok-4.1-fast": "openrouter",   # removed in catalog refresh
+    "moonshotai/kimi-k2.5": "openrouter",  # old provider prefix; replaced by moonshot/kimi-k2.5
+}
+
 MODEL_PROVIDER_ROUTES: dict[str, str] = {
     model.value: "openrouter" for model, _, _ in MODERN_OPENROUTER_MODELS
-}
+} | _DEPRECATED_MODEL_ROUTES
 
 MODEL_PRESETS: tuple[ModelPresetInfo, ...] = (
     ModelPresetInfo(
         id="fast",
         name="Fast",
-        model=OpenRouterModel.GROK_4_1_FAST.value,
-        temperature=0.6,
+        model=OpenRouterModel.GROK_4_3.value,
+        temperature=0.5,
     ),
     ModelPresetInfo(
         id="balanced",
@@ -61,6 +105,42 @@ MODEL_PRESETS: tuple[ModelPresetInfo, ...] = (
         name="High Quality",
         model=OpenRouterModel.GPT_5_5.value,
         temperature=0.5,
+    ),
+    ModelPresetInfo(
+        id="deep_reasoning",
+        name="Deep Reasoning",
+        model=OpenRouterModel.GROK_4_THINKING.value,
+        temperature=0.5,
+    ),
+    ModelPresetInfo(
+        id="creative",
+        name="Creative",
+        model=OpenRouterModel.GPT_5_5.value,
+        temperature=0.85,
+    ),
+    ModelPresetInfo(
+        id="cost_efficient",
+        name="Cost Efficient",
+        model=OpenRouterModel.GPT_4_1_MINI.value,
+        temperature=0.6,
+    ),
+    ModelPresetInfo(
+        id="rag_optimized",
+        name="RAG Optimized",
+        model=OpenRouterModel.CLAUDE_SONNET_4_5.value,
+        temperature=0.4,
+    ),
+    ModelPresetInfo(
+        id="strict_grounded",
+        name="Strict Grounded",
+        model=OpenRouterModel.CLAUDE_SONNET_4_5.value,
+        temperature=0.3,
+    ),
+    ModelPresetInfo(
+        id="presentation_demo",
+        name="Presentation Demo",
+        model=OpenRouterModel.CLAUDE_SONNET_4_5.value,
+        temperature=0.55,
     ),
 )
 

@@ -1,14 +1,28 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 import { useGraphStore } from "../model/graph.store";
 import { useDebateStore } from "../model/debate.store";
-import { extractFullResponse, getTurnSummary, normalizeSummary, parseResponsePayload } from "../model/formatters";
+import { getPersonaMeta } from "../model/persona-meta";
+import { extractFullResponse, getTurnSummary, parseResponsePayload, sentenceSafePreview, cleanScalarText } from "../model/formatters";
+import {
+    buildLabelToDocumentMap,
+    parseEvidenceRetrieval,
+    type EvidenceRetrievalMetadata,
+} from "../model/evidence.types";
+import EvidenceUsageBadge from "./EvidenceUsageBadge";
+import { renderTextWithCitations } from "./EvidenceCitation";
+import { cn } from "@/shared/lib/cn";
 
 const kindLabels: Record<string, string> = {
     question: "Question",
     agent: "Agent Response",
     synthesis: "Synthesis",
     intermediate: "Agent Interaction",
+    "followup-question": "Follow-up Question",
+    "followup-agent": "Follow-up Response",
+    "followup-intermediate": "Follow-up Critique",
+    "followup-synthesis": "Updated Synthesis",
 };
 
 const roundLabels: Record<number, string> = {
@@ -23,40 +37,9 @@ const roundGuidance: Record<number, string> = {
     3: "Final synthesis: the agent converges on a refined final position.",
 };
 
-interface RetrievalChunkPreview {
-    text: string;
-    score: number;
-}
-
-interface RetrievalDocumentGroup {
-    document_id: string;
-    document_name: string;
-    chunks: RetrievalChunkPreview[];
-}
-
-interface RetrievalSummary {
-    documents: RetrievalDocumentGroup[];
-    total_chunks: number;
-}
-
 interface ContentSection {
     heading: string;
     body: string;
-}
-
-function parseRetrieval(meta: unknown): RetrievalSummary | null {
-    if (!meta || typeof meta !== "object") return null;
-    const retrieval = (meta as Record<string, unknown>)["retrieval"];
-    if (!retrieval || typeof retrieval !== "object") return null;
-
-    const obj = retrieval as Record<string, unknown>;
-    const docs = obj["documents"];
-    if (!Array.isArray(docs)) return null;
-
-    return {
-        documents: docs as RetrievalDocumentGroup[],
-        total_chunks: typeof obj["total_chunks"] === "number" ? (obj["total_chunks"] as number) : 0,
-    };
 }
 
 function relationLabel(kind: string, outgoing: boolean): string {
@@ -69,10 +52,12 @@ function relationLabel(kind: string, outgoing: boolean): string {
 }
 
 function normalizeScalar(value: unknown): string {
+    // Preserve full text for detail-panel sections. We previously truncated
+    // every scalar to its first sentence (~280 chars) which compressed every
+    // analytical answer into a slogan. Detail panels must show the full
+    // structured field exactly as the model produced it.
     if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (!trimmed) return "";
-        return normalizeSummary(trimmed, trimmed, 280);
+        return cleanScalarText(value);
     }
     if (typeof value === "number" || typeof value === "boolean") return String(value);
     return "";
@@ -158,9 +143,9 @@ function buildSections(args: {
     const sections: ContentSection[] = [];
     const isRound3 = round === 3 || kind === "synthesis";
 
-    const shortSummary = firstScalar(parsed, ["short_summary", "summary"]);
+    const shortSummary = firstScalar(parsed, ["one_sentence_takeaway", "short_summary", "summary"]);
     if (shortSummary && !isRound3) {
-        pushSection(sections, "Short Summary", shortSummary);
+        pushSection(sections, "Key Takeaway", shortSummary);
     }
 
     if (round === 1) {
@@ -174,25 +159,132 @@ function buildSections(args: {
     } else if (round === 2 || kind === "intermediate") {
         pushSection(sections, "Target", firstScalar(parsed, ["target_role", "target_agent"]));
         pushSection(sections, "Challenge", firstScalar(parsed, ["challenge", "critique"]));
+        pushSection(sections, "Assumption Attacked", firstScalar(parsed, ["assumption_attacked"]));
+        pushSection(sections, "Why It Breaks", firstScalar(parsed, ["why_it_breaks"]));
+        pushSection(sections, "Real-World Implication", firstScalar(parsed, ["real_world_implication"]));
         pushSection(sections, "Weakness Found", firstScalar(parsed, ["weakness_found", "weakness"]));
         pushSection(sections, "Counterargument", firstScalar(parsed, ["counterargument", "counter_evidence"]));
     } else if (isRound3) {
+        if (shortSummary) {
+            pushSection(sections, "Key Takeaway", shortSummary);
+        }
         pushSection(sections, "Final Position / Argument", firstScalar(parsed, ["final_position", "final_stance", "response", "display_content"]));
-        pushSection(sections, "Key Insight", firstScalar(parsed, ["strongest_argument"]));
+        pushSection(sections, "Key Trade-off", firstScalar(parsed, ["key_tradeoff", "tradeoff"]));
+        pushSection(sections, "Winning Argument", firstScalar(parsed, ["winning_argument", "strongest_argument"]));
+        pushSection(sections, "Losing Argument", firstScalar(parsed, ["losing_argument"]));
+        const confidence = (firstScalar(parsed, ["confidence"]) || "").toLowerCase();
+        if (confidence) {
+            pushSection(sections, "Confidence", confidence.toUpperCase());
+        }
         pushSection(sections, "What Changed", firstScalar(parsed, ["what_changed"]));
         pushSection(sections, "Concerns", firstScalar(parsed, ["remaining_concerns"]));
         pushSection(sections, "Conclusion", firstScalar(parsed, ["conclusion", "recommendation"]));
     }
 
-    if (fullResponse && !isRound3) {
-        pushSection(sections, "Full Response", fullResponse);
+    // Follow-up cycle sections (cycle ≥ 2)
+    if (kind === "followup-agent") {
+        pushSection(sections, "Quick Takeaway", firstScalar(parsed, ["one_sentence_takeaway", "quick_takeaway", "short_summary"]));
+        pushSection(sections, "Full Answer", firstScalar(parsed, ["full_answer", "answer_to_followup", "response", "display_content"]));
+
+        // Position Change — prefer structured position_evolution
+        const evolution = (parsed?.position_evolution ?? null) as Record<string, unknown> | null;
+        if (evolution && typeof evolution === "object") {
+            const prev = firstScalar(evolution, ["previous_position"]);
+            const updated = firstScalar(evolution, ["updated_position"]);
+            // Accept both ``change_type`` (legacy) and ``change`` (Step 25 simplified).
+            const changeType = firstScalar(evolution, ["change_type", "change"]);
+            const reason = firstScalar(evolution, ["reason"]);
+            const lines: string[] = [];
+            if (changeType) lines.push(`Change: ${changeType.toUpperCase()}`);
+            if (prev) lines.push(`Previous: ${prev}`);
+            if (updated) lines.push(`Updated: ${updated}`);
+            if (reason) lines.push(`Reason: ${reason}`);
+            if (lines.length > 0) {
+                pushSection(sections, "Position Change", lines.join("\n"));
+            }
+        } else {
+            pushSection(sections, "Position Change", firstScalar(parsed, ["position_change", "position_update", "what_changed"]));
+        }
+
+        const fuKeyPoints = scalarList(parsed, ["key_points", "supporting_points"]);
+        if (fuKeyPoints.length > 0) {
+            pushSection(sections, "Key Points", `• ${fuKeyPoints.join("\n• ")}`);
+        }
+    } else if (kind === "followup-synthesis") {
+        pushSection(sections, "Quick Takeaway", firstScalar(parsed, ["one_sentence_takeaway", "quick_takeaway", "short_summary"]));
+        pushSection(sections, "Updated Conclusion", firstScalar(parsed, ["updated_conclusion", "full_answer", "response", "display_content"]));
+        const changed = (firstScalar(parsed, ["conclusion_changed"]) || "").toLowerCase();
+        if (changed) {
+            pushSection(sections, "Conclusion Changed", changed === "yes" ? "YES — the follow-up shifted the conclusion." : "NO — the conclusion holds.");
+        }
+        pushSection(sections, "Why", firstScalar(parsed, ["change_reason", "what_changed"]));
+        pushSection(sections, "Key Trade-off", firstScalar(parsed, ["key_tradeoff", "tradeoff"]));
+        pushSection(sections, "Winning Argument", firstScalar(parsed, ["winning_argument", "strongest_argument"]));
+        pushSection(sections, "Losing Argument", firstScalar(parsed, ["losing_argument"]));
+        const fuConfidence = (firstScalar(parsed, ["confidence"]) || "").toLowerCase();
+        if (fuConfidence) {
+            pushSection(sections, "Confidence", fuConfidence.toUpperCase());
+        }
+        pushSection(sections, "Strongest Argument", firstScalar(parsed, ["strongest_argument"]));
+        pushSection(sections, "Remaining Disagreement", firstScalar(parsed, ["remaining_disagreement", "remaining_concerns"]));
+    } else if (kind === "followup-intermediate") {
+        const targetKind = (firstScalar(parsed, ["target_kind"]) || "").toLowerCase();
+        const targetLabel = targetKind === "strongest_argument"
+            ? "Target (strongest argument)"
+            : targetKind === "unresolved_question"
+                ? "Target (unresolved question)"
+                : "Target";
+        pushSection(sections, targetLabel, firstScalar(parsed, ["target_agent", "target_role"]));
+        pushSection(sections, "Challenge", firstScalar(parsed, ["challenge", "critique"]));
+        pushSection(sections, "Assumption Attacked", firstScalar(parsed, ["assumption_attacked"]));
+        pushSection(sections, "Why It Breaks", firstScalar(parsed, ["why_it_breaks"]));
+        pushSection(sections, "Real-World Implication", firstScalar(parsed, ["real_world_implication"]));
+        pushSection(sections, "Counterargument", firstScalar(parsed, ["counterargument"]));
+        pushSection(sections, "Impact", firstScalar(parsed, ["impact"]));
+    } else if (kind === "followup-question") {
+        pushSection(sections, "Follow-up Question", firstScalar(parsed, ["question"]) || fullResponse);
+    }
+
+    // Always include the full analytical response in detail panels,
+    // including Round 3. Graph-card previews already use a separate
+    // sentence-safe summary, so the detail panel must never truncate.
+    if (fullResponse) {
+        pushSection(sections, isRound3 ? "Full Synthesis" : "Full Response", fullResponse);
     }
 
     if (sections.length === 0 && fullResponse) {
-        pushSection(sections, isRound3 ? "Final Position / Argument" : "Response", normalizeSummary("", fullResponse, 260));
+        pushSection(sections, isRound3 ? "Final Position / Argument" : "Response", fullResponse);
     }
 
     return mergeSections(sections);
+}
+
+function QuickTakeawayBox({ text }: { text: string }) {
+    const [open, setOpen] = useState(true);
+    const isLong = text.length > 140;
+
+    return (
+        <div className="rounded-xl border border-violet-500/25 bg-gradient-to-br from-violet-500/10 to-violet-500/5 p-4">
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] uppercase tracking-widest text-violet-300 font-semibold">Quick Takeaway</span>
+                {isLong && (
+                    <button
+                        type="button"
+                        onClick={() => setOpen((v) => !v)}
+                        className="text-[10px] text-violet-300/70 hover:text-violet-200 transition-colors"
+                    >
+                        {open ? "Show less" : "Show more"}
+                    </button>
+                )}
+            </div>
+            <p className={cn(
+                "text-[15px] text-white leading-relaxed font-medium text-justify transition-all",
+                !open && isLong ? "line-clamp-2" : "",
+            )}>
+                {text}
+            </p>
+        </div>
+    );
 }
 
 export default function NodeDetailDrawer() {
@@ -200,10 +292,13 @@ export default function NodeDetailDrawer() {
     const graph = useGraphStore((s) => s.graph);
     const selectNode = useGraphStore((s) => s.selectNode);
     const debateQuestion = useDebateStore((s) => s.session?.question ?? "");
+    const agents = useDebateStore((s) => s.agents);
 
     const node = selectedNodeId
         ? graph.nodes.find((n) => n.id === selectedNodeId)
         : null;
+
+    const agent = node?.agentId ? agents.find((a) => a.id === node.agentId) : null;
 
     const relatedEdges = selectedNodeId
         ? graph.edges.filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
@@ -216,12 +311,39 @@ export default function NodeDetailDrawer() {
 
     const quickTakeaway = useMemo(() => {
         if (!node) return "";
+        const raw = node.summary || node.content;
+        const trimmed = (raw ?? "").trimStart();
+        // Plain-text payload — return a sentence-safe preview, never a
+        // mid-word slice (which produced '... but they sho' truncations).
+        if (!trimmed.startsWith("{")) {
+            return sentenceSafePreview(trimmed, 220);
+        }
+        try {
+            const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+            // Prefer a dedicated takeaway field. These are already short.
+            for (const key of ["one_sentence_takeaway", "quick_takeaway", "short_summary", "summary"]) {
+                const val = parsed[key];
+                if (typeof val === "string" && val.trim()) {
+                    return sentenceSafePreview(val, 240);
+                }
+            }
+            // Otherwise derive a sentence-safe preview from a position-like
+            // field — never slice mid-word.
+            for (const key of ["final_position", "final_stance", "stance", "conclusion"]) {
+                const val = parsed[key];
+                if (typeof val === "string" && val.trim()) {
+                    return sentenceSafePreview(val, 220);
+                }
+            }
+        } catch {
+            // not valid JSON, fall through
+        }
         return getTurnSummary({
-            raw: node.summary || node.content,
+            raw,
             round: node.round,
             kind: node.kind,
             sourceRole: node.agentRole,
-            maxLen: 180,
+            maxLen: 220,
         });
     }, [node]);
 
@@ -245,62 +367,128 @@ export default function NodeDetailDrawer() {
         });
     }, [node, isLoading, parsedPayload, fullResponse]);
 
-    const retrieval = useMemo(() => parseRetrieval(node?.metadata), [node]);
+    const retrieval = useMemo<EvidenceRetrievalMetadata | null>(
+        () => parseEvidenceRetrieval(node?.metadata),
+        [node],
+    );
+    const knownLabels = useMemo<ReadonlySet<string>>(
+        () => new Set(retrieval?.evidence_labels ?? []),
+        [retrieval],
+    );
+    const labelToDocument = useMemo(
+        () => buildLabelToDocumentMap(retrieval),
+        [retrieval],
+    );
+
+    const isMobile = useIsMobile();
 
     return (
         <AnimatePresence>
             {node && (
+                <>
+                    {/* Mobile backdrop — tap to close */}
+                    {isMobile && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="absolute inset-0 bg-black/40 z-40"
+                            onClick={() => selectNode(null)}
+                        />
+                    )}
                 <motion.aside
-                    initial={{ x: 420, opacity: 0 }}
-                    animate={{ x: 0, opacity: 1 }}
-                    exit={{ x: 420, opacity: 0 }}
+                    initial={isMobile ? { y: "100%", opacity: 0 } : { x: "100%", opacity: 0 }}
+                    animate={isMobile ? { y: 0, opacity: 1 } : { x: 0, opacity: 1 }}
+                    exit={isMobile ? { y: "100%", opacity: 0 } : { x: "100%", opacity: 0 }}
                     transition={{ type: "spring", stiffness: 300, damping: 34 }}
-                    className="absolute top-0 right-0 h-full w-[460px] max-w-[94vw] bg-agora-surface border-l border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col"
+                    className={
+                        isMobile
+                            ? "absolute bottom-0 left-0 right-0 h-[88dvh] rounded-t-2xl bg-agora-surface border-t border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col"
+                            : "absolute top-0 right-0 h-full bg-agora-surface border-l border-agora-border shadow-2xl shadow-black/50 z-50 flex flex-col"
+                    }
+                    style={isMobile ? {} : { width: "clamp(320px, 34vw, 520px)" }}
                 >
-                    <div className="px-5 py-4 border-b border-agora-border flex items-start justify-between gap-3">
-                        <div className="space-y-1">
+                    {/* Drag handle — mobile only */}
+                    {isMobile && (
+                        <div className="pt-3 pb-1 flex justify-center shrink-0">
+                            <div className="w-10 h-1 rounded-full bg-agora-border/60" />
+                        </div>
+                    )}
+                    <div className="px-4 sm:px-5 py-4 border-b border-agora-border flex items-start justify-between gap-3">
+                        <div className="space-y-1 min-w-0">
                             <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
                                 {kindLabels[node.kind] ?? node.kind}
                             </div>
-                            <div className="text-base font-semibold text-white leading-tight">
+                            <div className="text-base font-semibold text-white leading-tight truncate">
                                 {node.agentRole || node.label}
                             </div>
+                            {(agent || node.agentRole) && (() => {
+                                const persona = getPersonaMeta(node.agentRole);
+                                return (
+                                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                        {persona && (
+                                            <span
+                                                className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${persona.accentChip} ${persona.accentText}`}
+                                                title="Persona archetype"
+                                            >
+                                                {persona.title}
+                                            </span>
+                                        )}
+                                        {agent?.model && (
+                                            <span
+                                                className="text-[10px] px-1.5 py-0.5 rounded border border-agora-border bg-agora-surface-light/40 text-agora-text-muted font-mono truncate max-w-[200px]"
+                                                title={`${agent.provider ?? ""} · ${agent.model}`}
+                                            >
+                                                {agent.model.includes("/") ? agent.model.split("/").slice(-1)[0] : agent.model}
+                                            </span>
+                                        )}
+                                        {agent?.temperature != null && (
+                                            <span
+                                                className="text-[10px] px-1.5 py-0.5 rounded border border-agora-border bg-agora-surface-light/40 text-agora-text-muted"
+                                                title="Temperature (live or persona-resolved)"
+                                            >
+                                                t={agent.temperature.toFixed(2)}
+                                            </span>
+                                        )}
+                                    </div>
+                                );
+                            })()}
                         </div>
                         <button
                             type="button"
                             onClick={() => selectNode(null)}
-                            className="w-8 h-8 rounded-lg bg-agora-surface-light flex items-center justify-center text-agora-text-muted hover:text-white hover:bg-gray-600 transition-colors"
+                            className="w-8 h-8 rounded-lg bg-agora-surface-light flex items-center justify-center text-agora-text-muted hover:text-white hover:bg-gray-600 transition-colors shrink-0"
                             aria-label="Close details"
                         >
                             ✕
                         </button>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                    <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-4">
                         <div className="flex flex-wrap items-center gap-2">
                             <Badge>{roundLabels[node.round] ?? `Round ${node.round}`}</Badge>
+                            {node.cycle && node.cycle >= 2 && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-violet-500/15 border border-violet-500/30 text-[10px] text-violet-200 font-medium">
+                                    Follow-up #{node.cycle - 1}
+                                </span>
+                            )}
                             <StatusBadge status={node.status} />
                             <Badge>{kindLabels[node.kind] ?? node.kind}</Badge>
                             {node.agentRole && <Badge>{node.agentRole}</Badge>}
                             {isFallbackFormatted && <Badge>Formatted automatically</Badge>}
+                            <EvidenceUsageBadge retrieval={retrieval} />
                         </div>
 
-                        {node.round > 0 && (
+                        {node.round > 0 && roundGuidance[node.round] && (
                             <div className="rounded-lg border border-indigo-500/25 bg-indigo-500/8 px-3 py-2">
                                 <p className="text-xs text-indigo-100/95 leading-relaxed">
-                                    {roundGuidance[node.round] ?? "This message is part of the debate process."}
+                                    {roundGuidance[node.round]}
                                 </p>
                             </div>
                         )}
 
-                        {quickTakeaway && (
-                            <div className="rounded-xl border border-agora-border bg-agora-surface-light/30 p-3">
-                                <Label>Quick Takeaway</Label>
-                                <p className="text-sm text-white leading-relaxed">
-                                    {quickTakeaway}
-                                </p>
-                            </div>
-                        )}
+                        {quickTakeaway && <QuickTakeawayBox text={quickTakeaway} />}
 
                         {debateQuestion && (
                             <details className="rounded-lg border border-agora-border bg-agora-surface-light/20" open={node.kind === "question"}>
@@ -328,7 +516,9 @@ export default function NodeDetailDrawer() {
                             <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
                                 <Label>Generation Failed</Label>
                                 <p className="text-xs text-red-100 leading-relaxed">
-                                    This agent response failed to generate.
+                                    {node.metadata?.["malformed"]
+                                        ? "This model returned malformed output. Please retry this agent or choose a more stable model."
+                                        : "This agent response failed to generate."}
                                 </p>
                             </div>
                         )}
@@ -344,46 +534,77 @@ export default function NodeDetailDrawer() {
                                         <div className="text-[11px] uppercase tracking-wide text-agora-text-muted font-semibold mb-1.5">
                                             {section.heading}
                                         </div>
-                                        <SectionBody body={section.body} />
+                                        <SectionBody
+                                            body={section.body}
+                                            knownLabels={knownLabels}
+                                            labelToDocument={labelToDocument}
+                                        />
                                     </div>
                                 ))}
                             </section>
                         )}
 
-                        {!isLoading && retrieval && retrieval.documents.length > 0 && (
-                            <details className="rounded-lg border border-indigo-500/30 bg-indigo-500/5">
-                                <summary className="px-3 py-2 text-[11px] text-indigo-200 cursor-pointer select-none">
-                                    Sources ({retrieval.total_chunks} chunks from {retrieval.documents.length} {retrieval.documents.length === 1 ? "document" : "documents"})
-                                </summary>
-                                <div className="px-3 pb-3 space-y-3">
-                                    {retrieval.documents.map((doc) => (
-                                        <div key={doc.document_id} className="space-y-1.5">
-                                            <div className="flex items-center justify-between gap-2">
-                                                <div className="text-[11px] font-medium text-white truncate" title={doc.document_name}>
-                                                    {doc.document_name}
-                                                </div>
-                                                <div className="text-[10px] text-agora-text-muted whitespace-nowrap">
-                                                    {doc.chunks.length} {doc.chunks.length === 1 ? "chunk" : "chunks"}
-                                                </div>
-                                            </div>
-                                            <div className="space-y-1.5">
-                                                {doc.chunks.map((chunk, ci) => (
-                                                    <div key={ci} className="rounded-md bg-agora-surface-light/40 px-2.5 py-2">
-                                                        <div className="flex items-start gap-2">
-                                                            <p className="text-[11px] text-agora-text leading-relaxed flex-1 whitespace-pre-line break-words">
-                                                                {chunk.text}
-                                                            </p>
-                                                            <span className="text-[10px] font-mono text-indigo-200 bg-indigo-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
-                                                                {chunk.score.toFixed(2)}
-                                                            </span>
+                        {!isLoading && retrieval && (retrieval.documents?.length ?? 0) > 0 && (
+                            <div className="pt-2 border-t border-agora-border/40">
+                                <div className="text-[10px] uppercase tracking-widest text-agora-text-muted/80 font-semibold mb-2 px-1">
+                                    Advanced
+                                </div>
+                                <details className="rounded-lg border border-indigo-500/30 bg-indigo-500/5">
+                                    <summary className="px-3 py-2 text-[11px] text-indigo-200 cursor-pointer select-none">
+                                        Sources ({retrieval.total_chunks ?? 0} chunks from {retrieval.documents!.length} {retrieval.documents!.length === 1 ? "document" : "documents"})
+                                    </summary>
+                                    <div className="px-3 pb-3 space-y-3">
+                                        {retrieval.documents!.map((doc) => {
+                                            const chunks = doc.chunks ?? [];
+                                            const docLabels = doc.evidence_labels ?? [];
+                                            const docKey = doc.document_id ?? doc.document_name ?? Math.random().toString(36);
+                                            return (
+                                                <div key={docKey} className="space-y-1.5">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <div className="flex items-center gap-1.5 min-w-0">
+                                                            <div className="text-[11px] font-medium text-white truncate" title={doc.document_name}>
+                                                                {doc.document_name ?? "Untitled document"}
+                                                            </div>
+                                                            {docLabels.map((lbl) => (
+                                                                <span
+                                                                    key={lbl}
+                                                                    className="text-[10px] font-mono px-1 rounded bg-indigo-500/25 text-indigo-100 border border-indigo-400/40"
+                                                                    title={`Citation label ${lbl}`}
+                                                                >
+                                                                    {lbl}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                        <div className="text-[10px] text-agora-text-muted whitespace-nowrap">
+                                                            {chunks.length} {chunks.length === 1 ? "chunk" : "chunks"}
                                                         </div>
                                                     </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </details>
+                                                    <div className="space-y-1.5">
+                                                        {chunks.map((chunk, ci) => {
+                                                            const score = chunk.score ?? chunk.similarity;
+                                                            const text = chunk.text ?? "";
+                                                            return (
+                                                                <div key={ci} className="rounded-md bg-agora-surface-light/40 px-2.5 py-2">
+                                                                    <div className="flex items-start gap-2">
+                                                                        <p className="text-[11px] text-agora-text leading-relaxed flex-1 whitespace-pre-line break-words">
+                                                                            {text}
+                                                                        </p>
+                                                                        {typeof score === "number" && (
+                                                                            <span className="text-[10px] font-mono text-indigo-200 bg-indigo-500/20 rounded px-1.5 py-0.5 flex-shrink-0">
+                                                                                {score.toFixed(2)}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </details>
+                            </div>
                         )}
 
                         {relatedEdges.length > 0 && (
@@ -431,6 +652,7 @@ export default function NodeDetailDrawer() {
                         )}
                     </div>
                 </motion.aside>
+                </>
             )}
         </AnimatePresence>
     );
@@ -468,7 +690,15 @@ function StatusBadge({ status }: { status: string }) {
     );
 }
 
-function SectionBody({ body }: { body: string }) {
+function SectionBody({
+    body,
+    knownLabels,
+    labelToDocument,
+}: {
+    body: string;
+    knownLabels?: ReadonlySet<string>;
+    labelToDocument?: Readonly<Record<string, string>>;
+}) {
     const lines = body
         .split("\n")
         .map((line) => line.trim())
@@ -478,11 +708,14 @@ function SectionBody({ body }: { body: string }) {
     if (isBulletOnly) {
         return (
             <ul className="space-y-1">
-                {lines.map((line, idx) => (
-                    <li key={idx} className="text-xs text-agora-text leading-relaxed">
-                        {line.replace(/^•\s*/, "")}
-                    </li>
-                ))}
+                {lines.map((line, idx) => {
+                    const clean = line.replace(/^•\s*/, "");
+                    return (
+                        <li key={idx} className="text-xs text-agora-text leading-relaxed text-justify">
+                            {renderTextWithCitations({ text: clean, knownLabels, labelToDocument })}
+                        </li>
+                    );
+                })}
             </ul>
         );
     }
@@ -495,8 +728,8 @@ function SectionBody({ body }: { body: string }) {
     return (
         <div className="space-y-2">
             {(paragraphs.length > 0 ? paragraphs : [body]).map((paragraph, idx) => (
-                <p key={idx} className="text-xs text-agora-text leading-relaxed whitespace-pre-line">
-                    {paragraph}
+                <p key={idx} className="text-xs text-agora-text leading-relaxed whitespace-pre-line text-justify">
+                    {renderTextWithCitations({ text: paragraph, knownLabels, labelToDocument })}
                 </p>
             ))}
         </div>

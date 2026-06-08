@@ -3,7 +3,40 @@
  */
 
 export type KnowledgeMode = "no_docs" | "shared_session_docs" | "assigned_docs_only";
-export type ModelPresetKey = "fast" | "balanced" | "high_quality";
+
+/** Maximum number of agents allowed in a single debate. Must match server MAX_DEBATE_AGENTS. */
+export const MAX_DEBATE_AGENTS = 4;
+
+// ── Agent color palette ──────────────────────────────────────────────────────
+
+export interface AgentColorEntry {
+    key: string;
+    /** Hex for inline styles (swatches, badges). */
+    hex: string;
+    /** Full Tailwind gradient classes used in AgentNode. Must be static strings. */
+    gradient: string;
+}
+
+export const AGENT_COLOR_PALETTE: AgentColorEntry[] = [
+    { key: "violet", hex: "#7c3aed", gradient: "from-violet-600/80 to-violet-900/80" },
+    { key: "rose", hex: "#e11d48", gradient: "from-rose-600/80 to-rose-900/80" },
+    { key: "cyan", hex: "#0891b2", gradient: "from-cyan-600/80 to-cyan-900/80" },
+    { key: "amber", hex: "#d97706", gradient: "from-amber-600/80 to-amber-900/80" },
+    { key: "emerald", hex: "#059669", gradient: "from-emerald-600/80 to-emerald-900/80" },
+    { key: "orange", hex: "#ea580c", gradient: "from-orange-600/80 to-orange-900/80" },
+    { key: "pink", hex: "#db2777", gradient: "from-pink-600/80 to-pink-900/80" },
+    { key: "blue", hex: "#2563eb", gradient: "from-blue-600/80 to-blue-800/80" },
+];
+export type ModelPresetKey =
+    | "fast"
+    | "balanced"
+    | "high_quality"
+    | "deep_reasoning"
+    | "creative"
+    | "cost_efficient"
+    | "rag_optimized"
+    | "strict_grounded"
+    | "presentation_demo";
 
 export interface AgentConfig {
     /** Client-side ID for key management */
@@ -36,6 +69,8 @@ export interface AgentConfig {
     customInstruction: string;
     /** Preset key (null = fully custom) */
     preset: string | null;
+    /** Visual accent color key — one of AGENT_COLOR_PALETTE[].key */
+    color: string;
 }
 
 export interface AgentPreset {
@@ -62,8 +97,8 @@ export const MODEL_PRESETS: ModelPreset[] = [
         key: "fast",
         label: "Fast",
         provider: "openrouter",
-        model: "x-ai/grok-4.1-fast",
-        temperature: 0.6,
+        model: "anthropic/claude-sonnet-4.5",
+        temperature: 0.5,
     },
     {
         key: "balanced",
@@ -78,6 +113,48 @@ export const MODEL_PRESETS: ModelPreset[] = [
         provider: "openrouter",
         model: "openai/gpt-5.5",
         temperature: 0.5,
+    },
+    {
+        key: "deep_reasoning",
+        label: "Deep Reasoning",
+        provider: "openrouter",
+        model: "x-ai/grok-4",
+        temperature: 0.5,
+    },
+    {
+        key: "creative",
+        label: "Creative",
+        provider: "openrouter",
+        model: "openai/gpt-5.5",
+        temperature: 0.85,
+    },
+    {
+        key: "cost_efficient",
+        label: "Cost Efficient",
+        provider: "openrouter",
+        model: "openai/gpt-4.1-mini",
+        temperature: 0.6,
+    },
+    {
+        key: "rag_optimized",
+        label: "RAG Optimized",
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4.5",
+        temperature: 0.4,
+    },
+    {
+        key: "strict_grounded",
+        label: "Strict Grounded",
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4.5",
+        temperature: 0.3,
+    },
+    {
+        key: "presentation_demo",
+        label: "Presentation Demo",
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4.5",
+        temperature: 0.55,
     },
 ];
 
@@ -161,6 +238,7 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         documentIds: [],
         customInstruction: "",
         preset: null,
+        color: "violet",
     },
     {
         _id: "default-2",
@@ -169,8 +247,8 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         reasoningStyle: "critical",
         reasoningDepth: "normal",
         provider: "openrouter",
-        model: "x-ai/grok-4.1-fast",
-        modelPreset: "fast",
+        model: "anthropic/claude-sonnet-4.5",
+        modelPreset: "balanced",
         temperature: 0.6,
         enabled: true,
         knowledgeMode: "shared_session_docs",
@@ -178,6 +256,7 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         documentIds: [],
         customInstruction: "",
         preset: null,
+        color: "rose",
     },
     {
         _id: "default-3",
@@ -195,6 +274,7 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         documentIds: [],
         customInstruction: "",
         preset: null,
+        color: "cyan",
     },
 ];
 
@@ -207,22 +287,73 @@ export const PROVIDER_OPTIONS = ["openrouter"] as const;
  */
 export const MODEL_OPTIONS: Record<string, string[]> = {
     openrouter: [
+        // Anthropic
+        "anthropic/claude-sonnet-4-6",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
+        "anthropic/claude-opus-4-8",
+        "anthropic/claude-opus-4-7",
+        // OpenAI
         "openai/gpt-5.5",
+        "openai/gpt-5.5-pro",
         "openai/gpt-4.1-mini",
-        "deepseek/deepseek-v3.2",
-        "x-ai/grok-4.1-fast",
+        // Google
+        "google/gemini-3.5-flash",
+        "google/gemini-3.1-pro",
+        // xAI
+        "xai/grok-4.3",
         "x-ai/grok-4",
-        "moonshotai/kimi-k2.5",
+        // DeepSeek
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v3.2",
+        // Xiaomi MiMo
+        "xiaomi/mimo-v2.5",
+        "xiaomi/mimo-v2.5-pro",
+        // Moonshot (Kimi)
+        "moonshot/kimi-k2.6",
+        "moonshot/kimi-k2.5",
     ],
 };
 
+/**
+ * Model stability profiles (Phase 7).
+ *
+ * Experimental models frequently return malformed / truncated structured
+ * output. They remain selectable, but are kept out of default presets and the
+ * UI shows a warning when one is chosen.
+ */
+export const EXPERIMENTAL_MODELS: ReadonlySet<string> = new Set([
+    "xiaomi/mimo-v2.5",
+    "xiaomi/mimo-v2.5-pro",
+    "google/gemini-3.5-flash",
+    "deepseek/deepseek-v4-flash",
+    "xai/grok-4.3",
+    "x-ai/grok-4",
+    "moonshot/kimi-k2.5",
+    "moonshot/kimi-k2.6",
+]);
+
+export const EXPERIMENTAL_MODEL_WARNING =
+    "This model may produce malformed structured output.";
+
+export function isExperimentalModel(model: string | null | undefined): boolean {
+    return !!model && EXPERIMENTAL_MODELS.has(model);
+}
+
+
 export const REASONING_STYLES = [
-    "analytical",
-    "creative",
-    "critical",
     "balanced",
+    "analytical",
+    "critical",
+    "creative",
+    "strategic",
+    "evidence-based",
+    "policy-oriented",
+    "technical",
+    "ethical",
+    "pragmatic",
+    "risk-focused",
     "socratic",
     "devil's advocate",
 ] as const;
@@ -270,8 +401,9 @@ export function agentConfigsToPayload(
 
 let _nextId = 100;
 export function createAgentConfig(partial?: Partial<AgentConfig>): AgentConfig {
+    const id = ++_nextId;
     return {
-        _id: `agent-${++_nextId}`,
+        _id: `agent-${id}`,
         role: "agent",
         roleDescription: "",
         reasoningStyle: "balanced",
@@ -286,6 +418,7 @@ export function createAgentConfig(partial?: Partial<AgentConfig>): AgentConfig {
         documentIds: [],
         customInstruction: "",
         preset: null,
+        color: AGENT_COLOR_PALETTE[(id - 1) % AGENT_COLOR_PALETTE.length].key,
         ...partial,
     };
 }

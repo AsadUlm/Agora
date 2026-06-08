@@ -535,7 +535,90 @@ export function parseResponsePayload(raw: string | undefined | null): Record<str
 export function extractFullResponse(raw: string | undefined | null): string {
     if (!raw) return "";
     const parsed = safeParse(raw);
+    if (parsed) {
+        // Detail panels must show the FULL analytical response, never the
+        // short summary. Prefer the longest of the canonical "full" fields
+        // so we never accidentally surface ``short_summary`` as the body.
+        const candidates: string[] = [];
+        for (const key of [
+            "full_response",
+            "response",
+            "display_content",
+            "main_argument",
+            "answer_to_followup",
+            "full_answer",
+            "conclusion",
+            "final_position",
+            "final_stance",
+            "challenge",
+            "text",
+        ]) {
+            const val = parsed[key];
+            if (typeof val === "string" && val.trim()) {
+                candidates.push(cleanScalarText(val));
+            }
+        }
+        if (candidates.length > 0) {
+            // Pick the longest candidate so detailed prose wins over
+            // short stance/position fields.
+            return candidates.reduce((best, cur) => (cur.length > best.length ? cur : best), "");
+        }
+    }
     return extractPrimaryResponse(parsed, raw);
+}
+
+/**
+ * Lightly clean a scalar string for display in detail panels:
+ * strip code fences, AI meta phrases, and stray markdown wrappers,
+ * but PRESERVE full length, paragraphs, and line breaks. Never
+ * collapse to the first sentence.
+ */
+export function cleanScalarText(value: string): string {
+    let s = stripCodeFences(String(value || "")).trim();
+    s = removeMetaFragments(s);
+
+    // Strip wrapping quotes only when they wrap the whole string.
+    if (s.startsWith('"') && s.endsWith('"') && s.length > 1) {
+        s = s.slice(1, -1);
+    }
+
+    // Light markdown normalization that does not destroy structure.
+    s = s
+        .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+        .replace(/\*\*(.+?)\*\*/g, "$1")
+        .replace(/^\s*[-*+]\s+/gm, "• ")
+        .replace(/\r\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+
+    return s;
+}
+
+/**
+ * Sentence-safe preview for compact widgets (graph cards, quick-takeaway
+ * box). Never slices in the middle of a word; clamps on a sentence or
+ * word boundary instead, which avoids '... but they sho' style cuts.
+ */
+export function sentenceSafePreview(value: string, maxChars = 240): string {
+    const cleaned = cleanScalarText(value).replace(/\s+/g, " ").trim();
+    if (!cleaned) return "";
+    if (cleaned.length <= maxChars) return cleaned;
+
+    // Try to end on a sentence boundary within the window.
+    const window = cleaned.slice(0, maxChars);
+    const lastSentence = Math.max(
+        window.lastIndexOf(". "),
+        window.lastIndexOf("! "),
+        window.lastIndexOf("? "),
+    );
+    if (lastSentence > maxChars * 0.5) {
+        return cleaned.slice(0, lastSentence + 1).trim();
+    }
+
+    // Otherwise fall back to a word-boundary cut and add an ellipsis.
+    const lastSpace = window.lastIndexOf(" ");
+    const cut = lastSpace > maxChars * 0.6 ? lastSpace : maxChars;
+    return `${cleaned.slice(0, cut).replace(/[\s,;:\-]+$/, "")}…`;
 }
 
 function tryParseJsonObject(value: string): Record<string, unknown> | null {

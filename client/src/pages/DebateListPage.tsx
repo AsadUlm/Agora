@@ -5,29 +5,61 @@ import {
     listDebates,
     createSession,
     uploadDocument,
+    uploadDocumentsBatch,
     listDocuments,
     deleteDocument,
 } from "@/features/debate/api/debate.api";
-import type { DebateListItem, DocumentDTO } from "@/features/debate/api/debate.types";
+import type {
+    DebateListItem,
+    DocumentDTO,
+    DocumentUploadFailureDTO,
+} from "@/features/debate/api/debate.types";
 import { cn } from "@/shared/lib/cn";
 import { formatRelativeTime } from "@/shared/lib/dates";
 import {
     DEFAULT_AGENT_CONFIGS,
     agentConfigsToPayload,
     createAgentConfig,
+    MAX_DEBATE_AGENTS,
     type AgentConfig,
 } from "@/features/debate/model/agent-config.types";
 import AgentConfigDrawer from "@/features/debate/ui/AgentConfigDrawer";
 import { useDebateStore } from "@/features/debate/model/debate.store";
+import { getAgentPreset } from "@/features/agent-presets/api/agent-preset.api";
+import { applyPresetToAgentConfig } from "@/features/agent-presets/model/agent-preset.types";
+import { toast } from "@/shared/ui/toast";
+
+interface TopicGateInfo {
+    decision: "debate_ready" | "needs_clarification" | "smalltalk_or_greeting" | "unsupported_or_empty";
+    reason_code: string;
+    user_message: string;
+    confidence: number;
+    source: "heuristic" | "llm" | "cache" | "fallback";
+}
+
+interface TopicValidationError {
+    code: "INVALID_DEBATE_TOPIC";
+    /** New gate contract (may be present) */
+    error?: string;
+    gate?: TopicGateInfo;
+    /** Legacy fields (always present for backward compat) */
+    category: string;
+    message: string;
+    reason: string;
+    suggested_topic: string | null;
+    suggestions: string[];
+}
 
 export default function DebateListPage() {
     const navigate = useNavigate();
     const location = useLocation();
     const startDebate = useDebateStore((s) => s.startDebate);
+    const setAgentColors = useDebateStore((s) => s.setAgentColors);
     const [debates, setDebates] = useState<DebateListItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [creating, setCreating] = useState(false);
     const [question, setQuestion] = useState("");
+    const [topicError, setTopicError] = useState<TopicValidationError | null>(null);
     const [showNew, setShowNew] = useState(false);
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>(
@@ -56,19 +88,54 @@ export default function DebateListPage() {
         fetchDebates();
     }, [fetchDebates]);
 
-    // Handle "New Debate" from sidebar
+    // Handle "New Debate" from sidebar + optional ?presetId= / state.presetId
     useEffect(() => {
-        if ((location.state as { openNew?: boolean })?.openNew) {
+        const stateAny = location.state as { openNew?: boolean; presetId?: string } | null;
+        const searchPreset = new URLSearchParams(location.search).get("presetId");
+        const presetId = stateAny?.presetId ?? searchPreset ?? null;
+
+        if (stateAny?.openNew || presetId) {
             setShowNew(true);
-            // Clear the state so it doesn't re-trigger
-            window.history.replaceState({}, "");
         }
-    }, [location.state]);
+
+        if (presetId) {
+            (async () => {
+                try {
+                    const preset = await getAgentPreset(presetId);
+                    setAgentConfigs((prev) => {
+                        const base = createAgentConfig();
+                        const updates = applyPresetToAgentConfig(preset, base);
+                        return [...prev, { ...base, ...updates }];
+                    });
+                    toast.success(`Added agent from preset "${preset.name}".`);
+                } catch {
+                    toast.error("Failed to apply preset.");
+                }
+            })();
+        }
+
+        if (stateAny?.openNew || presetId) {
+            // Clear router state + query so it doesn't re-trigger.
+            window.history.replaceState({}, "", location.pathname);
+        }
+    }, [location.state, location.search, location.pathname]);
 
     const handleCreate = async () => {
         if (!question.trim() || enabledCount === 0) return;
+        if (enabledCount > MAX_DEBATE_AGENTS) {
+            toast.error(`A debate can use at most ${MAX_DEBATE_AGENTS} agents. Please remove some agents.`);
+            return;
+        }
         setCreating(true);
+        setTopicError(null);
         try {
+            // Store per-position colors so the graph can color-code nodes.
+            const colorsByPosition: Record<number, string> = {};
+            agentConfigs.filter((c) => c.enabled).forEach((c, i) => {
+                colorsByPosition[i] = c.color;
+            });
+            setAgentColors(colorsByPosition);
+
             const res = await startDebate(
                 question.trim(),
                 agentConfigsToPayload(agentConfigs),
@@ -81,8 +148,31 @@ export default function DebateListPage() {
             setDraftSessionId(null);
             setDocuments([]);
             navigate(`/debates/${res.debate_id}`);
-        } catch {
-            /* error shown inline */
+        } catch (err) {
+            const detail = (
+                err as { response?: { data?: { detail?: unknown } } }
+            )?.response?.data?.detail;
+            if (detail && typeof detail === "object") {
+                const d = detail as Record<string, unknown>;
+                // New gate response: has "gate" object with decision/reason_code/user_message
+                if (d.gate && typeof d.gate === "object") {
+                    const gate = d.gate as TopicGateInfo;
+                    setTopicError({
+                        code: "INVALID_DEBATE_TOPIC",
+                        error: d.error as string | undefined,
+                        gate,
+                        category: gate.decision,
+                        message: gate.user_message || (d.message as string) || "Invalid topic.",
+                        reason: gate.reason_code,
+                        suggested_topic: null,
+                        suggestions: (d.suggestions as string[]) || [],
+                    });
+                } else if (d.code === "INVALID_DEBATE_TOPIC") {
+                    // Legacy response without gate object
+                    setTopicError(d as unknown as TopicValidationError);
+                }
+            }
+            // Other errors (network, auth, etc.) are already stored in debate.store
         } finally {
             setCreating(false);
         }
@@ -102,6 +192,23 @@ export default function DebateListPage() {
             const sessionId = await ensureDraftSession();
             const doc = await uploadDocument(sessionId, file);
             setDocuments((prev) => [doc, ...prev]);
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    /** Step 30: multi-file upload. Returns per-file failures so the panel can show them. */
+    const handleUploadDocumentsBatch = async (
+        files: File[],
+    ): Promise<DocumentUploadFailureDTO[] | void> => {
+        setUploading(true);
+        try {
+            const sessionId = await ensureDraftSession();
+            const res = await uploadDocumentsBatch(sessionId, files);
+            if (res.uploaded.length) {
+                setDocuments((prev) => [...res.uploaded, ...prev]);
+            }
+            return res.failed;
         } finally {
             setUploading(false);
         }
@@ -148,6 +255,10 @@ export default function DebateListPage() {
     };
 
     const handleAddAgent = (agent?: AgentConfig) => {
+        if (agentConfigs.length >= MAX_DEBATE_AGENTS) {
+            toast.error(`Maximum ${MAX_DEBATE_AGENTS} agents allowed per debate.`);
+            return;
+        }
         setAgentConfigs((prev) => [...prev, agent ?? createAgentConfig()]);
     };
 
@@ -162,6 +273,11 @@ export default function DebateListPage() {
             return next;
         });
     };
+
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 10;
+    const totalPages = Math.ceil(debates.length / PAGE_SIZE);
+    const visibleDebates = debates.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
     const statusColors: Record<string, string> = {
         queued: "bg-amber-500/20 text-amber-400",
@@ -185,10 +301,11 @@ export default function DebateListPage() {
                 rawDocuments={documents}
                 uploading={uploading}
                 onUploadDocument={handleUploadDocument}
+                onUploadDocumentsBatch={handleUploadDocumentsBatch}
                 onDeleteDocument={handleDeleteDocument}
             />
 
-            <main className="max-w-5xl mx-auto px-6 py-8">
+            <main className="max-w-5xl mx-auto px-4 py-6 sm:px-6 sm:py-8">
                 {/* New debate block */}
                 <div className="mb-8">
                     {!showNew ? (
@@ -219,7 +336,7 @@ export default function DebateListPage() {
                             className="rounded-2xl border border-agora-border bg-agora-surface overflow-hidden"
                         >
                             {/* Header bar */}
-                            <div className="px-6 py-4 border-b border-agora-border flex items-center justify-between">
+                            <div className="px-4 sm:px-6 py-4 border-b border-agora-border flex items-center justify-between">
                                 <div className="flex items-center gap-3">
                                     <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
                                         <span className="text-white text-sm">✦</span>
@@ -244,27 +361,136 @@ export default function DebateListPage() {
                             </div>
 
                             {/* Question input */}
-                            <div className="px-6 py-5">
+                            <div className="px-4 sm:px-6 py-5">
                                 <label className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-2 block">
                                     Question
                                 </label>
                                 <textarea
                                     autoFocus
                                     value={question}
-                                    onChange={(e) => setQuestion(e.target.value)}
+                                    onChange={(e) => {
+                                        setQuestion(e.target.value);
+                                        if (topicError) setTopicError(null);
+                                    }}
                                     placeholder="What question should the agents debate?"
-                                    className="w-full bg-agora-bg border border-agora-border rounded-xl px-4 py-3 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 resize-none h-28 transition-all"
+                                    className={cn(
+                                        "w-full bg-agora-bg border rounded-xl px-4 py-3 text-sm text-white placeholder:text-gray-600 focus:outline-none resize-none h-28 transition-all",
+                                        topicError
+                                            ? "border-amber-500/50 focus:border-amber-500/70 focus:ring-1 focus:ring-amber-500/20"
+                                            : "border-agora-border focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20",
+                                    )}
                                     onKeyDown={(e) => {
                                         if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                                             handleCreate();
                                         }
                                     }}
                                 />
+
+                                {/* Inline topic validation error */}
+                                {topicError && (
+                                    <motion.div
+                                        initial={{ opacity: 0, y: -4 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        className={cn(
+                                            "mt-3 rounded-xl border px-4 py-3",
+                                            topicError.category === "needs_clarification"
+                                                ? "border-sky-500/30 bg-sky-500/5"
+                                                : topicError.category === "smalltalk_or_greeting"
+                                                    ? "border-violet-500/30 bg-violet-500/5"
+                                                    : "border-amber-500/30 bg-amber-500/5",
+                                        )}
+                                    >
+                                        <div className="flex items-start gap-2">
+                                            <span className={cn(
+                                                "text-sm mt-0.5 shrink-0",
+                                                topicError.category === "needs_clarification"
+                                                    ? "text-sky-400"
+                                                    : topicError.category === "smalltalk_or_greeting"
+                                                        ? "text-violet-400"
+                                                        : "text-amber-400",
+                                            )}>
+                                                {topicError.category === "needs_clarification" ? "ℹ"
+                                                    : topicError.category === "smalltalk_or_greeting" ? "💬"
+                                                        : "⚠"}
+                                            </span>
+                                            <div className="flex-1 min-w-0">
+                                                <p className={cn(
+                                                    "text-xs font-medium",
+                                                    topicError.category === "needs_clarification"
+                                                        ? "text-sky-300"
+                                                        : topicError.category === "smalltalk_or_greeting"
+                                                            ? "text-violet-300"
+                                                            : "text-amber-300",
+                                                )}>
+                                                    {/* Prefer gate.user_message, fall back to legacy message */}
+                                                    {topicError.gate?.user_message || topicError.message}
+                                                </p>
+                                                {topicError.category === "needs_clarification" && (
+                                                    <p className="text-[11px] text-sky-200/70 mt-1">
+                                                        Examples:<br />
+                                                        <em>"Evaluate this claim: strict AI regulation is necessary but may strengthen Big Tech."</em><br />
+                                                        <em>"Is this code secure: SELECT * FROM users WHERE id = $&#123;userInput&#125;"</em><br />
+                                                        <em>"Should governments regulate high-risk AI?"</em>
+                                                    </p>
+                                                )}
+                                                {topicError.category !== "needs_clarification"
+                                                    && topicError.category !== "smalltalk_or_greeting"
+                                                    && topicError.reason && (
+                                                        <p className="text-[11px] text-amber-200/70 mt-1">
+                                                            {topicError.reason}
+                                                        </p>
+                                                    )}
+                                                {topicError.suggested_topic && (
+                                                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                                                        <span className="text-[11px] text-agora-text-muted">
+                                                            Suggested:
+                                                        </span>
+                                                        <span className="text-[11px] text-amber-200/80 italic">
+                                                            "{topicError.suggested_topic}"
+                                                        </span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setQuestion(topicError.suggested_topic!);
+                                                                setTopicError(null);
+                                                            }}
+                                                            className="text-[11px] px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition-colors"
+                                                        >
+                                                            Use this topic
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                {topicError.suggestions.length > 0 && !topicError.suggested_topic && (
+                                                    <div className="mt-2">
+                                                        <p className="text-[11px] text-agora-text-muted mb-1">
+                                                            Try one of these:
+                                                        </p>
+                                                        <div className="flex flex-col gap-1">
+                                                            {topicError.suggestions.slice(0, 2).map((s) => (
+                                                                <button
+                                                                    key={s}
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setQuestion(s);
+                                                                        setTopicError(null);
+                                                                    }}
+                                                                    className="text-left text-[11px] px-2 py-1 rounded-md bg-agora-surface-light/50 border border-agora-border text-agora-text hover:text-white hover:border-amber-500/30 transition-colors"
+                                                                >
+                                                                    {s}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </motion.div>
+                                )}
                             </div>
 
                             {/* Footer controls */}
-                            <div className="px-6 py-4 border-t border-agora-border bg-agora-surface-light/20 flex items-center justify-between">
-                                <div className="flex items-center gap-3">
+                            <div className="px-4 sm:px-6 py-4 border-t border-agora-border bg-agora-surface-light/20 flex flex-wrap items-center justify-between gap-3">
+                                <div className="flex items-center flex-wrap gap-x-3 gap-y-2">
                                     <button
                                         onClick={handleOpenDrawer}
                                         className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-agora-surface-light/50 border border-agora-border text-agora-text hover:text-white hover:border-indigo-500/40 transition-all"
@@ -354,7 +580,7 @@ export default function DebateListPage() {
                     )}
 
                     <div className="space-y-2">
-                        {debates.map((debate, idx) => (
+                        {visibleDebates.map((debate, idx) => (
                             <motion.button
                                 key={debate.id}
                                 initial={{ opacity: 0, y: 10 }}
@@ -385,6 +611,44 @@ export default function DebateListPage() {
                             </motion.button>
                         ))}
                     </div>
+
+                    {totalPages > 1 && (
+                        <div className="mt-6 pt-4 border-t border-agora-border">
+                            <div className="flex items-center justify-center gap-1">
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => p - 1)}
+                                    disabled={page === 1}
+                                    className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    ← Prev
+                                </button>
+                                {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+                                    <button
+                                        key={p}
+                                        type="button"
+                                        onClick={() => setPage(p)}
+                                        className={cn(
+                                            "w-8 h-8 rounded-lg text-xs font-medium transition-colors border",
+                                            p === page
+                                                ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/40"
+                                                : "border-transparent text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50",
+                                        )}
+                                    >
+                                        {p}
+                                    </button>
+                                ))}
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => p + 1)}
+                                    disabled={page === totalPages}
+                                    className="px-3 py-1.5 rounded-lg text-xs border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/40 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    Next →
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </main>
         </div>

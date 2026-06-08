@@ -43,9 +43,11 @@ def test_max_tokens_never_exceeds_hard_cap():
 
 
 def test_per_round_budgets_match_brief():
-    assert ROUND_MAX_TOKENS[1] == 650
-    assert ROUND_MAX_TOKENS[2] == 850
-    assert ROUND_MAX_TOKENS[3] == 900
+    # Step 33 raised the per-round token budgets so analytical responses are
+    # not truncated. Tests assert the new minimum bar (>= 1500 per round).
+    assert ROUND_MAX_TOKENS[1] >= 1500
+    assert ROUND_MAX_TOKENS[2] >= 1500
+    assert ROUND_MAX_TOKENS[3] >= 1500
     assert DEFAULT_MAX_TOKENS <= MAX_ALLOWED_TOKENS
 
 

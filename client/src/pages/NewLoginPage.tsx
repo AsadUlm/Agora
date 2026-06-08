@@ -1,4 +1,5 @@
 import { useState } from "react";
+import AgoraLogoIcon from "@/features/debate/ui/AgoraLogoIcon";
 import { useNavigate, Link } from "react-router-dom";
 import { motion } from "motion/react";
 import { useAuthStore } from "@/features/auth/model/auth.store";
@@ -28,15 +29,15 @@ export default function LoginPage() {
     };
 
     return (
-        <div className="min-h-screen bg-agora-bg flex items-center justify-center p-4">
+        <div className="min-h-dvh bg-agora-bg flex items-center justify-center p-4 sm:p-6">
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 className="w-full max-w-sm"
             >
                 <div className="text-center mb-8">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 mx-auto mb-4 flex items-center justify-center text-white text-2xl font-bold shadow-lg shadow-indigo-500/20">
-                        A
+                    <div className="mx-auto mb-4 w-fit shadow-lg shadow-indigo-500/20 rounded-[11px] overflow-hidden">
+                        <AgoraLogoIcon size={56} />
                     </div>
                     <h1 className="text-xl font-semibold text-white">
                         Welcome to AGORA

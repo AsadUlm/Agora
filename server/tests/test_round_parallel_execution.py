@@ -38,7 +38,12 @@ class _DelayedProvider(LLMService):
     async def generate(self, request: LLMRequest) -> LLMResponse:
         await asyncio.sleep(self._delay_s)
         return LLMResponse(
-            content='{"stance":"ok","key_points":["a","b"],"confidence":0.7}',
+            content=(
+                '{"stance":"ok","main_argument":"AI should be regulated carefully",'
+                '"key_points":["a","b"],"confidence":0.7,'
+                '"response":"AI should be regulated through proportionate, '
+                'risk-based rules that protect people without stifling innovation."}'
+            ),
             prompt_tokens=12,
             completion_tokens=18,
             latency_ms=int(self._delay_s * 1000),
@@ -56,7 +61,12 @@ class _SelectiveFailProvider(LLMService):
             if f"role: {role}" in request.prompt:
                 raise LLMError(f"Synthetic failure for {role}")
         return LLMResponse(
-            content='{"stance":"ok","key_points":["a"],"confidence":0.5}',
+            content=(
+                '{"stance":"ok","main_argument":"A measured position",'
+                '"key_points":["a"],"confidence":0.5,'
+                '"response":"A measured position: regulation is warranted but '
+                'must be carefully scoped to avoid harming beneficial uses."}'
+            ),
             prompt_tokens=10,
             completion_tokens=16,
             latency_ms=int(self._delay_s * 1000),

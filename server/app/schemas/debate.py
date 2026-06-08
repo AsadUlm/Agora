@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.schemas.agent import AgentCreate
 
@@ -19,6 +19,28 @@ class DebateStartRequest(BaseModel):
     # "manual" pauses before each agent until /debates/{id}/next-step is called.
     execution_mode: str = "auto"
 
+    @field_validator("question")
+    @classmethod
+    def validate_question_basic(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("Debate topic must not be empty.")
+        if len(stripped) > 2000:
+            raise ValueError("Debate topic is too long (max 2000 characters).")
+        return stripped
+
+    @field_validator("agents")
+    @classmethod
+    def validate_max_agents(cls, agents: list[AgentCreate]) -> list[AgentCreate]:
+        from app.core.config import settings
+        max_agents = settings.MAX_DEBATE_AGENTS
+        if agents and len(agents) > max_agents:
+            raise ValueError(
+                f"A debate can use at most {max_agents} agents. "
+                f"Received {len(agents)}."
+            )
+        return agents
+
 
 # ── Response schemas (Step 6 — structured, frontend-ready) ────────────────────
 
@@ -31,6 +53,7 @@ class AgentDTO(BaseModel):
     model: str
     temperature: float | None
     reasoning_style: str | None
+    reasoning_depth: str | None = None
     position_order: int | None
     knowledge_mode: str | None
     knowledge_strict: bool | None
@@ -65,11 +88,22 @@ class RoundDTO(BaseModel):
 
     id: uuid.UUID
     round_number: int
-    round_type: str             # initial | critique | final
+    cycle_number: int = 1
+    round_type: str             # initial | critique | final | followup_response | followup_critique | updated_synthesis
     status: str                 # queued | running | completed | failed
     started_at: datetime | None
     ended_at: datetime | None
     messages: list[MessageDTO]  # sorted by sequence_no, agents only
+
+
+class FollowUpDTO(BaseModel):
+    """User-asked follow-up question that opened a new debate cycle."""
+
+    id: uuid.UUID
+    chat_turn_id: uuid.UUID
+    cycle_number: int
+    question: str
+    created_at: datetime
 
 
 class UserMessageDTO(BaseModel):
@@ -95,6 +129,7 @@ class TurnDTO(BaseModel):
     user_message: UserMessageDTO | None
     rounds: list[RoundDTO]              # sorted by round_number
     final_summary: dict[str, Any] | None  # from last round's final_summary messages
+    follow_ups: list[FollowUpDTO] = []   # in cycle_number order
 
 
 class SessionDetailDTO(BaseModel):
@@ -138,3 +173,23 @@ class DebateListItem(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class FollowUpCreateRequest(BaseModel):
+    """Request body for POST /debates/{session_id}/follow-ups."""
+
+    question: str
+
+
+class FollowUpCreateResponse(BaseModel):
+    """Response body for POST /debates/{session_id}/follow-ups."""
+
+    follow_up_id: uuid.UUID
+    debate_id: uuid.UUID
+    turn_id: uuid.UUID
+    cycle_number: int
+    question: str
+    status: str  # always 'queued' — runs in the background
+    ws_session_url: str
+    ws_turn_url: str
+

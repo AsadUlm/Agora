@@ -49,16 +49,27 @@ from app.models.message import Message, MessageType, MessageVisibility, SenderTy
 from app.models.round import Round
 from app.models.user import User
 from app.models.agent_document_binding import AgentDocumentBinding
+from app.models.debate_follow_up import DebateFollowUp
 from app.schemas.agent_config import AgentConfig
 from app.schemas.debate import (
     DebateListItem,
     DebateStartRequest,
     DebateStartResponse,
+    FollowUpCreateRequest,
+    FollowUpCreateResponse,
     SessionDetailDTO,
     TurnDTO,
 )
 from app.schemas.dto import serialize_session, serialize_turn, _agents_index
 from app.services.execution_runner import run_turn_background
+from app.services.followup_runner import run_followup_cycle
+from app.services.topic_guard.topic_guard_service import (
+    CATEGORY_SUGGESTIONS,
+    TopicGateDecision,
+    get_topic_guard,
+    validate_initial_topic,
+    validate_followup_topic,
+)
 from app.services.ws_manager import ws_manager
 
 router = APIRouter()
@@ -77,6 +88,7 @@ def _session_load_opts():
         .selectinload(Round.messages),
         selectinload(ChatSession.chat_turns)
         .selectinload(ChatTurn.messages),
+        selectinload(ChatSession.follow_ups),
     ]
 
 
@@ -105,6 +117,43 @@ async def start_debate(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="At least one agent is required.",
+        )
+
+    # ── 0. Pre-debate topic validation ────────────────────────────────────────
+    # Hybrid guard: Stage 1 deterministic (instant), Stage 2 LLM only for
+    # borderline inputs. Neither stage creates any DB records.
+    has_attachments = bool(request.session_id)  # attachments are tied to a session
+    gate = await validate_initial_topic(request.question, has_attachments=has_attachments)
+
+    if not gate.should_start_debate:
+        logger.info(
+            "[Debate] Topic rejected by guard: decision=%s source=%s reason=%s topic=%.80r",
+            gate.decision,
+            gate.source,
+            gate.reason_code,
+            request.question,
+        )
+        user_message = gate.user_message or "This does not look like a valid debate topic."
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                # New gate contract (primary)
+                "error": gate.decision.value,
+                "gate": {
+                    "decision": gate.decision.value,
+                    "reason_code": gate.reason_code,
+                    "user_message": gate.user_message,
+                    "confidence": gate.confidence,
+                    "source": gate.source,
+                },
+                # Legacy fields (backward compat for existing frontend handler)
+                "code": "INVALID_DEBATE_TOPIC",
+                "category": gate.category,
+                "message": user_message,
+                "reason": gate.reason_code,
+                "suggested_topic": None,
+                "suggestions": CATEGORY_SUGGESTIONS.get(gate.category, []),
+            },
         )
 
     # ── 1. Create or reuse ChatSession ─────────────────────────────────────
@@ -142,6 +191,7 @@ async def start_debate(
                 else settings.LLM_TEMPERATURE
             ),
             reasoning_style=cfg.reasoning.style,
+            reasoning_depth=cfg.reasoning.depth or "normal",
             position_order=i,
             is_active=True,
             knowledge_mode=cfg.knowledge.mode,
@@ -262,6 +312,138 @@ async def get_debate(
         )
 
     return serialize_session(session)
+
+
+# ── POST /debates/{id}/follow-ups ─────────────────────────────────────────────
+
+@router.post(
+    "/{debate_id}/follow-ups",
+    response_model=FollowUpCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_follow_up(
+    debate_id: uuid.UUID,
+    request: FollowUpCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    session_factory=Depends(get_session_factory),
+) -> FollowUpCreateResponse:
+    """Open a new debate cycle by asking a follow-up question.
+
+    Behavior (per spec):
+      - Validates session ownership
+      - Validates that the debate is not currently generating
+      - Determines the next ``cycle_number`` (latest existing + 1, min 2)
+      - Persists a ``DebateFollowUp`` record
+      - Schedules ``run_followup_cycle`` in the background
+      - Returns 201 immediately so the UI can subscribe over WebSocket
+    """
+    question = (request.question or "").strip()
+
+    # ── Follow-up gate (relaxed — prior debate context exists) ────────────────
+    fgate = validate_followup_topic(question, has_previous_context=True)
+    if not fgate.should_start_debate:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": fgate.decision.value,
+                "gate": {
+                    "decision": fgate.decision.value,
+                    "reason_code": fgate.reason_code,
+                    "user_message": fgate.user_message,
+                    "confidence": fgate.confidence,
+                    "source": fgate.source,
+                },
+                "code": "INVALID_DEBATE_TOPIC",
+                "category": fgate.category,
+                "message": fgate.user_message or "Follow-up question must not be empty.",
+                "reason": fgate.reason_code,
+                "suggested_topic": None,
+                "suggestions": [],
+            },
+        )
+
+    logger.info(
+        "[FollowUp] request received debate_id=%s has_question=%s question_length=%d",
+        debate_id,
+        bool(question),
+        len(question),
+    )
+
+    # 1. Ownership + load latest turn with rounds
+    session_check = await db.execute(
+        select(ChatSession.id)
+        .where(ChatSession.id == debate_id)
+        .where(ChatSession.user_id == current_user.id)
+    )
+    if session_check.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debate not found.")
+
+    turn_row = await db.execute(
+        select(ChatTurn)
+        .where(ChatTurn.chat_session_id == debate_id)
+        .options(selectinload(ChatTurn.rounds))
+        .order_by(ChatTurn.turn_index.desc())
+        .limit(1)
+    )
+    turn = turn_row.scalar_one_or_none()
+    if turn is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No debate turn exists yet for this session.",
+        )
+
+    # 2. Reject if the previous cycle is still running
+    if turn.status in (ChatTurnStatus.queued, ChatTurnStatus.running):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A debate cycle is already in progress. Wait for it to finish.",
+        )
+
+    # 3. Determine next cycle_number — must be ≥ 2 (cycle 1 is the initial debate)
+    existing_max_cycle = max(
+        (r.cycle_number or 1 for r in turn.rounds),
+        default=1,
+    )
+    cycle_number = max(existing_max_cycle + 1, 2)
+
+    # 4. Persist follow-up record
+    follow_up = DebateFollowUp(
+        chat_session_id=debate_id,
+        chat_turn_id=turn.id,
+        question=question,
+        cycle_number=cycle_number,
+    )
+    db.add(follow_up)
+    await db.flush()
+
+    # 5. Re-queue turn so the UI/back-end agree it's live again
+    turn.status = ChatTurnStatus.queued
+    turn.ended_at = None
+    await db.commit()
+
+    # 6. Background execution
+    background_tasks.add_task(
+        run_followup_cycle,
+        session_id=debate_id,
+        turn_id=turn.id,
+        cycle_number=cycle_number,
+        follow_up_question=question,
+        on_event=ws_manager.emit,
+        session_factory=session_factory,
+    )
+
+    return FollowUpCreateResponse(
+        follow_up_id=follow_up.id,
+        debate_id=debate_id,
+        turn_id=turn.id,
+        cycle_number=cycle_number,
+        question=question,
+        status="queued",
+        ws_session_url=f"/ws/chat-sessions/{debate_id}",
+        ws_turn_url=f"/ws/chat-turns/{turn.id}",
+    )
 
 
 # ── GET /debates/{id}/turns/{turn_id} ─────────────────────────────────────────

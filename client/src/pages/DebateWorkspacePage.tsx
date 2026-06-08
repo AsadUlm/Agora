@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import AgoraLogoIcon from "@/features/debate/ui/AgoraLogoIcon";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { useDebateStore } from "@/features/debate/model/debate.store";
@@ -8,6 +9,8 @@ export default function DebateWorkspacePage() {
     const { debateId } = useParams<{ debateId: string }>();
     const navigate = useNavigate();
     const loading = useDebateStore((s) => s.loading);
+    // `error` is a LOAD error (404, network failure). `generationError` is a
+    // debate-generation failure that must NOT trigger a full-page crash.
     const error = useDebateStore((s) => s.error);
     const turnStatus = useDebateStore((s) => s.turnStatus);
     const loadDebate = useDebateStore((s) => s.loadDebate);
@@ -42,6 +45,10 @@ export default function DebateWorkspacePage() {
         return <LoadingScreen />;
     }
 
+    // Only show a full-page error for ACTUAL load failures (debate not found,
+    // permission denied, server error loading debate data).
+    // Generation failures (API quota, all agents failed) must NOT cause this
+    // screen — they are handled inside DebateLayout as controlled banners.
     if (error) {
         return (
             <ErrorScreen
@@ -52,6 +59,8 @@ export default function DebateWorkspacePage() {
         );
     }
 
+    // Render the debate layout even when turnStatus === "failed".
+    // Generation failures are displayed as banners inside the layout.
     return <DebateLayout />;
 }
 
@@ -64,11 +73,11 @@ function LoadingScreen() {
                 animate={{ opacity: 1, y: 0 }}
             >
                 <motion.div
-                    className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 mx-auto flex items-center justify-center"
+                    className="mx-auto w-fit"
                     animate={{ rotate: [0, 10, -10, 0] }}
                     transition={{ repeat: Infinity, duration: 2 }}
                 >
-                    <span className="text-2xl">🌐</span>
+                    <AgoraLogoIcon size={64} />
                 </motion.div>
                 <p className="text-agora-text-muted text-sm">
                     Loading debate workspace...

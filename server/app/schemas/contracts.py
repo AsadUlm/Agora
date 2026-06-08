@@ -91,6 +91,7 @@ class AgentRoundResult(BaseModel):
     structured: dict[str, Any] = Field(default_factory=dict)  # Parsed JSON (if any)
     generation_status: str = "success"  # "success" | "failed"
     error: str | None = None
+    failure_reason: str | None = None    # Machine code, e.g. "malformed_structured_output"
 
 
 class RoundContext(BaseModel):
@@ -120,6 +121,12 @@ class TurnContext(BaseModel):
     question: str
     agents: list[AgentContext]
     turn_index: int = 1
+    # FIX-12: surface whether RAG is active for this turn so the UI can show a
+    # neutral mode indicator. ``rag_active`` is True iff at least one document
+    # is attached to the session/agents and was discoverable for retrieval.
+    # ``document_count`` is informational only.
+    rag_active: bool = False
+    document_count: int = 0
 
 
 # ── WebSocket / Streaming Contracts ──────────────────────────────────────────
@@ -131,6 +138,7 @@ class ExecutionEventType(str, Enum):
     agent_completed = "agent_completed"
     message_created = "message_created"
     round_completed = "round_completed"
+    round_failed = "round_failed"
     turn_completed = "turn_completed"
     turn_failed = "turn_failed"
 

@@ -101,8 +101,9 @@ class TestExtractor:
             extract_text(b"data", "file.xyz")
 
     def test_unknown_extension_raises(self):
+        # Step 30: .csv is now supported; .rtf remains outside the registry.
         with pytest.raises(UnsupportedFileType):
-            extract_text(b"data", "file.csv")
+            extract_text(b"data", "file.rtf")
 
     def test_pdf_import_error_surfaces_as_extraction_error(self):
         """If pypdf is missing, we get ExtractionError not ImportError."""
@@ -308,18 +309,40 @@ class TestDocumentIngestionService:
         content = ("This is important information about climate policy. " * 40 + "\n\n") * 3
         file_bytes = content.encode("utf-8")
 
-        svc = DocumentIngestionService()
+        # Step 30: pass an in-memory storage so we don't touch the disk during
+        # unit tests. The provider just records bytes in a dict.
+        from app.services.storage.base import DocumentStorageService, StoredFile
+
+        class _InMemoryStorage(DocumentStorageService):
+            provider_name = "local"
+
+            def __init__(self) -> None:
+                self.blobs: dict[str, bytes] = {}
+
+            async def upload_bytes(self, *, content, document_id, session_id, filename, content_type=None):
+                key = f"mem://{document_id}"
+                self.blobs[key] = content
+                return StoredFile(
+                    storage_provider="local",
+                    original_filename=filename,
+                    local_path=key,
+                    bytes=len(content),
+                    content_type=content_type,
+                    format=filename.rsplit(".", 1)[-1].lower(),
+                    resource_type="raw",
+                )
+
+            async def download_bytes(self, stored):
+                return self.blobs[stored.local_path]
+
+            async def delete(self, stored):
+                self.blobs.pop(stored.local_path, None)
+
+        svc = DocumentIngestionService(storage=_InMemoryStorage())
 
         with patch(
             "app.services.documents.ingestion_service.get_embedding_service",
             return_value=MockEmbeddingService(),
-        ), patch.object(
-            DocumentIngestionService,
-            "_upload_path",
-            return_value=MagicMock(
-                write_bytes=MagicMock(),
-                __str__=lambda self: "/tmp/test_doc.txt",
-            ),
         ):
             doc = await svc.ingest(
                 db=db_session,
@@ -349,7 +372,7 @@ class TestDocumentIngestionService:
         session_id = uuid.uuid4()
         svc = DocumentIngestionService()
         with pytest.raises(DocumentIngestionError, match="Unsupported file type"):
-            await svc.ingest(db_session, session_id, "file.csv", b"some,csv,data")
+            await svc.ingest(db_session, session_id, "file.exe", b"MZ\x90\x00binary")
 
     @pytest.mark.asyncio
     async def test_ingest_empty_content_raises(self, db_session):
@@ -358,12 +381,12 @@ class TestDocumentIngestionService:
             "app.services.documents.ingestion_service.get_embedding_service",
             return_value=MockEmbeddingService(),
 ), pytest.raises(DocumentIngestionError, match="Unsupported file type"):
-            # .csv is unsupported, so it raises before creating any DB records
+            # .xyz is unsupported, so it raises before creating any DB records
             await svc.ingest(
                 db=db_session,
                 session_id=uuid.uuid4(),
-                filename="empty.csv",
-                file_bytes=b"a,b,c\n1,2,3",
+                filename="empty.xyz",
+                file_bytes=b"some-bytes",
             )
 
 

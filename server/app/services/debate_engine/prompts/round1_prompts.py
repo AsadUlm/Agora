@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+from app.services.debate_engine.prompts.personas import persona_block
+from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
+from app.services.debate_engine.prompts.quality_constraints import (
+    ANTI_STRAWMAN_BLOCK,  # noqa: F401  (re-exported via prompts package)
+    evidence_mode_block,
+)
+from app.services.retrieval.evidence import (
+    EvidencePacket,
+    format_evidence_block,
+    format_evidence_usage_instructions,
+)
+
 
 def _compact_chunk_text(text: str, max_chars: int = 260) -> str:
     normalized = " ".join(str(text or "").split())
@@ -48,70 +60,54 @@ def build_opening_statement_prompt(
     retrieved_chunks: list[dict] | None = None,
     knowledge_mode: str = "shared_session_docs",
     knowledge_strict: bool = False,
+    evidence_packets: list[EvidencePacket] | None = None,
 ) -> str:
     """Build the prompt for an agent's Round 1 opening statement."""
-    depth_instruction = {
-        "shallow": "Be concise. 2-3 key points only.",
-        "normal": "Be thorough. Provide 3-5 well-argued key points.",
-        "deep": "Be exhaustive. Provide 5+ key points with detailed reasoning.",
-    }.get(reasoning_depth, "Be thorough. Provide 3-5 well-argued key points.")
+    depth_hint = {
+        "shallow": "Be concise — 2-3 key points.",
+        "normal": "Give 3-5 well-argued points.",
+        "deep": "Give 5+ points with detailed reasoning.",
+    }.get(reasoning_depth, "Give 3-5 well-argued points.")
 
-    style_instruction = {
-        "analytical": "Reason analytically. Focus on evidence and logical structure.",
-        "creative": "Reason creatively. Explore unconventional angles and possibilities.",
-        "devil_advocate": "Take a contrarian position. Challenge assumptions aggressively.",
-        "balanced": "Reason in a balanced way. Acknowledge multiple perspectives.",
-    }.get(reasoning_style, "Reason in a balanced way.")
+    style_hint = _style_instruction("reason", reasoning_style)
 
     chunks = retrieved_chunks or []
-    context_block = _format_context_block(chunks)
-    knowledge_block = _knowledge_instruction(knowledge_mode, knowledge_strict, bool(chunks))
+    packets = evidence_packets or []
+    has_evidence = bool(packets) or bool(chunks)
+    if packets:
+        context_block = (
+            format_evidence_block(packets) + format_evidence_usage_instructions()
+        )
+    else:
+        context_block = _format_context_block(chunks)
+    knowledge_block = _knowledge_instruction(
+        knowledge_mode, knowledge_strict, has_evidence
+    )
 
-    return f"""You are a debate participant with the role: {role}.
+    return f"""You are an expert panelist in a live debate, speaking to a human audience.
+Argue the question directly — never narrate instructions, your role, output formatting, schemas, or your own process.
 
-The debate question is: {question}
+role: {role}.
+{persona_block(role)}
+Question: {question}
 {knowledge_block}{context_block}
-Your task: Generate your opening statement for Round 1.
+{evidence_mode_block(has_evidence)}
+Round 1 is NOT for consensus — it is for presenting YOUR worldview. Begin from your own default stance and priority framework; do not move toward the other agents. Your opening MUST: (1) state a clear initial position consistent with your framework, (2) state the core assumptions it depends on, (3) explain your priority framework and the reasoning mechanism that makes it work (name a specific actor, threshold, or deployment context), (4) identify the concrete benefits you expect, (5) acknowledge at least one genuine weakness of your own position, and (6) state explicitly what evidence would change your mind. {depth_hint} {style_hint}. Back every claim with a concrete mechanism — avoid vague abstractions. Do not fabricate statistics; use qualitative phrasing instead.
+Forbidden in Round 1: restating or rephrasing the question, neutral summaries, generic introductions, and convergence phrases such as "both sides have merit", "I generally agree with", "ultimately we all want", or "perhaps a balanced approach". Take the side your framework actually leads to and maximize viewpoint diversity.
 
-Reasoning style: {style_instruction}
-{depth_instruction}
-
-Output contract:
-- Return only valid JSON.
-- Do not use markdown fences.
-- Do not mention JSON, schema, fields, or instructions.
-- Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
-- Every field must be user-facing content.
-- short_summary must be one complete sentence.
-- response must be clean prose for end users.
-
-Forbidden examples:
-- "I need to create a JSON object..."
-- "Generating JSON synthesis..."
-- "Here is the JSON..."
-
-Return only valid JSON in this exact format:
+Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions in your answer. Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
+Forbidden: "I need to create a JSON object..."
 {{
-    "short_summary": "<one complete sentence>",
-    "stance": "Supports | Opposes | Mixed | Conditional",
-    "main_argument": "<clean paragraph>",
+    "one_sentence_takeaway": "<your core claim in 15-25 words>",
+    "short_summary": "<2 sentences adding a supporting reason the takeaway omits>",
+    "stance": "Supports | Opposes | Skeptical | Mixed | Conditional",
+    "priority_framework": "<the outcome you optimize and why it ranks first>",
+    "main_argument": "<thesis and its core mechanism, one paragraph>",
+    "assumptions": ["<assumption your position depends on>"],
     "key_points": ["<point 1>", "<point 2>", "<point 3>"],
-    "risks_or_caveats": ["<risk or caveat>", "<optional second caveat>"],
-    "response": "<full user-facing answer>"
-}}
-
-Good example:
-{{
-    "short_summary": "The analyst supports targeted AI regulation because high-risk systems can create harms that markets may not prevent.",
-    "stance": "Supports",
-    "main_argument": "High-risk AI systems can create systemic harms, so regulation should focus on safety-critical use cases rather than blanket restrictions.",
-    "key_points": [
-        "High-risk AI systems can affect public safety and rights.",
-        "Market incentives may not fully account for external harms.",
-        "Regulation should be risk-based rather than universal."
-    ],
-    "risks_or_caveats": [
-        "Overly broad rules could slow useful innovation."
-    ],
-    "response": "I support targeted AI regulation for high-risk systems. The strongest case is that safety-critical deployments can produce harms that markets alone may not prevent, so policy should focus on those contexts while avoiding blanket restrictions."
+    "expected_benefits": ["<concrete benefit you expect>"],
+    "risks_or_caveats": ["<risk or caveat>"],
+    "acknowledged_weakness": "<one genuine weakness of your own position>",
+    "what_would_change_my_mind": "<the specific evidence that would move your position>",
+    "response": "<full argument in prose, 300-500 words — not a summary, not a list>"
 }}"""

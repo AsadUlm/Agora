@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import AgoraLogoIcon from "./AgoraLogoIcon";
 import { useNavigate } from "react-router-dom";
 import { cn } from "@/shared/lib/cn";
 import { useDebateStore } from "../model/debate.store";
@@ -10,6 +11,8 @@ export default function TopTopicBar() {
     const navigate = useNavigate();
     const session = useDebateStore((s) => s.session);
     const agents = useDebateStore((s) => s.agents);
+    const ragActive = useDebateStore((s) => s.ragActive);
+    const documentCount = useDebateStore((s) => s.documentCount);
     const graph = useGraphStore((s) => s.graph);
     const execution = useDebateExecutionState();
     const [questionExpanded, setQuestionExpanded] = useState(false);
@@ -45,12 +48,13 @@ export default function TopTopicBar() {
 
     return (
         <>
-            <div className="h-14 px-6 flex items-center justify-between border-b border-agora-border bg-agora-surface/80 backdrop-blur-sm">
-                <div className="flex items-center gap-4 min-w-0">
-                    {/* Back to Debates */}
+            <div className="h-14 px-4 flex items-center gap-3 border-b border-agora-border bg-agora-surface/80 backdrop-blur-sm">
+
+                {/* Left — back + logo (fixed, never shrinks) */}
+                <div className="flex items-center gap-3 shrink-0">
                     <button
                         onClick={() => navigate("/debates")}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all whitespace-nowrap"
                         title="Back to all debates"
                     >
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -62,28 +66,31 @@ export default function TopTopicBar() {
                     <div className="h-5 w-px bg-agora-border" />
 
                     <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm">
-                            A
-                        </div>
+                        <AgoraLogoIcon size={32} />
                         <span className="text-sm font-semibold text-white">AGORA</span>
                     </div>
-
-                    <div className="h-5 w-px bg-agora-border" />
-
-                    <button
-                        type="button"
-                        title={fullQuestion}
-                        onClick={() => setQuestionExpanded(true)}
-                        className="min-w-0 max-w-[560px] text-left text-sm text-agora-text-muted hover:text-white transition-colors"
-                    >
-                        <span className="truncate block">{fullQuestion}</span>
-                    </button>
                 </div>
-                <div className="flex items-center gap-3">
+
+                <div className="h-5 w-px bg-agora-border shrink-0" />
+
+                {/* Center — question text (takes all available space) */}
+                <button
+                    type="button"
+                    title={fullQuestion}
+                    onClick={() => setQuestionExpanded(true)}
+                    className="flex-1 min-w-0 text-left text-sm text-agora-text-muted hover:text-white transition-colors"
+                >
+                    <span className="truncate block">{fullQuestion}</span>
+                </button>
+
+                <div className="h-5 w-px bg-agora-border shrink-0" />
+
+                {/* Right — status + meta (fixed, never shrinks) */}
+                <div className="flex items-center gap-3 shrink-0">
                     {execution.debateStatus && (
                         <span
                             className={cn(
-                                "px-2.5 py-0.5 rounded-full text-[11px] font-medium border uppercase tracking-wider",
+                                "px-2.5 py-0.5 rounded-full text-[11px] font-medium border uppercase tracking-wider whitespace-nowrap",
                                 statusColor[execution.debateStatus] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30",
                             )}
                         >
@@ -94,19 +101,43 @@ export default function TopTopicBar() {
                         </span>
                     )}
 
-                    <span className="text-[11px] text-agora-text-muted">
+                    <span className="hidden lg:inline text-[11px] text-agora-text-muted whitespace-nowrap">
                         {stageLabel}
                     </span>
 
-                    {execution.debateStatus === "running" && (
-                        <span className="text-[11px] text-indigo-300/90 truncate max-w-[260px]">
-                            {narration.relation ?? narration.title}
+                    {execution.debateStatus === "running" && narration.relation && (
+                        <span className="hidden xl:inline text-[11px] text-indigo-300/90 truncate max-w-[180px]">
+                            {narration.relation}
                         </span>
                     )}
 
                     {session?.agents && (
-                        <span className="text-[11px] text-agora-text-muted">
+                        <span className="hidden md:inline text-[11px] text-agora-text-muted whitespace-nowrap">
                             {session.agents.length} agents
+                        </span>
+                    )}
+
+                    {/*
+                      FIX-12: Neutral RAG mode indicator. Reasoning-only
+                      (no documents attached) is a valid mode \u2014 never an error.
+                    */}
+                    {ragActive !== null && (
+                        <span
+                            className={cn(
+                                "hidden md:inline px-2 py-0.5 rounded-full text-[11px] font-medium border whitespace-nowrap",
+                                ragActive
+                                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+                                    : "bg-slate-500/10 text-slate-300 border-slate-500/30",
+                            )}
+                            title={
+                                ragActive
+                                    ? `Evidence mode \u00b7 ${documentCount} document${documentCount === 1 ? "" : "s"} attached`
+                                    : "Reasoning-only mode \u00b7 No documents attached"
+                            }
+                        >
+                            {ragActive
+                                ? `Evidence \u00b7 ${documentCount} doc${documentCount === 1 ? "" : "s"}`
+                                : "Reasoning-only"}
                         </span>
                     )}
                 </div>

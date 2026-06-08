@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-EMBEDDING_DIM = 1536  # OpenAI text-embedding-3-small / ada-002 dimension
+EMBEDDING_DIM = 768  # Gemini text-embedding-004 dimension
 
 
 class DocumentChunk(Base):

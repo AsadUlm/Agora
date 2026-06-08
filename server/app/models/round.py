@@ -9,9 +9,14 @@ from app.db.base import Base
 
 
 class RoundType(str, enum.Enum):
+    # Cycle 1 (initial debate)
     initial = "initial"
     critique = "critique"
     final = "final"
+    # Cycle 2+ (follow-up debate continuation)
+    followup_response = "followup_response"
+    followup_critique = "followup_critique"
+    updated_synthesis = "updated_synthesis"
 
 
 class RoundStatus(str, enum.Enum):
@@ -32,6 +37,9 @@ class Round(Base):
         Uuid(as_uuid=True), ForeignKey("chat_turns.id", ondelete="CASCADE"), nullable=False, index=True
     )
     round_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    cycle_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     round_type: Mapped[RoundType] = mapped_column(
         SQLEnum(RoundType, name="round_type"), nullable=False
     )

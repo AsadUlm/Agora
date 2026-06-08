@@ -1,10 +1,12 @@
 import { cn } from "@/shared/lib/cn";
 import { motion } from "motion/react";
+import { useMemo } from "react";
 import { useModeratorStore } from "../model/moderator.store";
 import { usePlaybackStore } from "../model/playback.store";
 import { useGraphStore } from "../model/graph.store";
 import { useAnimationStore } from "../model/animation/animation.store";
 import { useDebateStore } from "../model/debate.store";
+import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import { formatTime } from "@/shared/lib/dates";
 import type { DebateGraphNode, DebateGraphEdge } from "../model/graph.types";
 
@@ -26,21 +28,145 @@ const roundExplanations: Record<number, { title: string; description: string }> 
         description: "Agents engage with each other's positions. Watch for challenges (red edges) and support (green edges) forming between agents.",
     },
     3: {
-        title: "Round 3 — Synthesis",
-        description: "The debate converges into a final synthesis, combining the strongest arguments from all rounds.",
+        title: "Round 3 — Synthesis & Verdict",
+        description: "The debate converges into per-agent syntheses, then a neutral moderator aggregates them into one Overall Synthesis Verdict (look for the violet card inside the Evolution tab).",
+    },
+    4: {
+        title: "Follow-up — Re-engagement",
+        description: "Agents read the new follow-up question together with the prior conclusion, then issue refreshed positions.",
+    },
+    5: {
+        title: "Follow-up — Updated Critique",
+        description: "Agents critique the new responses against the original synthesis to surface what genuinely changed.",
+    },
+    6: {
+        title: "Follow-up — Updated Synthesis & Verdict",
+        description: "Each agent issues an updated synthesis, and the moderator publishes a new Overall Verdict for this follow-up cycle.",
     },
 };
+
+/**
+ * Process Guide step catalogues.
+ *
+ * The guide is rendered context-aware: when the user is on the base debate
+ * (cycle 1, no follow-up exists) we only show the three base steps. As soon
+ * as a follow-up cycle exists / is selected, we switch to the follow-up
+ * step set so the user is not misled into thinking that follow-up rounds
+ * are "missing" or "failed" phases of the base debate.
+ */
+type ProcessStep = {
+    key: string;
+    label: string;
+    description: string;
+    /** Backend round number(s) that satisfy this step. */
+    roundNumbers: number[];
+};
+
+const BASE_CYCLE_STEPS: ProcessStep[] = [
+    {
+        key: "initial",
+        label: "Initial Proposals",
+        description: "Agents establish their starting positions.",
+        roundNumbers: [1],
+    },
+    {
+        key: "critique",
+        label: "Debate & Critique",
+        description: "Agents challenge assumptions and test weak points.",
+        roundNumbers: [2],
+    },
+    {
+        key: "final",
+        label: "Final Synthesis + Verdict",
+        description:
+            "Agents synthesize the debate and the moderator produces the overall verdict.",
+        roundNumbers: [3],
+    },
+];
+
+const FOLLOWUP_CYCLE_STEPS: ProcessStep[] = [
+    {
+        key: "followup_response",
+        label: "Follow-up Response",
+        description:
+            "Agents answer the new follow-up question using the existing debate state.",
+        roundNumbers: [4],
+    },
+    {
+        key: "followup_critique",
+        label: "Follow-up Critique",
+        description: "Agents critique the follow-up answers.",
+        roundNumbers: [5],
+    },
+    {
+        key: "updated_synthesis",
+        label: "Updated Synthesis + Verdict",
+        description:
+            "Agents update their synthesis and the moderator provides an updated overall verdict.",
+        roundNumbers: [6],
+    },
+];
+
+const FOLLOWUP_ROUND_TYPES = new Set([
+    "followup_response",
+    "followup_critique",
+    "updated_synthesis",
+]);
+
+/**
+ * Resolve the *effective* round for a selected node.
+ *
+ * The graph reuses the same node id (`agent-{id}`) for an agent's Round 1
+ * stance and Round 3 final position — so by the time Round 3 is written
+ * the node's `round` field is always 3, even if the user is currently
+ * focused on Round 1 in the timeline. We therefore prefer:
+ *   1. an explicit `selectedRound` from the playback store (user intent),
+ *   2. the node's intrinsic round (which is correct for intermediate /
+ *      synthesis / follow-up nodes that are NOT shared across rounds).
+ */
+function effectiveRound(
+    node: DebateGraphNode,
+    selectedRound: number | null,
+): number {
+    if (
+        selectedRound != null
+        && (node.kind === "agent" || node.kind === "followup-agent")
+    ) {
+        return selectedRound;
+    }
+    return node.round;
+}
+
+/** Human label for a (round, cycle) pair, follow-up aware. */
+function roundLabelFor(round: number, cycle: number): string {
+    const isFollowUp = cycle > 1;
+    const followUpIndex = cycle - 1;
+    if (isFollowUp) {
+        if (round === 4) return `Follow-up #${followUpIndex} response`;
+        if (round === 5) return `Follow-up #${followUpIndex} critique`;
+        if (round === 6) return `Follow-up #${followUpIndex} conclusion`;
+        return `Follow-up #${followUpIndex} — Round ${round}`;
+    }
+    if (round === 1) return "Round 1";
+    if (round === 2) return "Round 2";
+    if (round === 3) return "Round 3";
+    return `Round ${round}`;
+}
 
 /** Build an interpretive explanation of what a selected node means in the debate. */
 function buildNodeInterpretation(
     node: DebateGraphNode,
     edges: DebateGraphEdge[],
     allNodes: DebateGraphNode[],
+    selectedRound: number | null,
 ): { meaning: string; role: string; context: string[] } {
     const relatedEdges = edges.filter(
         (e) => e.source === node.id || e.target === node.id,
     );
     const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+    const cycle = node.cycle ?? 1;
+    const r = effectiveRound(node, selectedRound);
+    const roundLabel = roundLabelFor(r, cycle);
 
     if (node.kind === "question") {
         return {
@@ -50,24 +176,29 @@ function buildNodeInterpretation(
         };
     }
 
-    if (node.kind === "synthesis") {
+    if (node.kind === "synthesis" || node.kind === "followup-synthesis") {
         const incomingAgents = relatedEdges
             .filter((e) => e.target === node.id)
             .map((e) => allNodes.find((n) => n.id === e.source)?.agentRole)
             .filter((s): s is string => Boolean(s));
+        const isFollowUp = cycle > 1;
         return {
-            meaning: "This is the final synthesis — the debate's conclusion that combines the strongest arguments from all rounds.",
-            role: "Final convergence point",
+            meaning: isFollowUp
+                ? "Updated synthesis after the follow-up — combines the original conclusion with new reasoning."
+                : "This is the final synthesis — the debate's conclusion that combines the strongest arguments from all rounds.",
+            role: isFollowUp
+                ? `Updated synthesis — Follow-up #${cycle - 1} conclusion`
+                : "Final synthesis — Round 3 conclusion",
             context: incomingAgents.length > 0
                 ? [`Integrates perspectives from: ${incomingAgents.map(capitalize).join(", ")}`]
                 : ["Combines all agent perspectives into a unified conclusion."],
         };
     }
 
-    if (node.kind === "intermediate") {
-        // Round 2 interaction node
-        const outgoing = relatedEdges.filter((e) => e.source === node.id && e.round === 2);
-        const incoming = relatedEdges.filter((e) => e.target === node.id && e.round === 2);
+    if (node.kind === "intermediate" || node.kind === "followup-intermediate") {
+        // Critique node — round 2 in the original cycle, round 5 in a follow-up.
+        const outgoing = relatedEdges.filter((e) => e.source === node.id);
+        const incoming = relatedEdges.filter((e) => e.target === node.id);
         const context: string[] = [];
 
         for (const edge of outgoing) {
@@ -85,12 +216,12 @@ function buildNodeInterpretation(
 
         return {
             meaning: `This represents ${capitalize(node.agentRole ?? "an agent")}'s engagement in the debate phase — where agents challenge, support, or question each other's positions.`,
-            role: "Debate participant (Round 2)",
+            role: `${capitalize(node.agentRole ?? "Agent")} — ${roundLabel} participant`,
             context: context.length > 0 ? context : ["Participating in the agent-to-agent debate."],
         };
     }
 
-    // Regular agent node (round 1)
+    // Regular agent node (round 1, round 3, follow-up agent).
     const context: string[] = [];
     const challengeEdges = relatedEdges.filter((e) => e.kind === "challenges");
     const supportEdges = relatedEdges.filter((e) => e.kind === "supports");
@@ -101,14 +232,162 @@ function buildNodeInterpretation(
     if (supportEdges.length > 0) {
         context.push(`Involved in ${supportEdges.length} support connection${supportEdges.length > 1 ? "s" : ""}`);
     }
-    if (context.length === 0 && node.round === 1) {
+    if (context.length === 0 && r === 1) {
         context.push("Presented an initial perspective in Round 1.");
     }
 
     return {
         meaning: `${capitalize(node.agentRole ?? "Agent")} contributes a ${node.agentRole ?? "general"}-oriented perspective to the debate.`,
-        role: `${capitalize(node.agentRole ?? "Agent")} — Round ${node.round} contributor`,
+        role: `${capitalize(node.agentRole ?? "Agent")} — ${roundLabel} contributor`,
         context,
+    };
+}
+
+type GuideStepStatus = "completed" | "current" | "pending";
+
+interface ProcessGuideStep extends ProcessStep {
+    status: GuideStepStatus;
+    localIndex: number;
+    backendRoundLabel: string;
+}
+
+interface ProcessGuideViewModel {
+    mode: "base" | "followup";
+    cycleNumber: number;
+    cycleTitle: string;
+    followupQuestion: string | null;
+    steps: ProcessGuideStep[];
+    /** Status of the entire guide, used to drive the bottom hint copy. */
+    overallStatus: "pending" | "running" | "completed";
+    /** Whether the base debate has already produced any follow-up rounds. */
+    hasFollowupCycles: boolean;
+}
+
+type SessionLike = {
+    latest_turn?: {
+        rounds?: Array<{
+            round_type?: string;
+            round_number?: number;
+            cycle_number?: number | null;
+            messages?: Array<{ payload?: Record<string, unknown> }>;
+        }> | null;
+        follow_ups?: Array<{ cycle_number: number; question: string }> | null;
+    } | null;
+} | null | undefined;
+
+function detectFollowupCycles(session: SessionLike): boolean {
+    const turn = session?.latest_turn;
+    if (!turn) return false;
+    if ((turn.follow_ups?.length ?? 0) > 0) return true;
+    for (const r of turn.rounds ?? []) {
+        if (r.round_type && FOLLOWUP_ROUND_TYPES.has(r.round_type)) return true;
+        if ((r.cycle_number ?? 1) > 1) return true;
+        for (const m of r.messages ?? []) {
+            const p = m.payload;
+            if (p && typeof p === "object") {
+                if ("followup_question" in p || "followup_cycle" in p) return true;
+            }
+        }
+    }
+    return false;
+}
+
+function buildProcessGuide(args: {
+    session: SessionLike;
+    selectedCycle: number;
+    selectedRound: number | null;
+    activeRound: number;
+    debateStatus: string;
+}): ProcessGuideViewModel {
+    const { session, selectedCycle, selectedRound, activeRound, debateStatus } = args;
+    const turn = session?.latest_turn ?? null;
+    const rounds = turn?.rounds ?? [];
+
+    const hasFollowupCycles = detectFollowupCycles(session);
+    const cycleNumber = Math.max(1, selectedCycle || 1);
+    const isFollowupMode = cycleNumber > 1 || (hasFollowupCycles && selectedCycle > 1);
+
+    // Resolve which rounds belong to the cycle we're rendering. Round
+    // records carry an explicit `cycle_number`; if missing, fall back to
+    // round_type-based grouping (cycle 1 = initial/critique/final, every
+    // follow-up cycle = followup_response/followup_critique/updated_synthesis).
+    const roundsInCycle = rounds.filter((r) => {
+        const c = r.cycle_number ?? 1;
+        if (c === cycleNumber) return true;
+        if (cycleNumber === 1 && r.cycle_number == null) {
+            return !r.round_type || !FOLLOWUP_ROUND_TYPES.has(r.round_type);
+        }
+        return false;
+    });
+
+    const stepDefs = isFollowupMode ? FOLLOWUP_CYCLE_STEPS : BASE_CYCLE_STEPS;
+
+    const isStepCompleted = (step: ProcessStep): boolean => {
+        // A step is "completed" if any matching round has at least one
+        // agent/judge message recorded.
+        const matchingRounds = roundsInCycle.filter((r) =>
+            step.roundNumbers.includes(r.round_number ?? -1),
+        );
+        for (const r of matchingRounds) {
+            if ((r.messages?.length ?? 0) > 0) return true;
+        }
+        return false;
+    };
+
+    // Live round detection: only meaningful when we're on the live cycle.
+    const isLiveCycle =
+        (debateStatus === "queued" || debateStatus === "running") &&
+        cycleNumber === (selectedCycle || 1);
+    const referenceRound = selectedRound ?? activeRound ?? 0;
+
+    const steps: ProcessGuideStep[] = stepDefs.map((step, idx) => {
+        const completed = isStepCompleted(step);
+        let status: GuideStepStatus;
+        if (completed) {
+            status = "completed";
+        } else if (
+            isLiveCycle &&
+            step.roundNumbers.includes(referenceRound)
+        ) {
+            status = "current";
+        } else {
+            status = "pending";
+        }
+        return {
+            ...step,
+            status,
+            localIndex: idx + 1,
+            backendRoundLabel:
+                step.roundNumbers.length === 1
+                    ? `Round ${step.roundNumbers[0]}`
+                    : `Rounds ${step.roundNumbers.join(", ")}`,
+        };
+    });
+
+    const allCompleted = steps.every((s) => s.status === "completed");
+    const anyCompleted = steps.some((s) => s.status === "completed");
+    const overallStatus: "pending" | "running" | "completed" = allCompleted
+        ? "completed"
+        : isLiveCycle || anyCompleted
+            ? "running"
+            : "pending";
+
+    const followupQuestion = isFollowupMode
+        ? turn?.follow_ups?.find((f) => f.cycle_number === cycleNumber)?.question ?? null
+        : null;
+
+    const cycleTitle = isFollowupMode
+        ? `Cycle ${cycleNumber} — Follow-up`
+        : `Cycle ${cycleNumber}`;
+
+    return {
+        mode: isFollowupMode ? "followup" : "base",
+        cycleNumber,
+        cycleTitle,
+        followupQuestion,
+        steps,
+        overallStatus,
+        hasFollowupCycles,
     };
 }
 
@@ -118,6 +397,8 @@ export default function ModeratorPanel() {
     const watchFor = useModeratorStore((s) => s.watchFor);
     const activityFeed = useModeratorStore((s) => s.activityFeed);
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
+    const selectedCycle = usePlaybackStore((s) => s.selectedCycle);
+    const setSelectedRound = usePlaybackStore((s) => s.setSelectedRound);
     const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
     const graph = useGraphStore((s) => s.graph);
     const selectNode = useGraphStore((s) => s.selectNode);
@@ -136,6 +417,20 @@ export default function ModeratorPanel() {
     const revealedNodeIds = useDebateStore((s) => s.revealedNodeIds);
     const setPlaybackMode = useDebateStore((s) => s.setPlaybackMode);
     const revealNextVisual = useDebateStore((s) => s.revealNextVisual);
+    const session = useDebateStore((s) => s.session);
+    const execution = useDebateExecutionState();
+
+    const processGuide = useMemo(
+        () =>
+            buildProcessGuide({
+                session,
+                selectedCycle,
+                selectedRound,
+                activeRound: execution.activeRound,
+                debateStatus: execution.debateStatus,
+            }),
+        [session, selectedCycle, selectedRound, execution.activeRound, execution.debateStatus],
+    );
 
     const queuedForReveal = playbackQueue.length;
     const revealedStepCount = revealedNodeIds.filter((id) => id !== "question-node").length;
@@ -143,10 +438,27 @@ export default function ModeratorPanel() {
     const canClickNext =
         !stepBusy
         && currentlyGenerating === null
-        && (turnStatus === "queued" || turnStatus === "running");
+        && (execution.debateStatus === "queued" || execution.debateStatus === "running");
 
+    /**
+     * roundInfo only drives the *supplementary* "Why this matters" block.
+     * It must NOT override the primary explanation — otherwise picking
+     * Round 3 in the timeline while Round 1 is executing would make the
+     * panel narrate Round 3, which is the bug we're fixing.
+     */
     const roundInfo = selectedRound ? roundExplanations[selectedRound] : null;
-    const displayExplanation = roundInfo?.description ?? explanation;
+    const displayExplanation = explanation;
+
+    /**
+     * Whether the user is "viewing" something other than the live state.
+     * In that case we show a small secondary chip in the header so they
+     * know the panel content reflects the live execution, not their pick.
+     */
+    const isLive =
+        execution.debateStatus === "queued" || execution.debateStatus === "running";
+    const viewingOlderRound =
+        selectedRound !== null && isLive && selectedRound !== execution.activeRound;
+    const viewingOlderCycle = selectedCycle > 1 && isLive;
 
     // Find selected node data for interpretation mode
     const selectedNode = selectedNodeId
@@ -156,7 +468,7 @@ export default function ModeratorPanel() {
     const isInterpretationMode = selectedNode !== null;
 
     const interpretation = selectedNode
-        ? buildNodeInterpretation(selectedNode, graph.edges, graph.nodes)
+        ? buildNodeInterpretation(selectedNode, graph.edges, graph.nodes, selectedRound)
         : null;
 
     const handleActivityClick = (relatedNodeId?: string) => {
@@ -167,34 +479,150 @@ export default function ModeratorPanel() {
     };
 
     return (
-        <div className="w-72 h-full border-l border-agora-border bg-agora-surface/60 backdrop-blur-sm flex flex-col">
+        <div className="w-full h-full bg-agora-surface/40 flex flex-col">
             {/* Header */}
-            <div className="px-4 py-4 border-b border-agora-border">
-                <div className="flex items-center justify-between">
-                    <h2 className="text-xs uppercase tracking-widest text-agora-text-muted font-semibold">
+            <div className="px-4 py-3 border-b border-agora-border space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                    <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
                         Moderator
                     </h2>
                     <span
                         className={cn(
-                            "px-2 py-0.5 rounded-full text-[10px] font-medium",
-                            selectedRound
-                                ? "bg-indigo-500/20 text-indigo-400"
-                                : status === "Live"
-                                    ? "bg-indigo-500/20 text-indigo-400"
-                                    : status === "Completed"
-                                        ? "bg-emerald-500/20 text-emerald-400"
-                                        : status === "Failed"
-                                            ? "bg-red-500/20 text-red-400"
-                                            : "bg-gray-500/20 text-gray-400",
+                            "px-2 py-0.5 rounded-full text-[10px] font-medium tracking-wide",
+                            status === "Live"
+                                ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
+                                : status === "Completed"
+                                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                    : status === "Failed"
+                                        ? "bg-red-500/20 text-red-300 border border-red-500/30"
+                                        : "bg-gray-500/20 text-gray-300 border border-gray-500/30",
                         )}
+                        title="Live debate execution status"
                     >
-                        {selectedRound ? `Round ${selectedRound}` : status}
+                        {isLive
+                            ? `Live · Round ${execution.activeRound}`
+                            : status}
                     </span>
                 </div>
+
+                {(viewingOlderRound || viewingOlderCycle) && (
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className="text-agora-text-muted/80">Viewing:</span>
+                        {viewingOlderCycle && (
+                            <span className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-200 border border-violet-500/30">
+                                Follow-up #{selectedCycle - 1}
+                            </span>
+                        )}
+                        {viewingOlderRound && (
+                            <button
+                                type="button"
+                                onClick={() => setSelectedRound(null)}
+                                className="px-1.5 py-0.5 rounded bg-agora-surface-light/60 text-agora-text hover:bg-agora-surface-light border border-agora-border"
+                                title="Clear round filter"
+                            >
+                                Round {selectedRound} ✕
+                            </button>
+                        )}
+                    </div>
+                )}
             </div>
 
+            {/* ── Process Guide (context-aware: base or follow-up) ─── */}
+            {!isInterpretationMode && (
+                <div className="px-4 py-3 border-b border-agora-border bg-violet-500/5">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="text-[10px] uppercase tracking-widest text-violet-300 font-semibold">
+                            Process Guide
+                        </div>
+                        <span className="text-[10px] text-agora-text-muted">
+                            {processGuide.cycleTitle}
+                        </span>
+                    </div>
+
+                    {processGuide.mode === "followup" && processGuide.followupQuestion && (
+                        <p
+                            className="text-[11px] italic text-violet-200/80 mb-2 line-clamp-2"
+                            title={processGuide.followupQuestion}
+                        >
+                            Follow-up question: “{processGuide.followupQuestion}”
+                        </p>
+                    )}
+
+                    <ol className="space-y-1">
+                        {processGuide.steps.map((step) => {
+                            const isCurrent = step.status === "current";
+                            const isCompleted = step.status === "completed";
+                            return (
+                                <li
+                                    key={step.key}
+                                    className={cn(
+                                        "flex items-start gap-2 text-[11px] leading-snug",
+                                        isCurrent
+                                            ? "text-white"
+                                            : isCompleted
+                                                ? "text-agora-text-muted/80"
+                                                : "text-agora-text-muted/60",
+                                    )}
+                                >
+                                    <span
+                                        className={cn(
+                                            "mt-0.5 inline-flex items-center justify-center h-4 w-4 rounded-full text-[9px] font-semibold border shrink-0",
+                                            isCurrent
+                                                ? "bg-violet-500 text-white border-violet-300"
+                                                : isCompleted
+                                                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                                                    : "bg-agora-surface-light/40 text-agora-text-muted border-agora-border",
+                                        )}
+                                    >
+                                        {isCompleted ? "✓" : step.localIndex}
+                                    </span>
+                                    <div className="min-w-0 flex-1">
+                                        <div
+                                            className={cn(
+                                                "font-medium flex items-center justify-between gap-2",
+                                                isCurrent && "text-white",
+                                            )}
+                                        >
+                                            <span className="truncate">{step.label}</span>
+                                            <span className="text-[9px] uppercase tracking-wide text-agora-text-muted/60 font-normal shrink-0">
+                                                {step.backendRoundLabel}
+                                            </span>
+                                        </div>
+                                        {isCurrent && (
+                                            <div className="text-[10px] text-violet-200/90 mt-0.5">
+                                                {step.description}
+                                            </div>
+                                        )}
+                                    </div>
+                                </li>
+                            );
+                        })}
+                    </ol>
+
+                    {/* Bottom hint — depends on mode + completion state.       */}
+                    {processGuide.mode === "base" && processGuide.overallStatus === "completed" && !processGuide.hasFollowupCycles && (
+                        <div className="mt-2.5 pt-2.5 border-t border-agora-border/40 space-y-1">
+                            <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
+                                Follow-up
+                            </div>
+                            <p className="text-[11px] text-agora-text leading-relaxed">
+                                Ask a follow-up question to continue the debate.
+                            </p>
+                            <p className="text-[10px] text-agora-text-muted/80 leading-relaxed">
+                                Follow-up cycles will add response, critique, and updated synthesis rounds.
+                            </p>
+                        </div>
+                    )}
+                    {processGuide.mode === "followup" && processGuide.overallStatus === "completed" && (
+                        <p className="mt-2.5 pt-2.5 border-t border-agora-border/40 text-[11px] text-agora-text-muted leading-relaxed">
+                            Follow-up cycle complete. Review the Updated Overall Verdict or ask another follow-up question.
+                        </p>
+                    )}
+                </div>
+            )}
+
             {/* ── Guided Narrator ─────────────────────────────────── */}
-            {!isInterpretationMode && (turnStatus === "queued" || turnStatus === "running" || (turnStatus === "completed" && queuedForReveal > 0)) && (
+            {!isInterpretationMode && (execution.debateStatus === "queued" || execution.debateStatus === "running" || (execution.debateStatus === "completed" && queuedForReveal > 0)) && (
                 <div className="px-4 py-3 border-b border-agora-border bg-indigo-500/5 space-y-2.5">
                     {/* Current Step */}
                     <div>
@@ -243,7 +671,7 @@ export default function ModeratorPanel() {
                             }
                             return (
                                 <p className="text-xs text-agora-text-muted leading-relaxed">
-                                    {currentStepDescription || "Waiting for the next response..."}
+                                    {currentStepDescription || "Generating next round response..."}
                                 </p>
                             );
                         })()}
@@ -351,7 +779,9 @@ export default function ModeratorPanel() {
             {!isInterpretationMode && turnStatus === "completed" && (
                 <div className="px-4 py-3 border-b border-agora-border bg-emerald-500/5">
                     <p className="text-xs text-emerald-200 leading-relaxed">
-                        Debate complete. Review the agents' arguments and final synthesis.
+                        {processGuide.mode === "followup"
+                            ? "Follow-up cycle complete. Review the Updated Overall Verdict or ask another follow-up question."
+                            : "Debate complete. Review the Overall Synthesis Verdict or ask a follow-up question to continue."}
                     </p>
                 </div>
             )}

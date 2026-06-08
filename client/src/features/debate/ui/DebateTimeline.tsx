@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { useEffect } from "react";
 import { usePlaybackStore } from "../model/playback.store";
 import { useDebateExecutionState } from "../model/useDebateExecutionState";
+import CycleNavigator from "./CycleNavigator";
 
 const phaseIcons: Record<string, string> = {
     initial: "💬",
@@ -18,7 +19,7 @@ const statusDotColors: Record<string, string> = {
     failed: "bg-red-500",
 };
 
-export default function DebateTimeline() {
+export default function DebateTimeline({ mobile = false }: { mobile?: boolean }) {
     const execution = useDebateExecutionState();
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
     const setSelectedRound = usePlaybackStore((s) => s.setSelectedRound);
@@ -59,14 +60,22 @@ export default function DebateTimeline() {
     };
 
     return (
-        <div className="w-64 h-full border-r border-agora-border bg-agora-surface/60 backdrop-blur-sm flex flex-col">
-            <div className="px-4 py-4 border-b border-agora-border">
-                <h2 className="text-xs uppercase tracking-widest text-agora-text-muted font-semibold">
-                    Debate Timeline
+        <div
+            className={cn(
+                "h-full bg-agora-surface/60 backdrop-blur-sm flex flex-col shrink-0",
+                mobile ? "w-full" : "border-r border-agora-border",
+            )}
+            style={mobile ? undefined : { width: "clamp(160px, 16vw, 260px)" }}
+        >
+            <CycleNavigator />
+
+            <div className="px-4 py-3 border-b border-agora-border">
+                <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold truncate">
+                    Rounds in this cycle
                 </h2>
             </div>
 
-            <div className="flex-1 p-4 space-y-2 overflow-y-auto">
+            <div className="flex-1 p-3 space-y-1.5 overflow-y-auto">
                 {rounds.map((round, idx) => {
                     const isSelected = round.roundNumber === selectedRound;
                     const isActive = round.roundNumber === execution.activeRound && selectedRound === null;
@@ -143,7 +152,7 @@ export default function DebateTimeline() {
                                 <div className="flex-1 min-w-0">
                                     <div
                                         className={cn(
-                                            "text-xs font-semibold",
+                                            "text-xs font-semibold truncate",
                                             isSelected
                                                 ? "text-indigo-200"
                                                 : isRunning || isActive
@@ -187,28 +196,6 @@ export default function DebateTimeline() {
                 })}
             </div>
 
-            {/* Legend */}
-            <div className="p-4 border-t border-agora-border space-y-2">
-                <div className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold mb-2">
-                    Edge Legend
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 bg-pink-400" style={{ backgroundImage: "repeating-linear-gradient(90deg, #f472b6, #f472b6 4px, transparent 4px, transparent 7px)" }} />
-                    <span className="text-[10px] text-agora-text-muted">Challenge</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 bg-emerald-400" />
-                    <span className="text-[10px] text-agora-text-muted">Support</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 bg-indigo-400" style={{ backgroundImage: "repeating-linear-gradient(90deg, #818cf8, #818cf8 3px, transparent 3px, transparent 6px)" }} />
-                    <span className="text-[10px] text-agora-text-muted">Inquiry</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <div className="w-4 h-0.5 bg-violet-400" />
-                    <span className="text-[10px] text-agora-text-muted">Summarizes</span>
-                </div>
-            </div>
         </div>
     );
 }
