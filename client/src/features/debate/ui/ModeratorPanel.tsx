@@ -7,6 +7,7 @@ import { useGraphStore } from "../model/graph.store";
 import { useAnimationStore } from "../model/animation/animation.store";
 import { useDebateStore } from "../model/debate.store";
 import { useDebateExecutionState } from "../model/useDebateExecutionState";
+import { useDebateViewState } from "../model/useDebateViewState";
 import { formatTime } from "@/shared/lib/dates";
 import type { DebateGraphNode, DebateGraphEdge } from "../model/graph.types";
 
@@ -20,28 +21,24 @@ const activityTypeColors: Record<string, string> = {
 
 const roundExplanations: Record<number, { title: string; description: string }> = {
     1: {
-        title: "Round 1 — Initial Proposals",
+        title: "Stage 1 — Initial Positions",
         description: "Each agent forms their initial perspective independently, presenting their opening arguments on the question.",
     },
     2: {
-        title: "Round 2 — Debate & Critique",
+        title: "Stage 2 — Cross-Critiques",
         description: "Agents engage with each other's positions. Watch for challenges (red edges) and support (green edges) forming between agents.",
     },
     3: {
-        title: "Round 3 — Synthesis & Verdict",
-        description: "The debate converges into per-agent syntheses, then a neutral moderator aggregates them into one Overall Synthesis Verdict (look for the violet card inside the Evolution tab).",
+        title: "Stage 3 — Responses to Critiques",
+        description: "Agents explicitly accept or reject the critiques directed at their initial positions.",
     },
     4: {
-        title: "Follow-up — Re-engagement",
-        description: "Agents read the new follow-up question together with the prior conclusion, then issue refreshed positions.",
+        title: "Stage 4 — Revised Positions",
+        description: "Agents publish their revised positions and explain what changed.",
     },
     5: {
-        title: "Follow-up — Updated Critique",
-        description: "Agents critique the new responses against the original synthesis to surface what genuinely changed.",
-    },
-    6: {
-        title: "Follow-up — Updated Synthesis & Verdict",
-        description: "Each agent issues an updated synthesis, and the moderator publishes a new Overall Verdict for this follow-up cycle.",
+        title: "Stage 5 — Final Synthesis",
+        description: "The moderator synthesizes the revised positions into the final answer.",
     },
 };
 
@@ -65,22 +62,33 @@ type ProcessStep = {
 const BASE_CYCLE_STEPS: ProcessStep[] = [
     {
         key: "initial",
-        label: "Initial Proposals",
+        label: "Initial Positions",
         description: "Agents establish their starting positions.",
         roundNumbers: [1],
     },
     {
         key: "critique",
-        label: "Debate & Critique",
+        label: "Cross-Critiques",
         description: "Agents challenge assumptions and test weak points.",
         roundNumbers: [2],
     },
     {
-        key: "final",
-        label: "Final Synthesis + Verdict",
-        description:
-            "Agents synthesize the debate and the moderator produces the overall verdict.",
+        key: "critique_response",
+        label: "Responses to Critiques",
+        description: "Agents respond directly to critiques they received.",
         roundNumbers: [3],
+    },
+    {
+        key: "revised_position",
+        label: "Revised Positions",
+        description: "Agents explain and publish their updated positions.",
+        roundNumbers: [4],
+    },
+    {
+        key: "final",
+        label: "Final Synthesis",
+        description: "The moderator produces the final synthesis from revised positions.",
+        roundNumbers: [5],
     },
 ];
 
@@ -90,20 +98,20 @@ const FOLLOWUP_CYCLE_STEPS: ProcessStep[] = [
         label: "Follow-up Response",
         description:
             "Agents answer the new follow-up question using the existing debate state.",
-        roundNumbers: [4],
+        roundNumbers: [6],
     },
     {
         key: "followup_critique",
         label: "Follow-up Critique",
         description: "Agents critique the follow-up answers.",
-        roundNumbers: [5],
+        roundNumbers: [7],
     },
     {
         key: "updated_synthesis",
         label: "Updated Synthesis + Verdict",
         description:
             "Agents update their synthesis and the moderator provides an updated overall verdict.",
-        roundNumbers: [6],
+        roundNumbers: [8],
     },
 ];
 
@@ -147,10 +155,8 @@ function roundLabelFor(round: number, cycle: number): string {
         if (round === 6) return `Follow-up #${followUpIndex} conclusion`;
         return `Follow-up #${followUpIndex} — Round ${round}`;
     }
-    if (round === 1) return "Round 1";
-    if (round === 2) return "Round 2";
-    if (round === 3) return "Round 3";
-    return `Round ${round}`;
+    if (round >= 1 && round <= 5) return `Stage ${round}`;
+    return `Stage ${round}`;
 }
 
 /** Build an interpretive explanation of what a selected node means in the debate. */
@@ -188,7 +194,7 @@ function buildNodeInterpretation(
                 : "This is the final synthesis — the debate's conclusion that combines the strongest arguments from all rounds.",
             role: isFollowUp
                 ? `Updated synthesis — Follow-up #${cycle - 1} conclusion`
-                : "Final synthesis — Round 3 conclusion",
+                : "Final synthesis — Stage 5 conclusion",
             context: incomingAgents.length > 0
                 ? [`Integrates perspectives from: ${incomingAgents.map(capitalize).join(", ")}`]
                 : ["Combines all agent perspectives into a unified conclusion."],
@@ -233,7 +239,7 @@ function buildNodeInterpretation(
         context.push(`Involved in ${supportEdges.length} support connection${supportEdges.length > 1 ? "s" : ""}`);
     }
     if (context.length === 0 && r === 1) {
-        context.push("Presented an initial perspective in Round 1.");
+        context.push("Presented an initial perspective in Stage 1.");
     }
 
     return {
@@ -360,7 +366,7 @@ function buildProcessGuide(args: {
             backendRoundLabel:
                 step.roundNumbers.length === 1
                     ? `Round ${step.roundNumbers[0]}`
-                    : `Rounds ${step.roundNumbers.join(", ")}`,
+                    : `Stages ${step.roundNumbers.join(", ")}`,
         };
     });
 
@@ -407,7 +413,7 @@ export default function ModeratorPanel() {
     const executionMode = useDebateStore((s) => s.executionMode);
     const currentlyGenerating = useDebateStore((s) => s.currentlyGenerating);
     const pendingStep = useDebateStore((s) => s.pendingStep);
-    const turnStatus = useDebateStore((s) => s.turnStatus);
+    const turnStatus = useDebateViewState().derivedStatus;
     const requestNextStep = useDebateStore((s) => s.requestNextStep);
     const enableAutoRun = useDebateStore((s) => s.enableAutoRun);
     const stepBusy = useDebateStore((s) => s.stepBusy);
@@ -500,7 +506,7 @@ export default function ModeratorPanel() {
                         title="Live debate execution status"
                     >
                         {isLive
-                            ? `Live · Round ${execution.activeRound}`
+                            ? `Live · Stage ${execution.activeRound}`
                             : status}
                     </span>
                 </div>

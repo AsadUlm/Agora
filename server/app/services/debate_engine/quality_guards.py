@@ -298,6 +298,9 @@ def evaluate_round_quality(
     dispatch = (round_type or "").lower()
     if dispatch in ("critique", "followup_critique") or round_number == 2:
         issues.extend(CritiqueQualityValidator.validate(payload))
+    elif dispatch in ("critique_response", "revised_position"):
+        # New 5-stage pipeline rounds — leak check only, no structural quality guard
+        pass
     elif dispatch in ("final", "synthesis_verdict", "updated_synthesis") or round_number == 3:
         issues.extend(SynthesisQualityValidator.validate(payload))
     elif dispatch in ("initial", "followup_response") or round_number == 1:
@@ -366,6 +369,13 @@ _REQUIRED_FIELDS: dict[str, tuple[tuple[str, ...], ...]] = {
     "synthesis_verdict": (
         ("response", "recommended_answer"),
     ),
+    # New 5-stage pipeline round types
+    "critique_response": (
+        ("response",),
+    ),
+    "revised_position": (
+        ("revised_position", "response"),
+    ),
 }
 
 
@@ -385,6 +395,11 @@ def _has_malformed_fragments(text: str) -> bool:
 
 def _required_groups_for(round_number: int, round_type: str | None) -> tuple[tuple[str, ...], ...]:
     dispatch = (round_type or "").lower()
+    # New 5-stage pipeline rounds — must come BEFORE generic round_number checks
+    if dispatch == "critique_response":
+        return _REQUIRED_FIELDS["critique_response"]
+    if dispatch == "revised_position":
+        return _REQUIRED_FIELDS["revised_position"]
     if dispatch in ("critique", "followup_critique") or round_number == 2:
         return _REQUIRED_FIELDS["round2"]
     if dispatch == "synthesis_verdict":

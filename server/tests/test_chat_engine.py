@@ -1,12 +1,12 @@
 """
-Integration tests for ChatEngine — the orchestrator that runs all 3 rounds.
+Integration tests for ChatEngine — the orchestrator that runs all 5 stages.
 
 Tests the full turn execution lifecycle:
   - Turn status transitions: queued → running → completed / failed
-  - All 3 rounds are created and completed
-  - Round 1 results are correctly fed into round 2 and round 3
+  - All 5 stages are created and completed
+  - Earlier-stage results are correctly fed into later stages
   - Sequence numbers start at 1 (ChatEngine uses seq_start=1)
-  - 9 messages total for a 3-agent debate (3 agents × 3 rounds)
+  - 15 messages total for a 3-agent debate (3 agents × 5 stages)
   - Turn fails cleanly when LLM errors on every call
   - on_event fires turn_started and turn_completed
 """
@@ -101,7 +101,7 @@ class TestTurnLifecycle:
         assert turn.started_at is not None
         assert turn.ended_at is not None
 
-    async def test_three_rounds_all_completed(self, debate_context):
+    async def test_five_stages_all_completed(self, debate_context):
         turn_id, _, _, db = debate_context
 
         await ChatEngine(db).start_turn_execution(turn_id)
@@ -110,11 +110,11 @@ class TestTurnLifecycle:
             select(Round).where(Round.chat_turn_id == turn_id).order_by(Round.round_number)
         )).scalars().all()
 
-        assert len(rounds) == 3
-        assert [r.round_number for r in rounds] == [1, 2, 3]
+        assert len(rounds) == 5
+        assert [r.round_number for r in rounds] == [1, 2, 3, 4, 5]
         assert all(r.status == RoundStatus.completed for r in rounds)
 
-    async def test_result_dict_has_all_three_rounds(self, debate_context):
+    async def test_result_dict_has_all_five_stages(self, debate_context):
         turn_id, _, _, db = debate_context
 
         result = await ChatEngine(db).start_turn_execution(turn_id)
@@ -122,9 +122,11 @@ class TestTurnLifecycle:
         assert "round1" in result
         assert "round2" in result
         assert "round3" in result
+        assert "round4" in result
+        assert "round5" in result
 
-    async def test_llm_errors_are_handled_gracefully_turn_still_completes(self, debate_context):
-        """LLMError per agent is caught and stored — the turn still completes."""
+    async def test_all_agents_failed_in_required_stage_marks_turn_failed(self, debate_context):
+        """When every agent fails a required stage, the turn fails with metadata."""
         turn_id, _, _, db = debate_context
 
         class _AlwaysError(LLMService):
@@ -133,14 +135,19 @@ class TestTurnLifecycle:
 
         llm_factory.set_service(_AlwaysError())
 
-        result = await ChatEngine(db).start_turn_execution(turn_id)
+        with pytest.raises(RuntimeError):
+            await ChatEngine(db).start_turn_execution(turn_id)
 
         turn = await db.get(ChatTurn, turn_id)
-        assert turn.status == ChatTurnStatus.completed
+        assert turn.status == ChatTurnStatus.failed
+        assert turn.error_metadata["failed_agents"] == ["Economist", "Ethicist"]
+        assert turn.error_metadata["partial_results_available"] is False
 
-        # All agent results should be marked failed
-        for r in result["round1"]:
-            assert r["generation_status"] == "failed"
+        rounds = (await db.execute(
+            select(Round).where(Round.chat_turn_id == turn_id)
+        )).scalars().all()
+        assert len(rounds) == 1
+        assert rounds[0].status == RoundStatus.failed
 
     async def test_turn_marked_failed_on_unrecoverable_error(self, debate_context):
         """A crash outside the LLM call (e.g. DB error) marks the turn failed."""
@@ -165,7 +172,7 @@ class TestTurnLifecycle:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestMessagesAndSequence:
-    async def test_six_agent_messages_saved_for_two_agents(self, debate_context):
+    async def test_ten_agent_messages_saved_for_two_agents(self, debate_context):
         turn_id, _, _, db = debate_context
 
         await ChatEngine(db).start_turn_execution(turn_id)
@@ -177,7 +184,7 @@ class TestMessagesAndSequence:
             )
         )).scalars().all()
 
-        assert len(msgs) == 6  # 2 agents × 3 rounds
+        assert len(msgs) == 10  # 2 agents × 5 stages
 
     async def test_sequence_numbers_start_at_1(self, debate_context):
         """ChatEngine uses seq_start=1, reserving 0 for the user message."""
@@ -240,11 +247,11 @@ class TestRoundHandoff:
         # Round 2 prompts are prompts 3 and 4 (after 2 round 1 prompts)
         round2_prompts = captured_prompts[2:4]
         for prompt in round2_prompts:
-            # MockProvider returns "Mock stance: this topic has multiple valid perspectives."
-            assert "Mock stance" in prompt
+            assert "Opponent 1" in prompt
+            assert "opening stance" in prompt.lower()
 
-    async def test_round3_receives_debate_summary_from_round2(self, debate_context):
-        """Round 3 prompts must contain cross-examination content — proves r2 results were passed in."""
+    async def test_stage3_receives_critiques_from_stage2(self, debate_context):
+        """Stage 3 prompts must contain critique content from Stage 2."""
         turn_id, _, _, db = debate_context
 
         captured_prompts: list[str] = []
@@ -261,10 +268,9 @@ class TestRoundHandoff:
 
         await ChatEngine(db).start_turn_execution(turn_id)
 
-        # Round 3 prompts are the last 2
-        round3_prompts = captured_prompts[4:6]
-        for prompt in round3_prompts:
-            assert "original stance" in prompt.lower() or "debate" in prompt.lower()
+        stage3_prompts = captured_prompts[4:6]
+        for prompt in stage3_prompts:
+            assert "critique" in prompt.lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

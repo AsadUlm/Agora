@@ -3,9 +3,11 @@ import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import { useDebateStore } from "../model/debate.store";
 import { useGraphStore } from "../model/graph.store";
 import { deriveActiveNarration } from "../model/execution-ux";
+import { useDebateViewState } from "../model/useDebateViewState";
 
 export default function PlaybackBar() {
     const execution = useDebateExecutionState();
+    const view = useDebateViewState();
     const agents = useDebateStore((s) => s.agents);
     const graph = useGraphStore((s) => s.graph);
     const executionMode = useDebateStore((s) => s.executionMode);
@@ -29,8 +31,7 @@ export default function PlaybackBar() {
     const isQueued = execution.debateStatus === "queued";
     const isFailed = execution.debateStatus === "failed";
     const isCompleted = execution.debateStatus === "completed";
-    const currentRound = execution.rounds.find((round) => round.roundNumber === execution.activeRound);
-
+    const isPartial = execution.debateStatus === "partially_completed";
     const playbackQueueLength = playbackQueue.length;
     const generatedCount = useMemo(
         () =>
@@ -57,14 +58,14 @@ export default function PlaybackBar() {
         [execution, agents, graph.nodes, graph.edges],
     );
 
-    const stageLabel = isCompleted
-        ? "Debate Complete"
-        : isFailed
-            ? "Debate Failed"
-            : `Round ${execution.activeRound}: ${currentRound?.label ?? "In Progress"}`;
+    const stageLabel = view.statusLabel === "RUNNING"
+        ? view.visibleStageLabel
+        : view.statusLabel;
 
     const barColor = isFailed
         ? "from-red-500 to-rose-500"
+        : isPartial
+            ? "from-amber-500 to-orange-500"
         : isCompleted
             ? "from-emerald-500 to-teal-500"
             : "from-indigo-500 to-purple-500";
@@ -89,7 +90,7 @@ export default function PlaybackBar() {
                 <div className="h-1.5 bg-agora-surface-light rounded-full overflow-hidden">
                     <div
                         className={`h-full bg-gradient-to-r ${barColor} rounded-full transition-all duration-400`}
-                        style={{ width: `${execution.progress.percentage}%` }}
+                        style={{ width: `${view.progress.percentage}%` }}
                     />
                 </div>
             </div>
@@ -107,6 +108,9 @@ export default function PlaybackBar() {
                 )}
                 {isFailed && (
                     <div className="text-[11px] text-red-300 truncate">{execution.failureMessage || "Execution failed"}</div>
+                )}
+                {isPartial && (
+                    <div className="text-[11px] text-amber-300 truncate">{view.banner.message}</div>
                 )}
                 <div className="text-[10px] text-agora-text-muted mt-0.5 truncate">
                     Gen: {generatedCount} · Shown: {revealedStepCount} · Q: {showPlaybackControls ? playbackQueueLength : queuedCount}

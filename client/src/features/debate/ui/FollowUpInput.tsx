@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useDebateStore } from "../model/debate.store";
+import { useDebateViewState } from "../model/useDebateViewState";
 import { usePlaybackStore } from "../model/playback.store";
 import { cn } from "@/shared/lib/cn";
 
@@ -20,7 +21,7 @@ import { cn } from "@/shared/lib/cn";
  * Shown only when the previous turn has fully completed.
  */
 export default function FollowUpInput() {
-    const turnStatus = useDebateStore((s) => s.turnStatus);
+    const view = useDebateViewState();
     const stepBusy = useDebateStore((s) => s.stepBusy);
     const stepError = useDebateStore((s) => s.stepError);
     const submitFollowUp = useDebateStore((s) => s.submitFollowUp);
@@ -42,7 +43,7 @@ export default function FollowUpInput() {
         }
     }, [expanded]);
 
-    if (turnStatus !== "completed") return null;
+    if (view.derivedStatus !== "completed") return null;
 
     const onSubmit = async (e?: React.FormEvent) => {
         if (e) e.preventDefault();

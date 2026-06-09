@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type {
     AgentDTO,
     DebateStartResponse,
+    GenerationErrorMetadata,
     SessionDetailDTO,
     WsEvent,
 } from "../api/debate.types";
@@ -14,7 +15,7 @@ import {
     startDebate as startDebateApi,
     switchToAutoRun as switchToAutoRunApi,
 } from "../api/debate.api";
-import { debateWs } from "../api/debate.ws";
+import { debateWs, type StreamStatus } from "../api/debate.ws";
 import { useGraphStore } from "./graph.store";
 import { useModeratorStore } from "./moderator.store";
 import { usePlaybackStore } from "./playback.store";
@@ -47,6 +48,36 @@ export interface GenerationError {
     roundNumber?: number | null;
     roundType?: string | null;
     timestamp?: string;
+    severity: "fatal" | "recoverable" | "partial";
+    phase?: string | null;
+    failedAgents: string[];
+    successfulAgents: string[];
+    partialResultsAvailable: boolean;
+    requestId?: string | null;
+    lastSuccessfulStage?: number | null;
+}
+
+function toGenerationError(error: GenerationErrorMetadata | null | undefined): GenerationError | null {
+    if (!error) return null;
+    return {
+        code: error.code,
+        message: error.message,
+        userMessage: error.user_message ?? error.message,
+        retryable: error.retryable,
+        severity: error.severity ?? "fatal",
+        phase: error.phase ?? null,
+        failedAgents: error.failed_agents ?? [],
+        successfulAgents: error.successful_agents ?? [],
+        partialResultsAvailable: error.partial_results_available ?? false,
+        requestId: error.request_id ?? null,
+        lastSuccessfulStage: error.last_successful_stage ?? null,
+        provider: error.provider,
+        model: error.model,
+        statusCode: error.status_code,
+        roundNumber: error.round_number,
+        roundType: error.round_type,
+        timestamp: error.timestamp,
+    };
 }
 
 interface PendingStepInfo {
@@ -102,6 +133,9 @@ interface DebateStore {
     renderedNodeCount: number;
     renderedEdgeCount: number;
     lastWsEventType: string | null;
+    lastWsEventTimestamp: string | null;
+    streamStatus: StreamStatus;
+    streamReconciliationAttempted: boolean;
     /**
      * FIX-12: Whether retrieval-augmented generation is active for the
      * current turn. ``null`` means the backend has not yet reported, ``false``
@@ -120,6 +154,7 @@ interface DebateStore {
     ) => Promise<DebateStartResponse>;
     loadDebate: (debateId: string, options?: { silent?: boolean }) => Promise<void>;
     handleWsEvent: (event: WsEvent) => void;
+    handleStreamStatus: (status: StreamStatus) => void;
     requestNextStep: () => Promise<void>;
     enableAutoRun: () => Promise<void>;
     submitFollowUp: (question: string) => Promise<void>;
@@ -173,6 +208,9 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
     renderedNodeCount: 0,
     renderedEdgeCount: 0,
     lastWsEventType: null,
+    lastWsEventTimestamp: null,
+    streamStatus: "disconnected",
+    streamReconciliationAttempted: false,
     ragActive: null,
     documentCount: 0,
     agentColorsByPosition: {},
@@ -206,12 +244,16 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 renderedNodeCount: 0,
                 renderedEdgeCount: 0,
                 lastWsEventType: null,
+                lastWsEventTimestamp: null,
+                streamStatus: "connecting",
+                streamReconciliationAttempted: false,
             });
 
             // Connect WebSocket
             debateWs.disconnect();
             debateWs.connect(response.turn_id);
             debateWs.subscribe(get().handleWsEvent);
+            debateWs.subscribeStatus(get().handleStreamStatus);
             set({ wsConnected: true });
 
             // Manual mode is dev/experimental — only then does the backend
@@ -258,6 +300,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 debateId: session.id,
                 turnId: turn?.id ?? null,
                 turnStatus: turn?.status ?? null,
+                generationError: toGenerationError(turn?.error),
                 currentRound,
                 loading: silent ? get().loading : false,
                 executionMode: (turn?.execution_mode === "auto" ? "auto" : turn?.execution_mode === "manual" ? "manual" : get().executionMode),
@@ -273,6 +316,8 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                         renderedNodeCount: 0,
                         renderedEdgeCount: 0,
                         lastWsEventType: null,
+                        lastWsEventTimestamp: null,
+                        streamReconciliationAttempted: false,
                     }
                     : {}),
             });
@@ -318,6 +363,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     debateWs.disconnect();
                     debateWs.connect(turn!.id);
                     debateWs.subscribe(get().handleWsEvent);
+                    debateWs.subscribeStatus(get().handleStreamStatus);
                     set({ wsConnected: true });
                 }
                 // Only manual mode needs the StepController snapshot.
@@ -347,7 +393,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
 
     handleWsEvent: (event) => {
         const state = get();
-        set({ lastWsEventType: event.type });
+        set({ lastWsEventType: event.type, lastWsEventTimestamp: event.timestamp });
 
         if (import.meta.env.DEV) {
             const before = useGraphStore.getState().graph;
@@ -399,7 +445,11 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             case "round_started":
                 // Stale event protection: if the turn is already completed, a stale
                 // round_started from the same turn must not regress state to running.
-                if (state.turnStatus === "completed" || state.turnStatus === "failed") {
+                if (
+                    state.turnStatus === "completed"
+                    || state.turnStatus === "partially_completed"
+                    || state.turnStatus === "failed"
+                ) {
                     if (import.meta.env.DEV) {
                         console.debug("[Debate UI] Ignoring stale round_started after terminal state", {
                             turnStatus: state.turnStatus,
@@ -441,13 +491,14 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                             session,
                             agents: session.agents ?? [],
                             turnStatus: safeTurnStatus,
-                            currentRound: 3,
+                            currentRound: turn?.current_stage ?? 5,
+                            generationError: toGenerationError(turn?.error),
                             stepBusy: false,
                             currentlyGenerating: null,
                             pendingStep: null,
                         });
                         useGraphStore.getState().mergeFromSession(session);
-                        useModeratorStore.getState().updateFromSession(session, 3);
+                        useModeratorStore.getState().updateFromSession(session, turn?.current_stage ?? 5);
                         if (import.meta.env.DEV) {
                             console.debug("[Debate UI] turn completed", {
                                 debateId: state.debateId,
@@ -461,6 +512,21 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                     });
                 }
                 break;
+
+            case "turn_partially_completed": {
+                const safeError = event.payload["safe_error"] as GenerationErrorMetadata | undefined;
+                set({
+                    turnStatus: "partially_completed",
+                    generationError: toGenerationError(safeError),
+                    stepBusy: false,
+                    currentlyGenerating: null,
+                    pendingStep: null,
+                });
+                if (state.debateId) {
+                    void get().loadDebate(state.debateId, { silent: true });
+                }
+                break;
+            }
 
             case "turn_failed": {
                 // Build a safe generation error — never use raw error string for full-page crash.
@@ -476,6 +542,13 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                             "The debate generation failed. Please check your API key and retry."
                         ),
                         retryable: Boolean(safeErrorPayload["retryable"] ?? true),
+                        severity: String(safeErrorPayload["severity"] ?? "fatal") as GenerationError["severity"],
+                        phase: (safeErrorPayload["phase"] as string) ?? null,
+                        failedAgents: (safeErrorPayload["failed_agents"] as string[]) ?? [],
+                        successfulAgents: (safeErrorPayload["successful_agents"] as string[]) ?? [],
+                        partialResultsAvailable: Boolean(safeErrorPayload["partial_results_available"] ?? false),
+                        requestId: (safeErrorPayload["request_id"] as string) ?? null,
+                        lastSuccessfulStage: (safeErrorPayload["last_successful_stage"] as number) ?? null,
                         provider: (safeErrorPayload["provider"] as string) ?? null,
                         model: (safeErrorPayload["model"] as string) ?? null,
                         statusCode: (safeErrorPayload["status_code"] as number) ?? null,
@@ -490,15 +563,25 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                             : "Debate generation failed",
                         userMessage: "The debate generation failed. Please check your API key or model selection and retry.",
                         retryable: true,
+                        severity: "fatal",
+                        failedAgents: [],
+                        successfulAgents: [],
+                        partialResultsAvailable: false,
                     };
+                const confirmedStatus =
+                    generationErr.partialResultsAvailable || generationErr.severity === "partial"
+                        ? "partially_completed"
+                        : "failed";
                 set({
-                    turnStatus: "failed",
+                    turnStatus: confirmedStatus,
                     currentlyGenerating: null,
                     pendingStep: null,
                     // CRITICAL: set generationError, NOT error, so the debate page stays loaded.
                     generationError: generationErr,
                 });
-                useGraphStore.getState().markRunningNodesFailed();
+                if (confirmedStatus === "failed") {
+                    useGraphStore.getState().markRunningNodesFailed();
+                }
                 if (import.meta.env.DEV) {
                     console.debug("[Debate UI] turn_failed", {
                         debateId: event.session_id,
@@ -557,6 +640,13 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                                 "A debate round failed. Please check your API key or model selection and retry."
                             ),
                             retryable: Boolean(rfError["retryable"] ?? true),
+                            severity: String(rfError["severity"] ?? "fatal") as GenerationError["severity"],
+                            phase: (rfError["phase"] as string) ?? null,
+                            failedAgents: (rfError["failed_agents"] as string[]) ?? [],
+                            successfulAgents: (rfError["successful_agents"] as string[]) ?? [],
+                            partialResultsAvailable: Boolean(rfError["partial_results_available"] ?? false),
+                            requestId: (rfError["request_id"] as string) ?? null,
+                            lastSuccessfulStage: (rfError["last_successful_stage"] as number) ?? null,
                             roundNumber: typeof rfPayload["round_number"] === "number"
                                 ? (rfPayload["round_number"] as number)
                                 : null,
@@ -880,6 +970,24 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
         useModeratorStore.getState().addActivity(event);
     },
 
+    handleStreamStatus: (status) => {
+        const state = get();
+        set({
+            streamStatus: status,
+            wsConnected: status === "connected",
+            ...(status === "connected" ? { streamReconciliationAttempted: false } : {}),
+        });
+        if (
+            status === "interrupted"
+            && !state.streamReconciliationAttempted
+            && state.debateId
+            && (state.turnStatus === "queued" || state.turnStatus === "running")
+        ) {
+            set({ streamReconciliationAttempted: true });
+            void get().loadDebate(state.debateId, { silent: true });
+        }
+    },
+
     requestNextStep: async () => {
         const { debateId, stepBusy } = get();
         if (!debateId || stepBusy) return;
@@ -957,6 +1065,7 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             debateWs.disconnect();
             debateWs.connect(res.turn_id);
             debateWs.subscribe(get().handleWsEvent);
+            debateWs.subscribeStatus(get().handleStreamStatus);
             set({
                 turnStatus: "queued",
                 wsConnected: true,
@@ -1195,6 +1304,9 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
             renderedNodeCount: 0,
             renderedEdgeCount: 0,
             lastWsEventType: null,
+            lastWsEventTimestamp: null,
+            streamStatus: "disconnected",
+            streamReconciliationAttempted: false,
             ragActive: null,
             documentCount: 0,
             agentColorsByPosition: {},

@@ -140,6 +140,7 @@ class ExecutionEventType(str, Enum):
     round_completed = "round_completed"
     round_failed = "round_failed"
     turn_completed = "turn_completed"
+    turn_partially_completed = "turn_partially_completed"
     turn_failed = "turn_failed"
 
 

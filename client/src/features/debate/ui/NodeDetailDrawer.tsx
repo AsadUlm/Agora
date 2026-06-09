@@ -26,15 +26,19 @@ const kindLabels: Record<string, string> = {
 };
 
 const roundLabels: Record<number, string> = {
-    1: "Round 1",
-    2: "Round 2",
-    3: "Round 3",
+    1: "Stage 1: Initial Positions",
+    2: "Stage 2: Cross-Critiques",
+    3: "Stage 3: Responses to Critiques",
+    4: "Stage 4: Revised Positions",
+    5: "Stage 5: Final Synthesis",
 };
 
 const roundGuidance: Record<number, string> = {
     1: "Opening response: the agent establishes its initial position.",
     2: "Cross-examination: the agent challenges or supports another viewpoint.",
-    3: "Final synthesis: the agent converges on a refined final position.",
+    3: "Critique response: the agent accepts or rejects specific feedback.",
+    4: "Revised position: the agent states how critiques changed its stance.",
+    5: "Final synthesis: revised positions are combined into the final answer.",
 };
 
 interface ContentSection {

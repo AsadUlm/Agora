@@ -9,6 +9,7 @@ import { useMemo, useState } from "react";
 import { useDebateStore } from "../model/debate.store";
 import type { RoundDTO } from "../api/debate.types";
 import { cn } from "@/shared/lib/cn";
+import { useDebateViewState } from "../model/useDebateViewState";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -253,7 +254,7 @@ function RawRoundCard({
                         ▶
                     </span>
                     <span className="text-[11px] font-semibold text-white">
-                        Round {round.round_number}
+                        Stage {round.round_number}
                     </span>
                     <span className="text-[10px] text-agora-text-muted uppercase tracking-wide truncate">
                         {formatRoundType(round.round_type)}
@@ -384,6 +385,10 @@ function RawFollowupCycleCard({
 
 export default function RawOutputPanel() {
     const turn = useDebateStore((s) => s.session?.latest_turn ?? null);
+    const debateId = useDebateStore((s) => s.debateId);
+    const lastEvent = useDebateStore((s) => s.lastWsEventType);
+    const lastEventTimestamp = useDebateStore((s) => s.lastWsEventTimestamp);
+    const view = useDebateViewState();
 
     const groups = useMemo(
         () => groupRounds(turn?.rounds ?? []),
@@ -411,6 +416,23 @@ export default function RawOutputPanel() {
             </div>
 
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+                <RawDebugBlock
+                    data={{
+                        debate_id: debateId,
+                        backend_status: view.backendStatus,
+                        derived_frontend_status: view.derivedStatus,
+                        current_stage: view.visibleStageLabel,
+                        last_event_received: lastEvent,
+                        last_event_timestamp: lastEventTimestamp,
+                        request_id: turn.request_id ?? view.error?.requestId ?? null,
+                        error_code: view.error?.code ?? null,
+                        failed_phase: view.error?.phase ?? null,
+                        successful_agents: view.error?.successfulAgents ?? [],
+                        failed_agents: view.error?.failedAgents ?? [],
+                        partial_results_available: view.error?.partialResultsAvailable ?? false,
+                        retryable: view.error?.retryable ?? false,
+                    }}
+                />
                 {groups.length === 0 && (
                     <p className="text-xs text-agora-text-muted">
                         No rounds available yet.
@@ -433,6 +455,19 @@ export default function RawOutputPanel() {
                 )}
             </div>
         </div>
+    );
+}
+
+function RawDebugBlock({ data }: { data: Record<string, unknown> }) {
+    return (
+        <details className="rounded-md border border-indigo-500/30 bg-indigo-500/5" open>
+            <summary className="cursor-pointer px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-indigo-300">
+                Lifecycle Debug
+            </summary>
+            <div className="px-3 pb-3">
+                <RawPayloadView data={data} />
+            </div>
+        </details>
     );
 }
 

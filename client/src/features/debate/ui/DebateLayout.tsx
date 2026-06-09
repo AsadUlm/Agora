@@ -10,57 +10,39 @@ import FollowUpInput from "./FollowUpInput";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 import { cn } from "@/shared/lib/cn";
 import { useDebateStore } from "@/features/debate/model/debate.store";
-import type { GenerationError } from "@/features/debate/model/debate.store";
+import { useDebateViewState } from "@/features/debate/model/useDebateViewState";
+import type { DebateBannerState } from "@/features/debate/model/debate-view-state";
 
-/** Error code → short, user-friendly title */
-function getErrorTitle(code: string): string {
-    switch (code) {
-        case "PROVIDER_AUTH_ERROR": return "API key invalid or missing";
-        case "PROVIDER_QUOTA_EXCEEDED": return "API quota / credits exhausted";
-        case "PROVIDER_RATE_LIMITED": return "Rate limited by provider";
-        case "PROVIDER_TIMEOUT": return "Provider request timed out";
-        case "PROVIDER_SERVER_ERROR": return "Provider server error";
-        case "MODEL_EMPTY_RESPONSE": return "Model returned an empty response";
-        case "MODEL_INVALID_JSON": return "Model returned malformed output";
-        case "STRUCTURED_VALIDATION_FAILED": return "Response validation failed";
-        case "ROUND_ALL_AGENTS_FAILED": return "All agents failed in this round";
-        default: return "Debate generation failed";
-    }
-}
-
-function GenerationFailureBanner({ error, onReload }: { error: GenerationError; onReload?: () => void }) {
+function LifecycleBanner({ banner, onReload }: { banner: DebateBannerState; onReload?: () => void }) {
     const [dismissed, setDismissed] = useState(false);
-    if (dismissed) return null;
+    if (dismissed || banner.type === "none") return null;
+    const warning = banner.type === "warning";
+    const info = banner.type === "info";
+    const palette = info
+        ? "bg-indigo-950/70 border-indigo-700/50 text-indigo-200"
+        : warning
+            ? "bg-amber-950/70 border-amber-700/50 text-amber-200"
+            : "bg-red-950/70 border-red-700/50 text-red-200";
 
     return (
         <AnimatePresence>
             <motion.div
-                className="relative flex items-start gap-3 px-4 py-3 bg-red-950/70 border-b border-red-700/50 text-sm"
+                className={cn("relative flex items-start gap-3 px-4 py-3 border-b text-sm", palette)}
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.25 }}
             >
-                <span className="mt-0.5 shrink-0 text-red-400">⚠</span>
+                <span className="mt-0.5 shrink-0">⚠</span>
                 <div className="flex-1 min-w-0">
-                    <span className="font-medium text-red-300">{getErrorTitle(error.code)}: </span>
-                    <span className="text-red-200">{error.userMessage}</span>
-                    {error.roundNumber != null && (
-                        <span className="ml-1 text-red-400 text-xs">
-                            (Round {error.roundNumber})
-                        </span>
-                    )}
-                    {error.retryable && (
-                        <p className="mt-0.5 text-red-400/80 text-[11px]">
-                            Fix your API key, credits, or model selection, then start a new debate or follow-up.
-                        </p>
-                    )}
+                    <span className="font-medium">{banner.title}: </span>
+                    <span>{banner.message}</span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                     {onReload && (
                         <button
                             onClick={onReload}
-                            className="px-3 py-1 rounded text-xs font-medium bg-red-700/60 hover:bg-red-600/70 text-white transition-colors"
+                            className="px-3 py-1 rounded text-xs font-medium bg-white/10 hover:bg-white/20 text-white transition-colors"
                             title="Reload the current debate state from the server"
                         >
                             Reload status
@@ -68,7 +50,7 @@ function GenerationFailureBanner({ error, onReload }: { error: GenerationError; 
                     )}
                     <button
                         onClick={() => setDismissed(true)}
-                        className="text-red-400 hover:text-red-200 transition-colors px-1"
+                        className="opacity-70 hover:opacity-100 transition-opacity px-1"
                         aria-label="Dismiss"
                     >
                         ✕
@@ -81,7 +63,7 @@ function GenerationFailureBanner({ error, onReload }: { error: GenerationError; 
 
 export default function DebateLayout() {
     const isMobile = useIsMobile();
-    const generationError = useDebateStore((s) => s.generationError);
+    const view = useDebateViewState();
     const loadDebate = useDebateStore((s) => s.loadDebate);
     const debateId = useDebateStore((s) => s.debateId);
 
@@ -90,15 +72,13 @@ export default function DebateLayout() {
         : undefined;
 
     if (isMobile) {
-        return <MobileDebateLayout generationError={generationError} onReload={handleReload} />;
+        return <MobileDebateLayout banner={view.banner} onReload={handleReload} />;
     }
 
     return (
         <div className="h-screen w-full flex flex-col bg-agora-bg overflow-hidden">
             {/* Generation failure banner — shown INSIDE the page, not as a full-page error */}
-            {generationError && (
-                <GenerationFailureBanner error={generationError} onReload={handleReload} />
-            )}
+            <LifecycleBanner banner={view.banner} onReload={handleReload} />
             {/* Top Bar */}
             <TopTopicBar />
 
@@ -129,19 +109,17 @@ export default function DebateLayout() {
 type MobilePanel = "rounds" | "panels" | null;
 
 function MobileDebateLayout({
-    generationError,
+    banner,
     onReload,
 }: {
-    generationError: GenerationError | null;
+    banner: DebateBannerState;
     onReload?: () => void;
 }) {
     const [panel, setPanel] = useState<MobilePanel>(null);
 
     return (
         <div className="h-dvh w-full flex flex-col bg-agora-bg overflow-hidden">
-            {generationError && (
-                <GenerationFailureBanner error={generationError} onReload={onReload} />
-            )}
+            <LifecycleBanner banner={banner} onReload={onReload} />
             <TopTopicBar />
 
             {/* Canvas fills the remaining space */}
@@ -158,7 +136,7 @@ function MobileDebateLayout({
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                                 <path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                             </svg>
-                            Rounds
+                            Stages
                         </button>
                         <button
                             onClick={() => setPanel("panels")}
@@ -202,7 +180,7 @@ function MobileDebateLayout({
                         >
                             <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-agora-border">
                                 <span className="text-xs font-semibold uppercase tracking-widest text-agora-text-muted">
-                                    {panel === "rounds" ? "Rounds" : "Insights"}
+                                    {panel === "rounds" ? "Stages" : "Insights"}
                                 </span>
                                 <button
                                     onClick={() => setPanel(null)}

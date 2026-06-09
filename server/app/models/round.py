@@ -9,9 +9,11 @@ from app.db.base import Base
 
 
 class RoundType(str, enum.Enum):
-    # Cycle 1 (initial debate)
+    # Cycle 1 (initial debate) — 5-stage traceable pipeline
     initial = "initial"
     critique = "critique"
+    critique_response = "critique_response"   # Stage 3: agents respond to critiques received
+    revised_position = "revised_position"     # Stage 4: agents state their updated position
     final = "final"
     # Cycle 2+ (follow-up debate continuation)
     followup_response = "followup_response"
@@ -22,6 +24,7 @@ class RoundType(str, enum.Enum):
 class RoundStatus(str, enum.Enum):
     queued = "queued"
     running = "running"      # was "started" — renamed for async lifecycle consistency
+    partially_completed = "partially_completed"
     completed = "completed"
     failed = "failed"
 

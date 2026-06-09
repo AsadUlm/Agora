@@ -541,7 +541,12 @@ async def next_step(
     if turn is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Debate not found.")
 
-    if turn.status in (ChatTurnStatus.completed, ChatTurnStatus.failed, ChatTurnStatus.cancelled):
+    if turn.status in (
+        ChatTurnStatus.completed,
+        ChatTurnStatus.partially_completed,
+        ChatTurnStatus.failed,
+        ChatTurnStatus.cancelled,
+    ):
         return {
             "turn_id": str(turn.id),
             "status": turn.status.value,

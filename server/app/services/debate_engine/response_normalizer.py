@@ -194,6 +194,12 @@ def normalize_round_output(
             payload = _normalize_updated_synthesis(parsed_payload, raw_text)
         elif dispatch == "synthesis_verdict":
             payload = _normalize_synthesis_verdict(parsed_payload, raw_text)
+        elif dispatch == "critique_response":
+            payload = _normalize_critique_response(parsed_payload, raw_text)
+        elif dispatch == "revised_position":
+            payload = _normalize_revised_position(parsed_payload, raw_text)
+        elif dispatch == "final":
+            payload = _normalize_round3(parsed_payload, raw_text)
         elif round_number == 1:
             payload = _normalize_round1(parsed_payload, raw_text)
         elif round_number == 2:
@@ -416,6 +422,33 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
                 "risks_or_caveats": [],
             }
         )
+    elif rt == "critique_response":
+        payload.update(
+            {
+                "received_critique_summary": short_summary,
+                "response": cleaned_text,
+                "accepted_points": [],
+                "rejected_points": [],
+                "planned_revision": "",
+                "stance_update": "unchanged",
+                "display_content": cleaned_text,
+            }
+        )
+        payload.setdefault("parse_warnings", []).append("critique_response_parse_fallback")
+    elif rt == "revised_position":
+        payload.update(
+            {
+                "initial_position_summary": "",
+                "revised_position": cleaned_text,
+                "change_summary": "",
+                "changed": False,
+                "change_type": "no_change",
+                "reason_for_change": "",
+                "key_claims": _derive_points_from_text(cleaned_text),
+                "display_content": cleaned_text,
+            }
+        )
+        payload.setdefault("parse_warnings", []).append("revised_position_parse_fallback")
     elif round_number == 2:
         payload.update(
             {
@@ -429,7 +462,7 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
                 "real_world_implication": "If the assumption fails, the recommended action would need to be re-scoped before deployment.",
             }
         )
-    elif round_number == 3:
+    elif rt == "final" or round_number == 3:
         round3_fields = _build_round3_fallback_fields(cleaned_text, paragraph_text)
         round3_warnings = round3_fields.pop("_parse_warnings_round3", [])
         payload.update(round3_fields)
@@ -613,6 +646,111 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         "why_my_framework_disagrees": why_my_framework_disagrees,
         "real_world_implication": real_world_implication,
         "response": response,
+    }
+
+
+def _normalize_critique_response(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    """Normalize Stage 3 — Critique Response output.
+
+    Expected fields from prompt:
+      received_critique_summary, response, accepted_points, rejected_points,
+      planned_revision, stance_update
+    """
+    response = _pick_long_text(payload, ["response", "reply", "main_argument"])
+    if not response:
+        response = _sanitize_text(raw_text, preserve_paragraphs=True)
+    if not response:
+        raise LLMParseError("Critique response output missing response content.")
+
+    received_summary = _pick_string(payload, ["received_critique_summary", "critique_summary", "short_summary"])
+    accepted = payload.get("accepted_points") or []
+    rejected = payload.get("rejected_points") or []
+    if not isinstance(accepted, list):
+        accepted = [str(accepted)] if accepted else []
+    if not isinstance(rejected, list):
+        rejected = [str(rejected)] if rejected else []
+    planned_revision = _pick_string(payload, ["planned_revision", "revision_plan"])
+    stance_update = _pick_string(payload, ["stance_update", "position_update"]) or "unchanged"
+
+    short_summary = normalize_summary(
+        _pick_string(payload, ["one_sentence_takeaway", "short_summary"]),
+        response,
+    )
+
+    return {
+        "one_sentence_takeaway": short_summary,
+        "short_summary": short_summary,
+        "received_critique_summary": received_summary,
+        "response": response,
+        "accepted_points": [str(p) for p in accepted if p],
+        "rejected_points": [str(p) for p in rejected if p],
+        "planned_revision": planned_revision,
+        "stance_update": stance_update,
+        "display_content": response,
+        "raw_content": raw_text,
+        "is_fallback": False,
+    }
+
+
+def _normalize_revised_position(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    """Normalize Stage 4 — Revised Position output.
+
+    Expected fields from prompt:
+      initial_position_summary, revised_position, change_summary, changed,
+      change_type, reason_for_change, key_claims, remaining_uncertainties
+    """
+    VALID_CHANGE_TYPES = {
+        "no_change", "narrowed_position", "expanded_position",
+        "changed_stance", "added_condition", "resolved_uncertainty", "other",
+    }
+
+    revised_position = _pick_long_text(payload, ["revised_position", "response", "final_position"])
+    if not revised_position:
+        revised_position = _sanitize_text(raw_text, preserve_paragraphs=True)
+    if not revised_position:
+        raise LLMParseError("Revised position output missing revised_position content.")
+
+    initial_summary = _pick_string(payload, ["initial_position_summary", "initial_position", "original_position"])
+    change_summary = _pick_string(payload, ["change_summary", "what_changed"])
+    reason = _pick_string(payload, ["reason_for_change", "reason", "why_changed"])
+
+    # Normalize `changed` to bool — LLMs sometimes output "true"/"false" as strings
+    raw_changed = payload.get("changed", False)
+    if isinstance(raw_changed, str):
+        changed = raw_changed.lower() in ("true", "yes", "1")
+    else:
+        changed = bool(raw_changed)
+
+    # Normalize change_type
+    raw_change_type = str(payload.get("change_type") or "").strip().lower().replace(" ", "_")
+    if raw_change_type not in VALID_CHANGE_TYPES:
+        raw_change_type = "no_change" if not changed else "other"
+
+    key_claims = payload.get("key_claims") or []
+    if not isinstance(key_claims, list):
+        key_claims = []
+    key_claims = [str(c) for c in key_claims if str(c or "").strip()][:5]
+
+    short_summary = normalize_summary(
+        _pick_string(payload, ["one_sentence_takeaway", "short_summary"]),
+        revised_position,
+    )
+
+    return {
+        "one_sentence_takeaway": short_summary,
+        "short_summary": short_summary,
+        "initial_position_summary": initial_summary,
+        "revised_position": revised_position,
+        "change_summary": change_summary,
+        "changed": changed,
+        "change_type": raw_change_type,
+        "reason_for_change": reason,
+        "key_claims": key_claims,
+        "remaining_uncertainties": _pick_string(payload, ["remaining_uncertainties", "uncertainties"]),
+        "response": revised_position,
+        "display_content": revised_position,
+        "raw_content": raw_text,
+        "is_fallback": False,
     }
 
 

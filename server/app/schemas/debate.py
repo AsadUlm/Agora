@@ -7,6 +7,90 @@ from pydantic import BaseModel, field_validator
 from app.schemas.agent import AgentCreate
 
 
+# ── Debate Trace Schema ────────────────────────────────────────────────────────
+
+class CritiqueTraceItem(BaseModel):
+    """One critique edge in the debate trace: from_agent → to_agent."""
+    id: str
+    from_agent_id: str
+    from_agent_name: str
+    to_agent_id: str
+    to_agent_name: str
+    target_claim: str
+    critique_summary: str
+    weakness_found: str
+    severity: str = "medium"
+
+
+class CritiqueResponseTraceItem(BaseModel):
+    """One agent's response to critiques in the debate trace."""
+    id: str
+    agent_id: str
+    agent_name: str
+    received_critique_summary: str
+    response: str
+    accepted_points: list[str] = []
+    rejected_points: list[str] = []
+    planned_revision: str
+    stance_update: str = "unchanged"
+
+
+class RevisedPositionTraceItem(BaseModel):
+    """One agent's revised position with explicit change tracking."""
+    id: str
+    agent_id: str
+    agent_name: str
+    initial_position_summary: str
+    revised_position: str
+    change_summary: str
+    changed: bool
+    change_type: str
+    reason_for_change: str
+    key_claims: list[str] = []
+
+
+class UsedPoint(BaseModel):
+    """A revised position point referenced in the final synthesis."""
+    agent_id: str
+    agent_name: str
+    source_round: str
+    point: str
+
+
+class ImportantChange(BaseModel):
+    """An agent that changed their position during the debate."""
+    agent_id: str
+    agent_name: str
+    before: str
+    after: str
+    why_changed: str
+
+
+class DebateImpact(BaseModel):
+    """Summary of how the debate affected the final answer."""
+    initial_consensus: str = ""
+    major_disagreements: list[str] = []
+    important_changes: list[ImportantChange] = []
+    how_debate_improved_answer: str = ""
+    single_llm_risk_avoided: str = ""
+
+
+class DebateTrace(BaseModel):
+    """
+    Full structured trace of the 5-stage debate.
+
+    Used by:
+    - Debate History tab (chronological view)
+    - Agent Evolution tab (per-agent before/after)
+    - Graph view (semantic node/edge data)
+    - Evaluation / traceability proof
+    """
+    critiques: list[CritiqueTraceItem] = []
+    critique_responses: list[CritiqueResponseTraceItem] = []
+    revised_positions: list[RevisedPositionTraceItem] = []
+    debate_impact: DebateImpact | None = None
+
+
 # ── Request schemas ────────────────────────────────────────────────────────────
 
 class DebateStartRequest(BaseModel):
@@ -90,7 +174,7 @@ class RoundDTO(BaseModel):
     round_number: int
     cycle_number: int = 1
     round_type: str             # initial | critique | final | followup_response | followup_critique | updated_synthesis
-    status: str                 # queued | running | completed | failed
+    status: str                 # queued | running | partially_completed | completed | failed
     started_at: datetime | None
     ended_at: datetime | None
     messages: list[MessageDTO]  # sorted by sequence_no, agents only
@@ -115,14 +199,18 @@ class UserMessageDTO(BaseModel):
 
 class TurnDTO(BaseModel):
     """
-    Complete debate turn: user question + all three rounds + optional summary.
+    Complete debate turn: user question + all rounds + optional summary.
 
     This is the primary payload frontend uses to render the full debate.
     """
 
     id: uuid.UUID
     turn_index: int
-    status: str                         # queued | running | completed | failed
+    status: str                         # queued | running | partially_completed | completed | failed
+    current_stage: int | None = None
+    synthesis_status: str = "pending"   # pending | running | completed | failed | skipped
+    request_id: str | None = None
+    error: dict[str, Any] | None = None
     execution_mode: str = "auto"        # auto | manual
     started_at: datetime | None
     ended_at: datetime | None
@@ -130,6 +218,10 @@ class TurnDTO(BaseModel):
     rounds: list[RoundDTO]              # sorted by round_number
     final_summary: dict[str, Any] | None  # from last round's final_summary messages
     follow_ups: list[FollowUpDTO] = []   # in cycle_number order
+    debate_trace: DebateTrace | None = None  # structured trace for Debate History / Agent Evolution
+    # Pipeline type flag: True when this turn used the 5-stage traceable pipeline.
+    # Set by serialize_turn based on current_round_no > 3 OR presence of new round types.
+    is_5stage_pipeline: bool = False
 
 
 class SessionDetailDTO(BaseModel):

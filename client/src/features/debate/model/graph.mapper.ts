@@ -270,6 +270,7 @@ function applyRoundToGraph(
                     kind: "initial",
                     round: 1,
                     status: isCompleted ? "completed" : "active",
+                    label: "opened",
                 });
             }
         } else if (rn === 2 && agentNodeId) {
@@ -360,7 +361,7 @@ function applyRoundToGraph(
             const edgeId = `edge-${msg.id}`;
             if (!edges.find((e) => e.id === edgeId)) {
                 const edgeLabels: Record<string, string> = {
-                    challenges: "challenges",
+                    challenges: "challenged",
                     supports: "supports",
                     questions: "questions",
                 };
@@ -375,9 +376,9 @@ function applyRoundToGraph(
                 });
             }
         } else if (rn === 3 && msg.message_type === "final_summary") {
-            // Handled by addSynthesisNode
-        } else if (rn === 3 && agentNodeId) {
-            // Round 3 agent messages → link to synthesis (from intermediate if exists)
+            // Handled by addSynthesisNode (legacy 3-round pipeline)
+        } else if (rn === 3 && agentNodeId && round.round_type === "final") {
+            // Legacy 3-round final synthesis (round 3): link agents to synthesis
             const intermNodeId = `${agentNodeId}-r2`;
             const sourceId = nodes.find((n) => n.id === intermNodeId) ? intermNodeId : agentNodeId;
             const edgeId = `edge-${msg.agent_id}-synth`;
@@ -389,6 +390,56 @@ function applyRoundToGraph(
                     kind: "summarizes",
                     round: 3,
                     status: isCompleted ? "completed" : "active",
+                });
+            }
+        } else if (round.round_type === "critique_response" && agentNodeId) {
+            // Round 3 (5-stage): agents respond to critiques — update agent node content
+            if (agentNode) {
+                const payload = safePayload(msg);
+                const stanceUpdate = String(payload["stance_update"] ?? "unchanged");
+                agentNode.metadata = {
+                    ...(agentNode.metadata ?? {}),
+                    critiqueResponseStance: stanceUpdate,
+                    critiqueResponse: extractContent(msg),
+                };
+            }
+        } else if (round.round_type === "revised_position" && agentNodeId) {
+            // Round 4 (5-stage): revised positions — update agent node to show change
+            if (agentNode) {
+                const payload = safePayload(msg);
+                const changed = Boolean(payload["changed"]);
+                const changeType = String(payload["change_type"] ?? "");
+                const changeSummary = String(payload["change_summary"] ?? "");
+                agentNode.metadata = {
+                    ...(agentNode.metadata ?? {}),
+                    positionChanged: changed,
+                    changeType,
+                    changeSummary,
+                    revisedPosition: extractContent(msg),
+                };
+                // Update summary to show the revised position
+                agentNode.summary = changeSummary || (changed ? "Position revised" : "Position held");
+            }
+        } else if (rn >= 4 && round.round_type === "final" && msg.message_type === "final_summary") {
+            // Round 5 (5-stage) final synthesis message: handled by addSynthesisNode
+        } else if (rn >= 4 && round.round_type === "final" && agentNodeId) {
+            // Round 5 (5-stage): link agent revised position to synthesis
+            const r4NodeId = `${agentNodeId}-r4`;
+            // Try to find a revised position node, fall back to round 2 intermediate or agent
+            const intermNodeId = `${agentNodeId}-r2`;
+            const sourceId =
+                nodes.find((n) => n.id === r4NodeId)?.id ??
+                (nodes.find((n) => n.id === intermNodeId) ? intermNodeId : agentNodeId);
+            const edgeId = `edge-${msg.agent_id}-synth-r5`;
+            if (!edges.find((e) => e.id === edgeId)) {
+                edges.push({
+                    id: edgeId,
+                    source: sourceId,
+                    target: SYNTHESIS_NODE_ID,
+                    kind: "summarizes",
+                    round: rn,
+                    status: isCompleted ? "completed" : "active",
+                    label: "synthesized",
                 });
             }
         }
@@ -448,6 +499,7 @@ function addSynthesisNode(
                 kind: "summarizes",
                 round: 3,
                 status: "completed",
+                label: "synthesized",
             });
         }
     }

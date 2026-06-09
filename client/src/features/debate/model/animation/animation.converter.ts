@@ -248,7 +248,7 @@ function buildRound2Steps(
                 },
                 duration: T.EDGE_DRAW,
                 delay: 100,
-                meta: { round: 2, description: `${capitalize(sourceRole)} advances to Round 2` },
+                meta: { round: 2, description: `${capitalize(sourceRole)} advances to Stage 2` },
             });
             enteredIntermediates.add(sourceIntermId);
         }
@@ -282,7 +282,7 @@ function buildRound2Steps(
                 },
                 duration: T.EDGE_DRAW,
                 delay: 100,
-                meta: { round: 2, description: `${capitalize(targetRole)} advances to Round 2` },
+                meta: { round: 2, description: `${capitalize(targetRole)} advances to Stage 2` },
             });
             enteredIntermediates.add(targetIntermId);
         }
@@ -640,7 +640,7 @@ export function wsEventToAnimationSteps(
                     },
                     duration: T.EDGE_DRAW,
                     delay: 100,
-                    meta: { round: 2, description: `${capitalize(role)} advances to Round 2` },
+                    meta: { round: 2, description: `${capitalize(role)} advances to Stage 2` },
                 });
                 steps.push({
                     id: stepId(),
@@ -917,7 +917,7 @@ function moderatorTextForRound(
         switch (rn) {
             case 1:
                 return {
-                    status: "Round 1",
+                    status: "Stage 1",
                     explanation:
                         "Agents are forming their initial perspectives on the question. Watch as each agent develops their stance.",
                     watchFor: [
@@ -927,7 +927,7 @@ function moderatorTextForRound(
                 };
             case 2:
                 return {
-                    status: "Round 2",
+                    status: "Stage 2",
                     explanation:
                         "Agents are engaging with each other's arguments. This is where the real debate happens — watch for challenges and support.",
                     watchFor: [
@@ -938,7 +938,7 @@ function moderatorTextForRound(
                 };
             case 3:
                 return {
-                    status: "Round 3",
+                    status: "Stage 3",
                     explanation:
                         "The debate is converging. A synthesis of the strongest arguments is being formed.",
                     watchFor: [

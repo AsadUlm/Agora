@@ -12,13 +12,13 @@ export interface ActiveNarration {
 
 export function getGeneratingNodeId(execution: DebateExecutionState): string | null {
     if (execution.debateStatus !== "running") return null;
-    if (execution.activeRound === 1 && execution.currentAgentId) {
+    if (execution.activeStage === 1 && execution.currentAgentId) {
         return `agent-${execution.currentAgentId}`;
     }
-    if (execution.activeRound === 2 && execution.currentAgentId) {
+    if (execution.activeStage === 2 && execution.currentAgentId) {
         return `agent-${execution.currentAgentId}-r2`;
     }
-    if (execution.activeRound === 3) {
+    if (execution.activeStage === 5) {
         return "synthesis-node";
     }
     return null;
@@ -54,7 +54,7 @@ export function deriveActiveNarration(args: {
     if (execution.debateStatus === "completed") {
         return {
             title: "Debate Complete",
-            sublabel: "Synthesis finalized and all rounds closed",
+            sublabel: "Synthesis finalized and all stages closed",
             relation: null,
             sourceRole: null,
             targetRole: null,
@@ -74,14 +74,14 @@ export function deriveActiveNarration(args: {
     if (execution.debateStatus === "queued") {
         return {
             title: "Preparing agent execution...",
-            sublabel: "Round 1 will begin shortly",
+            sublabel: "Stage 1 will begin shortly",
             relation: null,
             sourceRole: null,
             targetRole: null,
         };
     }
 
-    if (execution.activeRound === 3) {
+    if (execution.activeStage === 5) {
         // If the synthesis node is already visible in the graph, the synthesis is
         // functionally complete even if turn_completed hasn't arrived yet (e.g. race
         // condition between DB commit and WS event delivery). Show "complete" narration
@@ -113,43 +113,34 @@ export function deriveActiveNarration(args: {
         };
     }
 
-    // Follow-up synthesis rounds (round > 3, round type updated_synthesis).
-    // These are functionally the same as round 3 but for follow-up cycles.
-    if (execution.activeRound > 3) {
-        const followupSynthesisVisible = nodes.some(
-            (n) =>
-                (n.kind === "followup-synthesis" ||
-                    n.kind === "synthesis" ||
-                    n.id?.includes("synthesis") === true) &&
-                n.status !== "hidden" &&
-                n.status !== "entering",
-        );
-        if (followupSynthesisVisible) {
-            return {
-                title: "Follow-up cycle complete",
-                sublabel: "Updated synthesis finalized",
-                relation: null,
-                sourceRole: null,
-                targetRole: null,
-            };
-        }
-        return {
-            title: "Updating synthesis...",
-            sublabel: "Consolidating follow-up perspectives",
-            relation: null,
-            sourceRole: "Synthesis",
-            targetRole: null,
-        };
-    }
-
     const sourceRole = execution.currentAgentRole ?? "Agent";
 
-    if (execution.activeRound === 1) {
+    if (execution.activeStage === 1) {
         return {
             title: `${sourceRole} is generating response...`,
             sublabel: "Analyzing arguments and building initial stance",
             relation: null,
             sourceRole,
+            targetRole: null,
+        };
+    }
+
+    if (execution.activeStage === 3 || execution.activeStage === 4) {
+        return {
+            title: `${sourceRole} is working on ${execution.stages[(execution.activeStage ?? 3) - 1]?.shortLabel ?? "the debate"}...`,
+            sublabel: execution.stages[(execution.activeStage ?? 3) - 1]?.label ?? "Debate in progress",
+            relation: null,
+            sourceRole,
+            targetRole: null,
+        };
+    }
+
+    if (execution.debateStatus === "partially_completed") {
+        return {
+            title: "Debate partially completed",
+            sublabel: execution.failureMessage ?? "Agent responses remain available",
+            relation: null,
+            sourceRole: null,
             targetRole: null,
         };
     }

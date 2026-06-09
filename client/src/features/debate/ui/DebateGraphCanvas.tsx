@@ -306,7 +306,7 @@ export default function DebateGraphCanvas() {
         const nodes = [...graph.nodes];
         const isLive = isLiveExecution;
 
-        const relation = execution.activeRound === 2
+        const relation = execution.activeStage === 2
             ? inferRound2Relation(
                 execution.currentAgentId ? `agent-${execution.currentAgentId}-r2` : null,
                 agents,
@@ -320,7 +320,7 @@ export default function DebateGraphCanvas() {
         const roleById = (id: string | null): string =>
             agents.find((a) => a.id === id)?.role ?? "Agent";
 
-        if (execution.activeRound === 1 && execution.currentAgentId) {
+        if (execution.activeStage === 1 && execution.currentAgentId) {
             const nodeId = `agent-${execution.currentAgentId}`;
             const idx = nodes.findIndex((n) => n.id === nodeId);
             if (idx >= 0) {
@@ -363,7 +363,7 @@ export default function DebateGraphCanvas() {
             }
         }
 
-        if (execution.activeRound === 2 && execution.currentAgentId) {
+        if (execution.activeStage === 2 && execution.currentAgentId) {
             const nodeId = `agent-${execution.currentAgentId}-r2`;
             const parentRole = roleById(execution.currentAgentId);
             const idx = nodes.findIndex((n) => n.id === nodeId);
@@ -409,7 +409,7 @@ export default function DebateGraphCanvas() {
             }
         }
 
-        if (execution.activeRound === 3 && execution.debateStatus === "running") {
+        if (execution.activeStage === 5 && execution.debateStatus === "running") {
             const synthIdx = nodes.findIndex((n) => n.id === "synthesis-node");
             if (synthIdx >= 0) {
                 const node = nodes[synthIdx];
@@ -746,7 +746,9 @@ export default function DebateGraphCanvas() {
                 const metadata = {
                     ...(n.metadata ?? {}),
                     loading:
-                        execution.debateStatus === "completed" || execution.debateStatus === "failed"
+                        execution.debateStatus === "completed"
+                        || execution.debateStatus === "partially_completed"
+                        || execution.debateStatus === "failed"
                             ? false
                             : n.metadata?.["loading"],
                 };

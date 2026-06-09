@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { cn } from "@/shared/lib/cn";
 import { useDebateStore } from "../model/debate.store";
 import { useDebateExecutionState } from "../model/useDebateExecutionState";
+import { useDebateViewState } from "../model/useDebateViewState";
 import { useGraphStore } from "../model/graph.store";
 import { deriveActiveNarration } from "../model/execution-ux";
 
@@ -15,6 +16,7 @@ export default function TopTopicBar() {
     const documentCount = useDebateStore((s) => s.documentCount);
     const graph = useGraphStore((s) => s.graph);
     const execution = useDebateExecutionState();
+    const view = useDebateViewState();
     const [questionExpanded, setQuestionExpanded] = useState(false);
 
     const narration = useMemo(
@@ -32,17 +34,12 @@ export default function TopTopicBar() {
         running: "bg-indigo-500/20 text-indigo-400 border-indigo-500/30",
         completed: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
         failed: "bg-red-500/20 text-red-400 border-red-500/30",
+        partially_completed: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+        interrupted: "bg-indigo-500/20 text-indigo-300 border-indigo-500/30",
     };
 
-    const statusLabel = execution.debateStatus.toUpperCase();
-    const stageLabel =
-        execution.debateStatus === "running"
-            ? `Round ${execution.activeRound}`
-            : execution.debateStatus === "queued"
-                ? "Round 1"
-                : execution.debateStatus === "completed"
-                    ? "All Rounds"
-                    : `Round ${execution.activeRound}`;
+    const statusLabel = view.statusLabel;
+    const stageLabel = view.visibleStageLabel;
 
     const fullQuestion = session?.question ?? "No debate loaded";
 
@@ -87,14 +84,14 @@ export default function TopTopicBar() {
 
                 {/* Right — status + meta (fixed, never shrinks) */}
                 <div className="flex items-center gap-3 shrink-0">
-                    {execution.debateStatus && (
+                    {view.derivedStatus && (
                         <span
                             className={cn(
                                 "px-2.5 py-0.5 rounded-full text-[11px] font-medium border uppercase tracking-wider whitespace-nowrap",
-                                statusColor[execution.debateStatus] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30",
+                                statusColor[view.derivedStatus] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30",
                             )}
                         >
-                            {execution.debateStatus === "running" && (
+                            {(view.derivedStatus === "running" || view.derivedStatus === "interrupted") && (
                                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 mr-1.5 animate-pulse" />
                             )}
                             {statusLabel}
@@ -105,7 +102,7 @@ export default function TopTopicBar() {
                         {stageLabel}
                     </span>
 
-                    {execution.debateStatus === "running" && narration.relation && (
+                    {view.derivedStatus === "running" && narration.relation && (
                         <span className="hidden xl:inline text-[11px] text-indigo-300/90 truncate max-w-[180px]">
                             {narration.relation}
                         </span>

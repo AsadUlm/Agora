@@ -49,9 +49,20 @@ from app.models.message import MessageType
 from app.models.agent_document_binding import AgentDocumentBinding
 from app.schemas.contracts import AgentContext, AgentRoundResult, ExecutionEvent, ExecutionEventType, OnEventCallback, TurnContext
 from app.services.debate_engine.round_manager import RoundManager
+from app.services.debate_engine.lifecycle import FinalSynthesisFailed
 from app.services.llm.provider_error_classifier import classify_provider_error, make_safe_error, UNKNOWN_ERROR
 
 logger = logging.getLogger(__name__)
+
+
+def _phase_for_stage(stage: int | None) -> str:
+    return {
+        1: "initial",
+        2: "critique",
+        3: "critique_response",
+        4: "revised_position",
+        5: "final_synthesis",
+    }.get(stage or 1, "initial")
 
 
 class ChatEngine:
@@ -115,6 +126,8 @@ class ChatEngine:
 
         # ── Transition: queued → running ─────────────────────────────────────
         turn.status = ChatTurnStatus.running
+        turn.synthesis_status = "pending"
+        turn.error_metadata = None
         turn.started_at = datetime.now(timezone.utc)
         turn.current_round_no = 1
         await self.db.flush()
@@ -141,27 +154,52 @@ class ChatEngine:
             session_factory=self._session_factory,
         )
 
+        r1: list[AgentRoundResult] = []
+        r2: list[AgentRoundResult] = []
+        r3: list[AgentRoundResult] = []
+        r4: list[AgentRoundResult] = []
+        r5: list[AgentRoundResult] = []
+
         try:
-            # Round 1
+            # Round 1 — Initial Positions
             r1: list[AgentRoundResult] = await round_manager.execute_round_1(ctx)
             turn.current_round_no = 2
             await self.db.flush()
 
-            # Round 2
+            # Round 2 — Cross-Critiques
             r2: list[AgentRoundResult] = await round_manager.execute_round_2(ctx, r1)
             turn.current_round_no = 3
             await self.db.flush()
 
-            # Round 3
-            r3: list[AgentRoundResult] = await round_manager.execute_round_3(ctx, r1, r2)
+            # Round 3 — Critique Responses (Stage 3 of 5-stage traceable pipeline)
+            r3: list[AgentRoundResult] = await round_manager.execute_round_critique_response(
+                ctx, round_number=3, round1_results=r1, round2_results=r2
+            )
+            turn.current_round_no = 4
+            await self.db.flush()
+
+            # Round 4 — Revised Positions (Stage 4 of 5-stage traceable pipeline)
+            r4: list[AgentRoundResult] = await round_manager.execute_round_revised_position(
+                ctx, round_number=4, round1_results=r1, round2_results=r2, round3_results=r3
+            )
+            turn.current_round_no = 5
+            await self.db.flush()
+
+            # Round 5 — Final Synthesis (uses revised positions from Round 4)
+            turn.synthesis_status = "running"
+            await self.db.flush()
+            r5: list[AgentRoundResult] = await round_manager.execute_round_final(
+                ctx, round1_results=r1, round2_results=r2, revised_results=r4
+            )
+            turn.synthesis_status = "completed"
 
             # ── Transition: running → completed ───────────────────────────────
             turn.status = ChatTurnStatus.completed
             turn.ended_at = datetime.now(timezone.utc)
-            turn.current_round_no = 3
+            turn.current_round_no = 5
             await self.db.flush()
 
-            logger.info("Turn %s completed successfully.", turn_id)
+            logger.info("Turn %s completed successfully (5-stage pipeline).", turn_id)
             logger.info("WS emit turn_completed turn=%s", turn_id)
             await self._emit(ExecutionEvent(
                 event_type=ExecutionEventType.turn_completed,
@@ -169,11 +207,33 @@ class ChatEngine:
                 turn_id=ctx.turn_id,
             ))
 
+        except FinalSynthesisFailed as exc:
+            exc.safe_error.request_id = turn.request_id
+            turn.status = ChatTurnStatus.partially_completed
+            turn.synthesis_status = "failed"
+            turn.ended_at = datetime.now(timezone.utc)
+            turn.error_metadata = exc.safe_error.to_frontend_dict()
+            await self.db.flush()
+            logger.exception(
+                "Turn %s partially completed: final synthesis failed.",
+                turn_id,
+            )
+            await self._emit(ExecutionEvent(
+                event_type=ExecutionEventType.turn_partially_completed,
+                session_id=ctx.session_id,
+                turn_id=ctx.turn_id,
+                payload={
+                    "safe_error": exc.safe_error.to_frontend_dict(),
+                    "partial_results_available": True,
+                },
+            ))
+
         except Exception as exc:
             # ── Transition: running → failed ──────────────────────────────────
             turn.status = ChatTurnStatus.failed
+            if turn.synthesis_status != "completed":
+                turn.synthesis_status = "skipped"
             turn.ended_at = datetime.now(timezone.utc)
-            await self.db.flush()
             logger.exception("Turn %s failed: %s", turn_id, exc)
             # Build a safe error — classify if we have provider error info
             safe_error = getattr(exc, "safe_error", None)
@@ -181,7 +241,16 @@ class ChatEngine:
                 safe_error = make_safe_error(
                     UNKNOWN_ERROR,
                     message=str(exc),
+                    severity="fatal",
+                    phase=_phase_for_stage(turn.current_round_no),
+                    partial_results_available=False,
+                    request_id=turn.request_id,
+                    last_successful_stage=max(0, (turn.current_round_no or 1) - 1),
                 )
+            else:
+                safe_error.request_id = turn.request_id
+            turn.error_metadata = safe_error.to_frontend_dict()
+            await self.db.flush()
             await self._emit(ExecutionEvent(
                 event_type=ExecutionEventType.turn_failed,
                 session_id=ctx.session_id,
@@ -199,8 +268,9 @@ class ChatEngine:
             "round1": [_serialize_result(r) for r in r1],
             "round2": [_serialize_result(r) for r in r2],
             "round3": [_serialize_result(r) for r in r3],
+            "round4": [_serialize_result(r) for r in r4],
+            "round5": [_serialize_result(r) for r in r5],
         }
-
     # ─────────────────────────────────────────────────────────────────────────
     # Private helpers
     # ─────────────────────────────────────────────────────────────────────────
