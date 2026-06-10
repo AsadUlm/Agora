@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { motion } from "motion/react";
 import {
@@ -17,16 +17,22 @@ import type {
 import { cn } from "@/shared/lib/cn";
 import { formatRelativeTime } from "@/shared/lib/dates";
 import {
-    DEFAULT_AGENT_CONFIGS,
     agentConfigsToPayload,
     createAgentConfig,
     MAX_DEBATE_AGENTS,
     type AgentConfig,
 } from "@/features/debate/model/agent-config.types";
 import AgentConfigDrawer from "@/features/debate/ui/AgentConfigDrawer";
+import { hasPendingDocuments } from "@/features/debate/model/document-status";
 import { useDebateStore } from "@/features/debate/model/debate.store";
-import { getAgentPreset } from "@/features/agent-presets/api/agent-preset.api";
-import { applyPresetToAgentConfig } from "@/features/agent-presets/model/agent-preset.types";
+import {
+    getAgentPreset,
+    listAgentPresets,
+} from "@/features/agent-presets/api/agent-preset.api";
+import {
+    applyPresetToAgentConfig,
+    createDefaultAgentsFromSystemPresets,
+} from "@/features/agent-presets/model/agent-preset.types";
 import { toast } from "@/shared/ui/toast";
 
 interface TopicGateInfo {
@@ -50,6 +56,11 @@ interface TopicValidationError {
     suggestions: string[];
 }
 
+async function loadDefaultAgentConfigs(): Promise<AgentConfig[]> {
+    const systemPresets = await listAgentPresets({ type: "system" });
+    return createDefaultAgentsFromSystemPresets(systemPresets);
+}
+
 export default function DebateListPage() {
     const navigate = useNavigate();
     const location = useLocation();
@@ -62,9 +73,8 @@ export default function DebateListPage() {
     const [topicError, setTopicError] = useState<TopicValidationError | null>(null);
     const [showNew, setShowNew] = useState(false);
     const [drawerOpen, setDrawerOpen] = useState(false);
-    const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>(
-        () => [...DEFAULT_AGENT_CONFIGS],
-    );
+    const [agentConfigs, setAgentConfigs] = useState<AgentConfig[]>([]);
+    const defaultAgentsInitialized = useRef(false);
 
     // Document management state
     const [draftSessionId, setDraftSessionId] = useState<string | null>(null);
@@ -88,6 +98,19 @@ export default function DebateListPage() {
         fetchDebates();
     }, [fetchDebates]);
 
+    const initializeDefaultAgents = useCallback(async () => {
+        if (defaultAgentsInitialized.current) return;
+        const defaults = await loadDefaultAgentConfigs();
+        setAgentConfigs((prev) => (prev.length === 0 ? defaults : prev));
+        defaultAgentsInitialized.current = true;
+    }, []);
+
+    useEffect(() => {
+        initializeDefaultAgents().catch(() => {
+            // The configuration drawer retries and surfaces a visible error.
+        });
+    }, [initializeDefaultAgents]);
+
     // Handle "New Debate" from sidebar + optional ?presetId= / state.presetId
     useEffect(() => {
         const stateAny = location.state as { openNew?: boolean; presetId?: string } | null;
@@ -101,11 +124,20 @@ export default function DebateListPage() {
         if (presetId) {
             (async () => {
                 try {
-                    const preset = await getAgentPreset(presetId);
+                    const [preset, defaults] = await Promise.all([
+                        getAgentPreset(presetId),
+                        loadDefaultAgentConfigs(),
+                    ]);
                     setAgentConfigs((prev) => {
                         const base = createAgentConfig();
-                        const updates = applyPresetToAgentConfig(preset, base);
-                        return [...prev, { ...base, ...updates }];
+                        const updates = applyPresetToAgentConfig(
+                            preset,
+                            base,
+                            { overrideRole: true },
+                        );
+                        const existing = prev.length > 0 ? prev : defaults;
+                        defaultAgentsInitialized.current = true;
+                        return [...existing, { ...base, ...updates }];
                     });
                     toast.success(`Added agent from preset "${preset.name}".`);
                 } catch {
@@ -125,6 +157,17 @@ export default function DebateListPage() {
         if (enabledCount > MAX_DEBATE_AGENTS) {
             toast.error(`A debate can use at most ${MAX_DEBATE_AGENTS} agents. Please remove some agents.`);
             return;
+        }
+        // Warn (but don't block) if documents are still being processed. With
+        // synchronous uploads this is rarely true — it only catches a legacy
+        // row that is still non-terminal.
+        const pendingDocs = documents.filter(
+            (d) => d.status === "processing" || d.status === "uploading" || d.status === "uploaded",
+        );
+        if (pendingDocs.length > 0) {
+            toast.info(
+                `${pendingDocs.length} document${pendingDocs.length > 1 ? "s are" : " is"} still processing and may not be used in this debate.`,
+            );
         }
         setCreating(true);
         setTopicError(null);
@@ -197,16 +240,38 @@ export default function DebateListPage() {
         }
     };
 
-    /** Step 30: multi-file upload. Returns per-file failures so the panel can show them. */
+    /**
+     * Multi-file upload. The backend processes each file synchronously and
+     * returns FINAL statuses (ready/failed) — we replace any temporary client
+     * state with the returned backend documents (backend = source of truth).
+     * Returns per-file failures so the panel can show them.
+     */
     const handleUploadDocumentsBatch = async (
         files: File[],
     ): Promise<DocumentUploadFailureDTO[] | void> => {
+        if (import.meta.env.DEV) {
+
+            console.debug("[RAG UI] upload request started", { count: files.length, names: files.map((f) => f.name) });
+        }
         setUploading(true);
         try {
             const sessionId = await ensureDraftSession();
             const res = await uploadDocumentsBatch(sessionId, files);
+            if (import.meta.env.DEV) {
+
+                console.debug("[RAG UI] upload response", {
+                    uploaded: res.uploaded.map((d) => ({ filename: d.filename, status: d.status, chunks: d.chunk_count })),
+                    failed: res.failed,
+                });
+            }
             if (res.uploaded.length) {
-                setDocuments((prev) => [...res.uploaded, ...prev]);
+                // Prepend the backend documents; drop any prior row with the
+                // same id so a re-upload replaces (never duplicates) it. No
+                // stale local "processing" state survives a backend response.
+                setDocuments((prev) => {
+                    const uploadedIds = new Set(res.uploaded.map((d) => d.id));
+                    return [...res.uploaded, ...prev.filter((d) => !uploadedIds.has(d.id))];
+                });
             }
             return res.failed;
         } finally {
@@ -231,8 +296,57 @@ export default function DebateListPage() {
         }
     };
 
+    // Safety-net poller. Because uploads are processed synchronously and return
+    // FINAL statuses, documents are normally terminal the moment they appear —
+    // this poll then runs once and stops immediately. It only keeps polling if a
+    // non-terminal document somehow exists (e.g. a legacy row), and self-heals
+    // via the backend's stale-processing recovery. It also refreshes chunk_count
+    // / embedding_status after the drawer opens.
+    useEffect(() => {
+        if (!drawerOpen || !draftSessionId) return;
+        let intervalId: ReturnType<typeof setInterval> | null = null;
+        let cancelled = false;
+        let consecutiveErrors = 0;
+        const MAX_ERRORS = 3;
+
+        const stopPolling = () => {
+            if (intervalId !== null) {
+                clearInterval(intervalId);
+                intervalId = null;
+            }
+        };
+
+        const poll = async () => {
+            if (cancelled) return;
+            try {
+                const updated = await listDocuments(draftSessionId);
+                if (cancelled) return;
+                consecutiveErrors = 0;
+                setDocuments(updated);
+                if (!hasPendingDocuments(updated)) stopPolling();
+            } catch {
+                consecutiveErrors += 1;
+                if (consecutiveErrors >= MAX_ERRORS) stopPolling();
+            }
+        };
+
+        poll();
+        intervalId = setInterval(poll, 1500);
+
+        return () => {
+            cancelled = true;
+            stopPolling();
+        };
+    }, [drawerOpen, draftSessionId]);
+
     // Refresh documents when drawer opens (in case status changed)
     const handleOpenDrawer = async () => {
+        try {
+            await initializeDefaultAgents();
+        } catch {
+            toast.error("Failed to load the default system agent presets.");
+            return;
+        }
         setDrawerOpen(true);
         if (draftSessionId) {
             try {

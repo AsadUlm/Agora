@@ -16,6 +16,28 @@ class DocumentStatus(str, enum.Enum):
     failed = "failed"
 
 
+class EmbeddingStatus(str, enum.Enum):
+    """Embedding lifecycle, tracked separately from document ``status``.
+
+    A document reaches ``ready`` as soon as its text is extracted and chunks
+    are persisted — it never waits on the embedding provider. Embeddings are a
+    best-effort augmentation: when they succeed RAG uses semantic vector
+    search, when they don't RAG falls back to keyword search over the stored
+    chunk text. This separation is what guarantees a document can never get
+    stuck in ``processing`` because an embedding API key/model is misconfigured.
+
+      pending  — chunks stored, embeddings not yet attempted/finished
+      ready    — real (non-zero) vectors stored for every chunk
+      failed   — embedding provider raised; chunks stored without vectors
+      disabled — provider is mock / returned all-zero vectors (offline dev)
+    """
+
+    pending = "pending"
+    ready = "ready"
+    failed = "failed"
+    disabled = "disabled"
+
+
 class Document(Base):
     """RAG storage: uploaded knowledge documents."""
     __tablename__ = "documents"
@@ -34,6 +56,12 @@ class Document(Base):
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[DocumentStatus] = mapped_column(
         SQLEnum(DocumentStatus, name="document_status"), nullable=False, default=DocumentStatus.uploaded
+    )
+    # Embedding lifecycle — decoupled from ``status`` so a broken embedding
+    # provider can never block a document from becoming ``ready``. Stored as a
+    # plain string (not a PG enum) to avoid fragile ALTER TYPE migrations.
+    embedding_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
     )
 
     # ── Step 30: storage provider metadata ──────────────────────────────────
@@ -60,6 +88,19 @@ class Document(Base):
     # absent until the extractor populates it; downstream code must use ``or {}``.
     knowledge_metadata: Mapped[dict[str, Any] | None] = mapped_column(
         JSON, nullable=True, default=None
+    )
+
+    # Processing failure reason — populated by ingestion_service when status=failed.
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+
+    # Lifecycle timestamps — power stale-processing recovery and UI diagnostics.
+    # processing_started_at is set when status flips to ``processing``;
+    # processed_at is set when status reaches a terminal state (ready/failed).
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
     )
 
     created_at: Mapped[datetime] = mapped_column(

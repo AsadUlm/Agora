@@ -117,6 +117,16 @@ class Settings(BaseSettings):
     # Max number of files accepted in one multi-upload request.
     DOCUMENT_MAX_FILES_PER_UPLOAD: int = 10
 
+    # ── Ingestion robustness ─────────────────────────────────────────────
+    # A document still in ``processing`` longer than this is considered
+    # stale (its background task never finished — e.g. the server restarted
+    # or Cloud Run throttled CPU after the response). The status endpoint
+    # flips such documents to ``failed`` so they never spin forever.
+    DOCUMENT_PROCESSING_TIMEOUT_SECONDS: int = 300
+    # Hard cap on the best-effort knowledge-extraction LLM call so a hung
+    # provider can never freeze the ingestion pipeline before status=ready.
+    KNOWLEDGE_EXTRACTION_TIMEOUT_SECONDS: float = 30.0
+
     # ── Cloudinary credentials (only read when provider == "cloudinary") ─
     CLOUDINARY_CLOUD_NAME: str | None = None
     CLOUDINARY_API_KEY: str | None = None

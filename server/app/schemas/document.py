@@ -11,16 +11,28 @@ from pydantic import BaseModel
 
 
 class DocumentUploadResponse(BaseModel):
-    """Response from POST /documents/upload."""
+    """Response from POST /documents/upload.
+
+    Since processing is synchronous, ``status`` is always terminal
+    (``ready`` | ``failed``) by the time this is returned — never
+    ``processing``. ``chunk_count`` confirms how many searchable chunks were
+    stored; ``embedding_status`` reports whether semantic vectors are available
+    (retrieval falls back to keyword search when they are not).
+    """
 
     id: uuid.UUID
     session_id: uuid.UUID
     filename: str
     source_type: str
-    status: str  # uploaded | processing | ready | failed
+    status: str  # ready | failed (processing only transiently, never returned)
     created_at: datetime
     storage_provider: str = "local"
     bytes: int | None = None
+    error_message: str | None = None
+    chunk_count: int = 0
+    # pending | ready | failed | disabled
+    embedding_status: str = "pending"
+    processed_at: datetime | None = None
 
 
 class DocumentListItem(BaseModel):
@@ -34,6 +46,15 @@ class DocumentListItem(BaseModel):
     created_at: datetime
     storage_provider: str = "local"
     bytes: int | None = None
+    error_message: str | None = None
+    # Number of searchable chunks persisted for this document. > 0 confirms the
+    # document is retrievable (via vector search or keyword fallback).
+    chunk_count: int = 0
+    # pending | ready | failed | disabled — embedding lifecycle, independent of
+    # ``status``. A document is ``ready`` even when embeddings are failed/disabled.
+    embedding_status: str = "pending"
+    processing_started_at: datetime | None = None
+    processed_at: datetime | None = None
 
 
 class DocumentDeleteResponse(BaseModel):

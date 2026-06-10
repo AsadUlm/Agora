@@ -16,6 +16,7 @@ from httpx import AsyncClient
 
 from app.schemas.agent_config import AgentConfig, ModelConfig, ReasoningConfig
 from app.services.llm.exceptions import ProviderConfigError, ProviderUnavailableError
+from app.services.llm.model_profiles import stability_tier
 from app.services.llm.registry import MODEL_PRESETS, OpenRouterModel, ProviderRegistry, provider_for_model
 
 
@@ -48,6 +49,7 @@ class TestProviderRegistry:
         reg = ProviderRegistry()
         ids = {model.id for model in reg.list_models(provider="openrouter")}
         assert ids == {model.value for model in OpenRouterModel}
+        assert OpenRouterModel.GPT_5_5.value in ids
         assert f"google/gemini-{'2.5'}-flash" not in ids
         assert f"openai/gpt-{'5'}" not in ids
 
@@ -78,11 +80,24 @@ class TestProviderRegistry:
         assert presets["Deep Reasoning"] == OpenRouterModel.GROK_4_THINKING.value
 
     def test_modern_models_route_to_openrouter(self):
+        assert provider_for_model(OpenRouterModel.GPT_5_5.value, "mock") == "openrouter"
         assert provider_for_model(OpenRouterModel.KIMI_K2_5.value, "groq") == "openrouter"
         # Deprecated IDs should still route to openrouter for backward compat
         assert provider_for_model("x-ai/grok-4.1-fast", "groq") == "openrouter"
         assert provider_for_model("moonshotai/kimi-k2.5", "groq") == "openrouter"
         assert provider_for_model("unknown/model", "mock") == "mock"
+
+    def test_gpt_5_5_is_available_as_stable_model(self):
+        reg = ProviderRegistry()
+        model = next(
+            item
+            for item in reg.list_models(provider="openrouter")
+            if item.id == OpenRouterModel.GPT_5_5.value
+        )
+
+        assert model.name == "GPT-5.5"
+        assert model.context_length == 1_050_000
+        assert stability_tier(model.id) == "stable"
 
     def test_list_models_unknown_provider_returns_empty(self):
         reg = ProviderRegistry()

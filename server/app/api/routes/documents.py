@@ -28,14 +28,14 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.config import settings
-from app.db.session import get_db, get_session_factory
+from app.db.session import get_db
 from app.models.chat_session import ChatSession
 from app.models.document import Document
 from app.models.user import User
@@ -54,6 +54,7 @@ from app.services.documents.extractor import (
 from app.services.documents.ingestion_service import (
     DocumentIngestionError,
     DocumentIngestionService,
+    safe_error_message,
 )
 from app.services.storage import DocumentStorageError
 
@@ -88,7 +89,10 @@ async def _require_session_ownership(
     return session
 
 
-def _doc_to_response(doc: Document) -> DocumentUploadResponse:
+def _doc_to_response(doc: Document, chunk_count: int | None = None) -> DocumentUploadResponse:
+    if chunk_count is None:
+        # Populated by the synchronous pipeline; defaults to 0 for legacy rows.
+        chunk_count = int(getattr(doc, "_ingest_chunk_count", 0) or 0)
     return DocumentUploadResponse(
         id=doc.id,
         session_id=doc.chat_session_id,
@@ -98,6 +102,10 @@ def _doc_to_response(doc: Document) -> DocumentUploadResponse:
         created_at=doc.created_at,
         storage_provider=doc.storage_provider or "local",
         bytes=doc.storage_bytes,
+        error_message=doc.error_message,
+        chunk_count=chunk_count,
+        embedding_status=doc.embedding_status or "pending",
+        processed_at=doc.processed_at,
     )
 
 
@@ -143,19 +151,17 @@ def _validate_file_or_raise(filename: str, size: int) -> None:
     summary="Upload a single document for RAG grounding",
 )
 async def upload_document(
-    background_tasks: BackgroundTasks,
     session_id: uuid.UUID = Query(..., description="The debate session to attach this document to"),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> DocumentUploadResponse:
-    """Upload a single document and schedule background ingestion.
+    """Upload a single document and process it synchronously.
 
-    The HTTP response returns as soon as the file is stored and a
-    ``processing`` Document row is committed. Text extraction, chunking
-    and embedding run in a FastAPI ``BackgroundTask`` on its own DB
-    session (see ``DocumentIngestionService.process_in_background``).
+    The HTTP response returns only after the document has reached a terminal
+    state (``ready`` or ``failed``). Text extraction and chunking run inline;
+    embeddings are best-effort and never block readiness. There is no
+    background task — a document can never get stuck in ``processing``.
     """
     await _require_session_ownership(session_id, db, current_user)
 
@@ -165,7 +171,7 @@ async def upload_document(
 
     svc = DocumentIngestionService()
     try:
-        doc = await svc.create_pending(
+        doc = await svc.process_upload(
             db=db,
             session_id=session_id,
             filename=filename,
@@ -178,16 +184,13 @@ async def upload_document(
             detail=str(exc),
         ) from exc
 
-    # Schedule heavy work to run after the response is sent. The task
-    # opens its own DB session via the factory, so it must not capture
-    # the request-scoped ``db`` or the ORM ``doc`` object.
-    background_tasks.add_task(
-        svc.process_in_background,
-        session_factory,
-        doc.id,
+    response = _doc_to_response(doc)
+    await db.commit()
+    logger.info(
+        "[RAG Upload] done file=%s document=%s status=%s embedding=%s chunks=%d",
+        filename, doc.id, doc.status.value, doc.embedding_status, response.chunk_count,
     )
-
-    return _doc_to_response(doc)
+    return response
 
 
 @router.post(
@@ -197,21 +200,19 @@ async def upload_document(
     summary="Upload multiple documents in one request (partial success)",
 )
 async def upload_documents_batch(
-    background_tasks: BackgroundTasks,
     session_id: uuid.UUID = Query(..., description="The debate session to attach these documents to"),
     files: list[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> DocumentUploadBatchResponse:
     """
-    Step 30 / Step 45: ingest a batch of files with partial-success
-    semantics. One bad file does not fail the batch.
+    Ingest a batch of files synchronously with partial-success semantics.
 
-    Per file: validate, upload to storage, mark ``processing`` inside a
-    SAVEPOINT. After the request DB is committed, schedule a background
-    task per successfully-created Document so heavy extraction /
-    embedding does not block the HTTP response.
+    Each file is validated, then processed end-to-end (extract → chunk →
+    store → ready/failed) and committed independently, so one bad file never
+    aborts the batch and never rolls back a sibling's success. The response
+    returns only once every file has reached a terminal state — there is no
+    background task and no permanent ``processing`` state.
     """
     await _require_session_ownership(session_id, db, current_user)
 
@@ -227,10 +228,11 @@ async def upload_documents_batch(
             detail=f"Too many files in one upload (max {max_files}).",
         )
 
+    logger.info("[RAG Upload] start session=%s files=%d", session_id, len(files))
+
     svc = DocumentIngestionService()
     uploaded: list[DocumentUploadResponse] = []
     failed: list[DocumentUploadFailure] = []
-    scheduled_ids: list[uuid.UUID] = []
     max_bytes = _max_upload_bytes()
 
     for upload in files:
@@ -260,48 +262,42 @@ async def upload_documents_batch(
             ))
             continue
 
-        # Use a SAVEPOINT so a failed file rolls back its own rows but the
-        # successful files in the batch remain persisted.
+        # Process this file to a terminal state, then commit it on its own so
+        # a later file's failure can never roll back this success. ``process_upload``
+        # persists processing errors as status=failed (the row is kept and
+        # surfaced in the uploaded list); it only raises for unsupported-type /
+        # storage failures, which become a per-file ``failed`` entry instead.
         try:
-            async with db.begin_nested():
-                doc = await svc.create_pending(
-                    db=db,
-                    session_id=session_id,
-                    filename=filename,
-                    file_bytes=content,
-                    content_type=upload.content_type,
-                )
-            uploaded.append(_doc_to_response(doc))
-            scheduled_ids.append(doc.id)
-        except DocumentIngestionError as exc:
-            logger.warning(
-                "document_upload_failed filename=%s reason=%s",
-                filename, exc,
+            doc = await svc.process_upload(
+                db=db,
+                session_id=session_id,
+                filename=filename,
+                file_bytes=content,
+                content_type=upload.content_type,
             )
-            failed.append(DocumentUploadFailure(filename=filename, error=str(exc)))
-        except DocumentStorageError as exc:
-            logger.warning(
-                "document_upload_failed filename=%s reason=storage:%s",
-                filename, exc,
+            response = _doc_to_response(doc)
+            await db.commit()
+            uploaded.append(response)
+            logger.info(
+                "[RAG Upload] file=%s document=%s status=%s embedding=%s chunks=%d",
+                filename, doc.id, doc.status.value, doc.embedding_status, response.chunk_count,
             )
-            failed.append(DocumentUploadFailure(
-                filename=filename, error=f"Storage failure: {exc}",
-            ))
+        except (DocumentIngestionError, DocumentStorageError) as exc:
+            await db.rollback()
+            logger.warning("[RAG Upload] file=%s rejected reason=%s", filename, exc)
+            failed.append(DocumentUploadFailure(filename=filename, error=safe_error_message(exc)))
         except Exception as exc:  # noqa: BLE001
-            logger.exception("document_upload_failed filename=%s", filename)
+            await db.rollback()
+            logger.exception("[RAG Upload] file=%s unexpected error", filename)
             failed.append(DocumentUploadFailure(
-                filename=filename, error=f"Unexpected error: {exc}",
+                filename=filename, error=f"Unexpected error: {safe_error_message(exc)}",
             ))
 
-    # Schedule background ingestion only for files whose pending rows
-    # were successfully committed.
-    for document_id in scheduled_ids:
-        background_tasks.add_task(
-            svc.process_in_background,
-            session_factory,
-            document_id,
-        )
-
+    ready_count = sum(1 for u in uploaded if u.status == "ready")
+    logger.info(
+        "[RAG Upload] done session=%s uploaded=%d ready=%d failed=%d",
+        session_id, len(uploaded), ready_count, len(failed),
+    )
     return DocumentUploadBatchResponse(uploaded=uploaded, failed=failed)
 
 
@@ -409,9 +405,31 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[DocumentListItem]:
-    """Return all documents for the given session, newest first."""
+    """Return all documents for the given session, newest first.
+
+    Self-healing: any document stuck in ``processing`` past the configured
+    timeout (its background task died / never ran) is flipped to ``failed``
+    here, so the frontend poller never observes an infinite spinner.
+    """
     await _require_session_ownership(session_id, db, current_user)
+
+    await DocumentIngestionService.recover_stale_processing(db, session_id)
+
     docs = await DocumentIngestionService.get_for_user(db, session_id)
+
+    # One grouped query for chunk counts — avoids an N+1 over documents.
+    from sqlalchemy import func  # noqa: PLC0415
+    from app.models.document_chunk import DocumentChunk  # noqa: PLC0415
+
+    chunk_counts: dict[uuid.UUID, int] = {}
+    if docs:
+        rows = await db.execute(
+            select(DocumentChunk.document_id, func.count(DocumentChunk.id))
+            .where(DocumentChunk.document_id.in_([d.id for d in docs]))
+            .group_by(DocumentChunk.document_id)
+        )
+        chunk_counts = {doc_id: int(count) for doc_id, count in rows.all()}
+
     return [
         DocumentListItem(
             id=d.id,
@@ -422,6 +440,11 @@ async def list_documents(
             created_at=d.created_at,
             storage_provider=d.storage_provider or "local",
             bytes=d.storage_bytes,
+            error_message=d.error_message,
+            chunk_count=chunk_counts.get(d.id, 0),
+            embedding_status=d.embedding_status or "pending",
+            processing_started_at=d.processing_started_at,
+            processed_at=d.processed_at,
         )
         for d in docs
     ]

@@ -32,7 +32,47 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await seed_default_user(db)
         await seed_system_agent_presets(db)
+        # Recover any documents stuck in `processing` from a previous run
+        # (e.g. the server restarted / hot-reloaded and killed background tasks).
+        await _recover_stale_documents_on_startup(db)
     yield
+
+
+async def _recover_stale_documents_on_startup(db) -> None:
+    """At startup, flip every document that's been in `processing` past the
+    configured timeout to `failed`.  This is the safety net for the common
+    development pattern of running uvicorn with --reload: a hot-reload kills
+    in-flight BackgroundTasks, leaving documents stuck in `processing` forever
+    without this recovery pass."""
+    import logging  # noqa: PLC0415
+    from sqlalchemy import select, func  # noqa: PLC0415
+    from app.models.document import Document, DocumentStatus  # noqa: PLC0415
+    from app.services.documents.ingestion_service import DocumentIngestionService  # noqa: PLC0415
+
+    logger = logging.getLogger(__name__)
+    try:
+        # Grab distinct session IDs that have stuck-processing documents.
+        result = await db.execute(
+            select(Document.chat_session_id).distinct()
+            .where(Document.status == DocumentStatus.processing)
+        )
+        session_ids = [row[0] for row in result.all()]
+        if not session_ids:
+            return
+
+        total = 0
+        for sid in session_ids:
+            n = await DocumentIngestionService.recover_stale_processing(db, sid)
+            total += n
+        if total:
+            await db.commit()
+            logger.warning(
+                "startup_stale_recovery: recovered %d stuck-processing documents "
+                "across %d sessions",
+                total, len(session_ids),
+            )
+    except Exception as exc:  # noqa: BLE001 — never block startup
+        logger.warning("startup_stale_recovery failed: %s", exc)
 
 
 def create_app() -> FastAPI:

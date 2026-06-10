@@ -6,10 +6,11 @@
  * single endpoint; the type discriminator is the `type` field.
  */
 
-import type {
-    AgentConfig,
-    KnowledgeMode,
-    ModelPresetKey,
+import {
+    createAgentConfig,
+    type AgentConfig,
+    type KnowledgeMode,
+    type ModelPresetKey,
 } from "@/features/debate/model/agent-config.types";
 
 export type AgentPresetType = "system" | "user";
@@ -78,6 +79,58 @@ export function isSystemPreset(preset: AgentPreset | null | undefined): boolean 
 
 export function isUserPreset(preset: AgentPreset | null | undefined): boolean {
     return !!preset && preset.type === "user";
+}
+
+export const DEFAULT_SYSTEM_AGENT_PRESET_KEYS = [
+    "critical_challenger",
+    "innovation_strategist",
+    "policy_analyst",
+] as const;
+
+const DEFAULT_SYSTEM_AGENT_COLORS: Record<
+    (typeof DEFAULT_SYSTEM_AGENT_PRESET_KEYS)[number],
+    string
+> = {
+    critical_challenger: "rose",
+    innovation_strategist: "cyan",
+    policy_analyst: "violet",
+};
+
+/**
+ * Build fresh debate-agent instances from the canonical system presets
+ * returned by the backend. Preset content stays owned by the seed definitions;
+ * this helper only supplies stable instance IDs, order, colors, and enabled state.
+ */
+export function createDefaultAgentsFromSystemPresets(
+    presets: AgentPreset[],
+): AgentConfig[] {
+    const bySystemKey = new Map(
+        presets
+            .filter((preset) => isSystemPreset(preset) && preset.system_key)
+            .map((preset) => [preset.system_key as string, preset]),
+    );
+    const missing = DEFAULT_SYSTEM_AGENT_PRESET_KEYS.filter(
+        (key) => !bySystemKey.has(key),
+    );
+    if (missing.length > 0) {
+        throw new Error(`Missing default system agent presets: ${missing.join(", ")}`);
+    }
+
+    return DEFAULT_SYSTEM_AGENT_PRESET_KEYS.map((key) => {
+        const preset = bySystemKey.get(key)!;
+        const base = createAgentConfig({
+            _id: `agent-${key.replaceAll("_", "-")}`,
+            enabled: true,
+            color: DEFAULT_SYSTEM_AGENT_COLORS[key],
+        });
+        return {
+            ...base,
+            ...applyPresetToAgentConfig(preset, base, { overrideRole: true }),
+            _id: base._id,
+            enabled: true,
+            color: base.color,
+        };
+    });
 }
 
 /**

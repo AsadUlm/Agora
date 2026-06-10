@@ -41,7 +41,7 @@ export type ModelPresetKey =
 export interface AgentConfig {
     /** Client-side ID for key management */
     _id: string;
-    /** Role label (e.g., "analyst", "critic", "creative") */
+    /** Human-readable role label (e.g., "Policy Analyst") */
     role: string;
     /** Role description / mission for the agent */
     roleDescription: string;
@@ -221,63 +221,6 @@ export const AGENT_PRESETS: AgentPreset[] = [
     },
 ];
 
-export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
-    {
-        _id: "default-1",
-        role: "analyst",
-        roleDescription: "",
-        reasoningStyle: "analytical",
-        reasoningDepth: "normal",
-        provider: "openrouter",
-        model: "anthropic/claude-sonnet-4.5",
-        modelPreset: "balanced",
-        temperature: 0.7,
-        enabled: true,
-        knowledgeMode: "shared_session_docs",
-        knowledgeStrict: false,
-        documentIds: [],
-        customInstruction: "",
-        preset: null,
-        color: "violet",
-    },
-    {
-        _id: "default-2",
-        role: "critic",
-        roleDescription: "",
-        reasoningStyle: "critical",
-        reasoningDepth: "normal",
-        provider: "openrouter",
-        model: "anthropic/claude-sonnet-4.5",
-        modelPreset: "balanced",
-        temperature: 0.6,
-        enabled: true,
-        knowledgeMode: "shared_session_docs",
-        knowledgeStrict: false,
-        documentIds: [],
-        customInstruction: "",
-        preset: null,
-        color: "rose",
-    },
-    {
-        _id: "default-3",
-        role: "creative",
-        roleDescription: "",
-        reasoningStyle: "creative",
-        reasoningDepth: "normal",
-        provider: "openrouter",
-        model: "anthropic/claude-sonnet-4.5",
-        modelPreset: "high_quality",
-        temperature: 0.5,
-        enabled: true,
-        knowledgeMode: "no_docs",
-        knowledgeStrict: false,
-        documentIds: [],
-        customInstruction: "",
-        preset: null,
-        color: "cyan",
-    },
-];
-
 export const PROVIDER_OPTIONS = ["openrouter"] as const;
 
 /**
@@ -295,6 +238,7 @@ export const MODEL_OPTIONS: Record<string, string[]> = {
         "anthropic/claude-opus-4-7",
         "anthropic/claude-3-haiku",
         // OpenAI
+        "openai/gpt-5.5",
         "openai/gpt-4.1-mini",
         "openai/gpt-4.1-nano",
         "openai/gpt-4o-mini",

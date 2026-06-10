@@ -46,20 +46,17 @@ _STRONG_CLAIM_KEYWORDS = (
     "evidence",
 )
 
-# FIX-11: target_roles enumeration. Used by round 2 + follow-up critique
-# normalizers to expose a structured list of roles a critique points at,
-# instead of relying on the free-text ``target_agent`` field downstream.
-_ROLE_ORDER = ("analyst", "critic", "creative", "moderator")
-
-
 def _parse_target_roles(raw_target: str) -> list[str]:
-    """Extract a normalized list of target roles from a critique's free-text
-    ``target_agent`` field. Falls back to ``["general"]`` when no known role
-    is mentioned (e.g. "General position", "Strongest argument").
-    """
-    lowered = (raw_target or "").lower()
-    found = [role for role in _ROLE_ORDER if role in lowered]
-    return found or ["general"]
+    """Expose the actual target label without depending on hardcoded role names."""
+    normalized = re.sub(r"\s+", " ", (raw_target or "").strip().lower())
+    if not normalized or normalized in {
+        "general",
+        "general position",
+        "strongest argument",
+        "unknown",
+    }:
+        return ["general"]
+    return [normalized]
 
 
 # Step 46: canonical Round 3 position-update labels. The synthesis round must
@@ -1071,7 +1068,7 @@ def _normalize_updated_synthesis(payload: dict[str, Any], raw_text: str) -> dict
     return out
 
 
-_VALID_WINNING_SIDES = {"analyst", "critic", "creative", "draw", "mixed"}
+_CANONICAL_WINNING_SIDES = {"draw", "mixed"}
 _VALID_CONFIDENCE = {"low", "medium", "high"}
 
 
@@ -1186,11 +1183,13 @@ def _normalize_synthesis_verdict(payload: dict[str, Any], raw_text: str) -> dict
         recommended or response,
     )
 
-    winning_side = (_pick_string(payload, ["winning_side", "winner"]) or "").lower().strip()
-    if winning_side not in _VALID_WINNING_SIDES:
-        if winning_side:
-            warnings.append("synthesis_verdict_winning_side_invalid")
-        winning_side = "mixed"
+    winning_side_raw = (_pick_string(payload, ["winning_side", "winner"]) or "").strip()
+    winning_side_lower = winning_side_raw.lower()
+    winning_side = (
+        winning_side_lower
+        if winning_side_lower in _CANONICAL_WINNING_SIDES
+        else winning_side_raw or "mixed"
+    )
 
     confidence = (_pick_string(payload, ["confidence", "confidence_level"]) or "").lower().strip()
     if confidence not in _VALID_CONFIDENCE:

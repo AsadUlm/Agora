@@ -70,6 +70,38 @@ async def test_start_debate_response_schema(client: AsyncClient):
     assert "ws_turn_url" in body
 
 
+async def test_start_debate_accepts_default_system_preset_agents(client: AsyncClient):
+    roles = ["Critical Challenger", "Innovation Strategist", "Policy Analyst"]
+    payload = {
+        "question": "Should AI regulation be risk-based?",
+        "agents": [
+            {
+                "role": role,
+                "config": {
+                    "identity": {
+                        "name": role,
+                        "description": f"{role} system preset persona",
+                    },
+                    "reasoning": {"style": "critical", "depth": "deep"},
+                    "model": {
+                        "provider": "openrouter",
+                        "model": "test/model",
+                        "temperature": 0.4,
+                    },
+                    "knowledge": {"mode": "no_docs", "strict": False},
+                },
+            }
+            for role in roles
+        ],
+    }
+
+    response = await client.post("/debates/start", json=payload)
+    assert response.status_code == 201
+
+    debate = (await client.get(f"/debates/{response.json()['debate_id']}")).json()
+    assert [agent["role"] for agent in debate["agents"]] == roles
+
+
 async def test_start_debate_ws_urls_reference_correct_ids(client: AsyncClient):
     resp = await client.post("/debates/start", json=_valid_payload())
     body = resp.json()

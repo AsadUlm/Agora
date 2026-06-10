@@ -17,6 +17,7 @@ class OpenRouterModel(str, Enum):
     CLAUDE_OPUS_4_8 = "anthropic/claude-opus-4-8"
     CLAUDE_OPUS_4_7 = "anthropic/claude-opus-4-7"
     # ── OpenAI ────────────────────────────────────────────────────────────
+    GPT_5_5 = "openai/gpt-5.5"
     GPT_4_1_MINI = "openai/gpt-4.1-mini"
     GPT_4_1_NANO = "openai/gpt-4.1-nano"
     GPT_4O_MINI = "openai/gpt-4o-mini"
@@ -61,6 +62,7 @@ MODERN_OPENROUTER_MODELS: tuple[tuple[OpenRouterModel, str, int], ...] = (
     (OpenRouterModel.CLAUDE_OPUS_4_8, "Claude Opus 4.8", 200000),
     (OpenRouterModel.CLAUDE_OPUS_4_7, "Claude Opus 4.7", 200000),
     # OpenAI
+    (OpenRouterModel.GPT_5_5, "GPT-5.5", 1050000),
     (OpenRouterModel.GPT_4_1_MINI, "GPT-4.1 Mini", 1047576),
     (OpenRouterModel.GPT_4_1_NANO, "GPT-4.1 Nano", 1047576),
     (OpenRouterModel.GPT_4O_MINI, "GPT-4o Mini", 128000),
@@ -94,7 +96,6 @@ MODERN_OPENROUTER_MODELS: tuple[tuple[OpenRouterModel, str, int], ...] = (
 _DEPRECATED_MODEL_ROUTES: dict[str, str] = {
     "x-ai/grok-4.1-fast": "openrouter",   # removed in catalog refresh
     "moonshotai/kimi-k2.5": "openrouter",  # old provider prefix; replaced by moonshot/kimi-k2.5
-    "openai/gpt-5.5": "openrouter",        # removed; kept for historical debate records
     "openai/gpt-5.5-pro": "openrouter",   # removed; kept for historical debate records
 }
 

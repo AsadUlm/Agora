@@ -121,6 +121,14 @@ def build_synthesis_verdict_prompt(
     cycle_label = "initial Round 3" if cycle_number <= 1 else f"follow-up cycle #{cycle_number - 1}"
 
     agents_block = _format_agent_block(agent_syntheses)
+    agent_roles = list(
+        dict.fromkeys(
+            _compact_text(str(item.get("role") or ""), 80).replace("|", "/")
+            for item in agent_syntheses
+            if str(item.get("role") or "").strip()
+        )
+    )
+    winning_side_options = " | ".join([*agent_roles, "draw", "mixed"])
     debate_summary_block = _format_debate_summary(debate_summary)
     debate_summary_section = (
         f"\nDebate summary so far (compressed memory across cycles):\n{debate_summary_block}\n"
@@ -236,7 +244,7 @@ Output contract — return ONLY this JSON, no markdown fences, no commentary:
   "core_tradeoff": "The difficult trade-off that remains unresolved.",
   "convergence_note": "If agents converged: what disagreement disappeared, why, and which argument caused it. Otherwise empty string.",
   "recommended_answer": "The final answer the user should take away.",
-  "winning_side": "analyst | critic | creative | draw | mixed",
+  "winning_side": "{winning_side_options}",
   "confidence": "low | medium | high",
   "decision_confidence": "High | Medium | Low",
   "what_changed": "What changed in this cycle compared with the previous cycle, or empty string for cycle 1.",
@@ -257,7 +265,7 @@ Output contract — return ONLY this JSON, no markdown fences, no commentary:
 }}
 
 Strict field rules:
-  - winning_side MUST be exactly one of: analyst | critic | creative | draw | mixed.
+  - winning_side MUST be exactly one of: {winning_side_options}.
   - confidence MUST be exactly one of: low | medium | high.
   - consensus_level MUST be exactly one of: High Consensus | Moderate Consensus | Low Consensus | Fundamental Disagreement.
   - initial_divergence MUST be exactly one of: Low Divergence | Moderate Divergence | High Divergence.

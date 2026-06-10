@@ -21,6 +21,7 @@ STABLE_STRUCTURED_MODELS: frozenset[str] = frozenset(
         "openai/gpt-4.1-mini",
         "openai/gpt-4.1-nano",
         "openai/gpt-4o-mini",
+        "openai/gpt-5.5",
         "google/gemini-3.1-pro",
         "google/gemini-2.0-flash-001",
         "deepseek/deepseek-v4-pro",

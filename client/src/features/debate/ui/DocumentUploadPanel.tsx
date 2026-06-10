@@ -1,10 +1,11 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/shared/lib/cn";
 import type {
     DocumentDTO,
     DocumentUploadFailureDTO,
 } from "../api/debate.types";
+import { computeDocCounts, formatDocSummary } from "../model/document-status";
 
 interface DocumentUploadPanelProps {
     documents: DocumentDTO[];
@@ -24,6 +25,7 @@ interface DocumentUploadPanelProps {
 const STATUS_STYLES: Record<string, { bg: string; text: string; label: string }> = {
     ready: { bg: "bg-emerald-500/15", text: "text-emerald-400", label: "Ready" },
     processing: { bg: "bg-amber-500/15", text: "text-amber-400", label: "Processing" },
+    uploading: { bg: "bg-blue-500/15", text: "text-blue-400", label: "Uploading" },
     uploaded: { bg: "bg-blue-500/15", text: "text-blue-400", label: "Uploaded" },
     failed: { bg: "bg-red-500/15", text: "text-red-400", label: "Failed" },
 };
@@ -60,6 +62,21 @@ export default function DocumentUploadPanel({
     const [error, setError] = useState<string | null>(null);
     const [failed, setFailed] = useState<DocumentUploadFailureDTO[]>([]);
 
+    // Dev-mode visibility: log the derived counts whenever documents change so
+    // the upload pipeline can be audited end-to-end from the browser console.
+    useEffect(() => {
+        if (import.meta.env.DEV) {
+            const counts = computeDocCounts(documents);
+
+            console.debug("[RAG UI] documents state updated", {
+                ...counts,
+                statuses: documents.map((d) => ({ filename: d.filename, status: d.status })),
+            });
+
+            console.debug("[RAG UI] counts", formatDocSummary(counts));
+        }
+    }, [documents]);
+
     const validate = (files: File[]): { valid: File[]; rejected: DocumentUploadFailureDTO[] } => {
         const valid: File[] = [];
         const rejected: DocumentUploadFailureDTO[] = [];
@@ -80,6 +97,10 @@ export default function DocumentUploadPanel({
 
     const handleFiles = async (incoming: File[]) => {
         setError(null);
+        if (import.meta.env.DEV) {
+
+            console.debug("[RAG UI] selected files", incoming.map((f) => f.name));
+        }
         if (incoming.length === 0) return;
         if (incoming.length > MAX_FILES) {
             setError(`Up to ${MAX_FILES} files per upload.`);
@@ -223,6 +244,30 @@ export default function DocumentUploadPanel({
                         <span className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
                             Uploaded Documents ({documents.length})
                         </span>
+                        {/* Compact readiness summary — derived purely from
+                            backend statuses (single source of truth). */}
+                        {(() => {
+                            const counts = computeDocCounts(documents);
+                            if (counts.total === 0) return null;
+                            const summary = formatDocSummary(counts);
+                            if (counts.processing > 0) return (
+                                <span className="text-[10px] text-amber-400/80 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse inline-block" />
+                                    {summary}
+                                </span>
+                            );
+                            if (counts.failed > 0) return (
+                                <span className={cn(
+                                    "text-[10px]",
+                                    counts.ready > 0 ? "text-amber-400/80" : "text-red-400/80",
+                                )}>
+                                    {summary}
+                                </span>
+                            );
+                            return (
+                                <span className="text-[10px] text-emerald-400/80">{summary}</span>
+                            );
+                        })()}
                     </div>
                     <AnimatePresence>
                         {documents.map((doc) => {
@@ -236,8 +281,9 @@ export default function DocumentUploadPanel({
                                     initial={{ opacity: 0, y: 5 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     exit={{ opacity: 0, x: -10 }}
-                                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-agora-border/40 bg-agora-surface/50 group"
+                                    className="flex flex-col gap-1 px-3 py-2 rounded-lg border border-agora-border/40 bg-agora-surface/50 group"
                                 >
+                                  <div className="flex items-center gap-2">
                                     <span className="text-sm shrink-0">{icon}</span>
                                     <span className="flex-1 text-xs text-white truncate">
                                         {doc.filename}
@@ -255,8 +301,22 @@ export default function DocumentUploadPanel({
                                             ☁
                                         </span>
                                     )}
-                                    <span className={cn("px-1.5 py-0.5 rounded text-[9px] font-medium shrink-0", status.bg, status.text)}>
+                                    {doc.status === "ready" && doc.chunk_count != null && doc.chunk_count > 0 && (
+                                        <span
+                                            className="text-[9px] text-emerald-400/70 shrink-0"
+                                            title={`${doc.chunk_count} searchable chunks`}
+                                        >
+                                            {doc.chunk_count} chunk{doc.chunk_count !== 1 ? "s" : ""}
+                                        </span>
+                                    )}
+                                    <span
+                                        className={cn("px-1.5 py-0.5 rounded text-[9px] font-medium shrink-0", status.bg, status.text)}
+                                        title={doc.status === "failed" && doc.error_message ? doc.error_message : undefined}
+                                    >
                                         {status.label}
+                                        {doc.status === "failed" && doc.error_message && (
+                                            <span className="ml-1 opacity-70">ℹ</span>
+                                        )}
                                     </span>
                                     <button
                                         onClick={() => onDelete(doc.id)}
@@ -267,6 +327,12 @@ export default function DocumentUploadPanel({
                                             <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
                                         </svg>
                                     </button>
+                                  </div>
+                                  {doc.status === "failed" && doc.error_message && (
+                                      <p className="text-[10px] text-red-300/80 pl-6 leading-snug break-words">
+                                          {doc.error_message}
+                                      </p>
+                                  )}
                                 </motion.div>
                             );
                         })}

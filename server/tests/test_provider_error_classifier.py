@@ -87,6 +87,28 @@ def test_403_with_payment_hint_is_quota_exceeded():
     assert result.code == PROVIDER_QUOTA_EXCEEDED
 
 
+def test_403_openrouter_key_limit_exceeded_is_quota_not_auth():
+    """OpenRouter returns 403 "Key limit exceeded (total limit)" when the key
+    runs out of credits. That must surface as QUOTA ("add credits"), not AUTH
+    ("check your API key"), so the user is sent to the right fix."""
+    exc = _FakeStatusError(
+        "Error code: 403 - {'error': {'message': 'Key limit exceeded (total limit). "
+        "Manage it using https://openrouter.ai/...', 'code': 403}}",
+        status_code=403,
+    )
+    result = classify_provider_error(exc, status_code=403)
+    assert result.code == PROVIDER_QUOTA_EXCEEDED
+    lower = result.user_message.lower()
+    assert "credit" in lower or "quota" in lower, result.user_message
+
+
+def test_403_invalid_key_still_maps_to_auth():
+    """A genuine forbidden/invalid-key 403 (no limit/credit hint) stays AUTH."""
+    exc = _FakeStatusError("403 Forbidden: invalid credentials", status_code=403)
+    result = classify_provider_error(exc, status_code=403)
+    assert result.code == PROVIDER_AUTH_ERROR
+
+
 # ── Keyword-based classification ───────────────────────────────────────────────
 
 @pytest.mark.parametrize(

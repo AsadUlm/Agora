@@ -38,7 +38,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -306,7 +306,6 @@ class ChatEngine:
             )
 
         # Load document bindings for all agents in one query
-        from sqlalchemy import select  # noqa: PLC0415
         agent_ids = [a.id for a in active_agents]
         bindings_result = await self.db.execute(
             select(AgentDocumentBinding.chat_agent_id, AgentDocumentBinding.document_id)
@@ -315,6 +314,26 @@ class ChatEngine:
         bindings_by_agent: dict[uuid.UUID, list[uuid.UUID]] = {}
         for row in bindings_result.all():
             bindings_by_agent.setdefault(row.chat_agent_id, []).append(row.document_id)
+
+        # rag_active: true when assigned bindings exist OR when the session has
+        # ready documents and at least one agent uses shared_session_docs.
+        has_assigned_bindings = any(bindings_by_agent.get(a.id) for a in active_agents)
+        assigned_doc_count = len({d for ids in bindings_by_agent.values() for d in ids})
+
+        session_ready_doc_count = 0
+        uses_shared_docs = any(
+            (a.knowledge_mode or "shared_session_docs") == "shared_session_docs"
+            for a in active_agents
+        )
+        if uses_shared_docs:
+            from app.models.document import Document, DocumentStatus  # noqa: PLC0415
+            session_ready_doc_count = (
+                await self.db.execute(
+                    select(func.count(Document.id))
+                    .where(Document.chat_session_id == session.id)
+                    .where(Document.status == DocumentStatus.ready)
+                )
+            ).scalar() or 0
 
         # The user question lives in a Message with message_type=user_input
         question = ""
@@ -338,11 +357,10 @@ class ChatEngine:
                 for a in active_agents
             ],
             turn_index=turn.turn_index,
-            # FIX-12: surface RAG state so the UI can render a neutral
-            # "Reasoning-only mode" indicator when no documents are attached.
-            # No documents is a valid mode — never treated as an error.
-            rag_active=any(bindings_by_agent.get(a.id) for a in active_agents),
-            document_count=len({d for ids in bindings_by_agent.values() for d in ids}),
+            # FIX-12 / FIX-B2: rag_active is true for assigned_docs_only bindings
+            # OR when the session has ready documents used by shared_session_docs agents.
+            rag_active=has_assigned_bindings or session_ready_doc_count > 0,
+            document_count=assigned_doc_count + session_ready_doc_count,
             response_language_code=turn.response_language_code,
             response_language_name=turn.response_language_name,
             response_language_source=turn.response_language_source,

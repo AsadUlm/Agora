@@ -161,11 +161,13 @@ async def test_process_in_background_marks_ready_and_creates_chunks(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# C. Embedding failure → background task marks Document failed, no chunks
+# C. Embedding failure → document still READY (chunks stored), embedding_status
+#    = failed. Embeddings are decoupled from readiness — a broken provider must
+#    never fail the document or leave it processing forever.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_process_in_background_marks_failed_on_embedding_error(
+async def test_process_in_background_embedding_error_still_ready(
     db_session, _test_session_factory,
 ):
     session_id = uuid.UUID("00000000-0000-0000-0000-000000000099")
@@ -196,14 +198,16 @@ async def test_process_in_background_marks_failed_on_embedding_error(
 
     async with _test_session_factory() as fresh:
         reloaded = await fresh.get(Document, document_id)
-        assert reloaded.status == DocumentStatus.failed
-        # No half-written chunks.
+        # READY despite the embedding failure — retrieval will use keyword fallback.
+        assert reloaded.status == DocumentStatus.ready
+        assert reloaded.embedding_status == "failed"
+        # Chunks ARE stored (plain text) so the document is retrievable.
         result = await fresh.execute(
             select(func.count()).select_from(DocumentChunk).where(
                 DocumentChunk.document_id == document_id
             )
         )
-        assert result.scalar() == 0
+        assert result.scalar() >= 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
