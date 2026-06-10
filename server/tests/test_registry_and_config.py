@@ -74,7 +74,7 @@ class TestProviderRegistry:
         # Verify updated / key preset models
         assert presets["Fast"] == OpenRouterModel.GROK_4_3.value
         assert presets["Balanced"] == OpenRouterModel.CLAUDE_SONNET_4_5.value
-        assert presets["High Quality"] == OpenRouterModel.GPT_5_5.value
+        assert presets["High Quality"] == OpenRouterModel.CLAUDE_OPUS_4_7.value
         assert presets["Deep Reasoning"] == OpenRouterModel.GROK_4_THINKING.value
 
     def test_modern_models_route_to_openrouter(self):

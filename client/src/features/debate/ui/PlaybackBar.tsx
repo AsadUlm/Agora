@@ -3,10 +3,18 @@ import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import { useDebateStore } from "../model/debate.store";
 import { useGraphStore } from "../model/graph.store";
 import { deriveActiveNarration } from "../model/execution-ux";
+import { useDebateViewState } from "../model/useDebateViewState";
+import { useIsMobile } from "@/hooks/useMediaQuery";
+import { usePlaybackStore } from "../model/playback.store";
+import { useSelectedCycleState } from "../model/useSelectedCycleState";
 
 export default function PlaybackBar() {
+    const isMobile = useIsMobile();
+    const selectedCycle = usePlaybackStore((s) => s.selectedCycle);
     const execution = useDebateExecutionState();
+    const view = useDebateViewState();
     const agents = useDebateStore((s) => s.agents);
+    const { cycle, state: cycleState } = useSelectedCycleState();
     const graph = useGraphStore((s) => s.graph);
     const executionMode = useDebateStore((s) => s.executionMode);
     const currentlyGenerating = useDebateStore((s) => s.currentlyGenerating);
@@ -25,25 +33,34 @@ export default function PlaybackBar() {
     const setPlaybackMode = useDebateStore((s) => s.setPlaybackMode);
     const revealNextVisual = useDebateStore((s) => s.revealNextVisual);
 
-    const isRunning = execution.debateStatus === "running";
-    const isQueued = execution.debateStatus === "queued";
-    const isFailed = execution.debateStatus === "failed";
-    const isCompleted = execution.debateStatus === "completed";
-    const currentRound = execution.rounds.find((round) => round.roundNumber === execution.activeRound);
-
+    const isRunning = cycleState.status === "running";
+    const isQueued = cycleState.status === "queued";
+    const isFailed = cycleState.status === "failed";
+    const isCompleted = cycleState.status === "completed";
+    const isPartial = cycleState.status === "partially_completed";
     const playbackQueueLength = playbackQueue.length;
     const generatedCount = useMemo(
         () =>
             graph.nodes.filter(
                 (node) =>
-                    node.id !== "question-node"
+                    node.kind !== "question"
+                    && node.kind !== "followup-question"
+                    && (node.cycle ?? 1) === selectedCycle
                     && node.status !== "hidden",
             ).length,
-        [graph.nodes],
+        [graph.nodes, selectedCycle],
     );
     const revealedStepCount = useMemo(
-        () => revealedNodeIds.filter((id) => id !== "question-node").length,
-        [revealedNodeIds],
+        () => {
+            const revealed = new Set(revealedNodeIds);
+            return graph.nodes.filter((node) =>
+                node.kind !== "question"
+                && node.kind !== "followup-question"
+                && (node.cycle ?? 1) === selectedCycle
+                && revealed.has(node.id),
+            ).length;
+        },
+        [graph.nodes, revealedNodeIds, selectedCycle],
     );
     const queuedCount = Math.max(0, generatedCount - revealedStepCount);
 
@@ -57,14 +74,16 @@ export default function PlaybackBar() {
         [execution, agents, graph.nodes, graph.edges],
     );
 
-    const stageLabel = isCompleted
-        ? "Debate Complete"
-        : isFailed
-            ? "Debate Failed"
-            : `Round ${execution.activeRound}: ${currentRound?.label ?? "In Progress"}`;
+    const stageLabel = cycle.cycleType === "followup"
+        ? `${cycle.title} · ${cycleState.status.replace("_", " ")}`
+        : view.statusLabel === "RUNNING"
+        ? view.visibleStageLabel
+        : view.statusLabel;
 
     const barColor = isFailed
         ? "from-red-500 to-rose-500"
+        : isPartial
+            ? "from-amber-500 to-orange-500"
         : isCompleted
             ? "from-emerald-500 to-teal-500"
             : "from-indigo-500 to-purple-500";
@@ -76,45 +95,58 @@ export default function PlaybackBar() {
     const showPlaybackControls = isRunning || isQueued;
 
     return (
-        <div className="h-14 px-3 border-t border-agora-border bg-agora-surface/80 backdrop-blur-sm flex items-center gap-2 overflow-hidden">
+        <div className="h-14 shrink-0 px-3 border-t border-agora-border bg-agora-surface/90 backdrop-blur-sm flex items-center gap-2 overflow-hidden">
 
             {/* Stage label — fixed left */}
-            <div className="shrink-0 w-[clamp(120px,18%,220px)] min-w-0">
+            <div className="shrink-0 w-[clamp(120px,18%,220px)] max-sm:w-[46%] min-w-0">
                 <div className="text-xs font-semibold text-white truncate">{stageLabel}</div>
-                <div className="text-[11px] text-agora-text-muted truncate">{narration.sublabel}</div>
+                <div className="text-[11px] text-agora-text-muted truncate">
+                    {isMobile && isCompleted
+                        ? "Synthesis stabilized"
+                        : cycle.cycleType === "followup"
+                            ? cycleState.activeStageLabel ?? cycleState.status.replace("_", " ")
+                            : narration.sublabel}
+                </div>
             </div>
 
             {/* Progress bar — absorbs all remaining space */}
-            <div className="flex-1 min-w-[40px]">
+            <div className="flex-1 min-w-[28px]">
                 <div className="h-1.5 bg-agora-surface-light rounded-full overflow-hidden">
                     <div
                         className={`h-full bg-gradient-to-r ${barColor} rounded-full transition-all duration-400`}
-                        style={{ width: `${execution.progress.percentage}%` }}
+                        style={{ width: `${cycleState.progressPercent}%` }}
                     />
                 </div>
             </div>
 
             {/* Stats — fixed right of progress */}
-            <div className="shrink-0 w-[clamp(80px,10%,150px)] min-w-0 text-right">
-                {(isQueued || isRunning) && narration.relation && (
+            <div className="shrink-0 w-[clamp(80px,10%,150px)] max-sm:w-auto min-w-0 text-right">
+                {(isQueued || isRunning) && cycle.cycleType === "original" && narration.relation && (
                     <div className="text-[11px] text-indigo-300/95 truncate">{narration.relation}</div>
                 )}
-                {(isQueued || isRunning) && !narration.relation && execution.currentAgentRole && (
+                {(isQueued || isRunning) && cycle.cycleType === "original" && !narration.relation && execution.currentAgentRole && (
                     <div className="text-[11px] text-indigo-300/90 truncate">Gen: {execution.currentAgentRole}</div>
                 )}
-                {isCompleted && (
+                {isCompleted && !isMobile && (
                     <div className="text-[11px] text-emerald-300 truncate">Synthesis stabilized</div>
                 )}
                 {isFailed && (
                     <div className="text-[11px] text-red-300 truncate">{execution.failureMessage || "Execution failed"}</div>
                 )}
-                <div className="text-[10px] text-agora-text-muted mt-0.5 truncate">
+                {isPartial && (
+                    <div className="text-[11px] text-amber-300 truncate">
+                        {cycleState.hasUpdatedSynthesis
+                            ? "Updated synthesis available with partial exchange data"
+                            : "Updated synthesis was not generated"}
+                    </div>
+                )}
+                <div className="text-[10px] text-agora-text-muted mt-0.5 whitespace-nowrap">
                     Gen: {generatedCount} · Shown: {revealedStepCount} · Q: {showPlaybackControls ? playbackQueueLength : queuedCount}
                 </div>
             </div>
 
             {/* Frontend playback controls — inline, fixed width */}
-            {showPlaybackControls && (
+            {showPlaybackControls && !isMobile && (
                 <div className="flex items-center gap-1.5 shrink-0 pl-3 border-l border-agora-border">
                     {playbackMode === "auto" ? (
                         <button
@@ -215,7 +247,7 @@ export default function PlaybackBar() {
             {/* DEV debug — hidden on narrow viewports, compressed text */}
             {import.meta.env.DEV && (
                 <div className="hidden xl:block text-[9px] text-agora-text-muted/60 font-mono pl-2 border-l border-agora-border min-w-0 overflow-hidden truncate shrink">
-                    {canonicalNodeCount}c·{renderedNodeCount}r·{revealedStepCount}v·{playbackQueueLength}q·{playbackMode}·{execution.debateStatus}
+                    {canonicalNodeCount}c·{renderedNodeCount}r·{revealedStepCount}v·{playbackQueueLength}q·{playbackMode}·{cycleState.status}
                     {lastWsEventType ? `·${lastWsEventType}` : ""}
                     {currentlyGenerating ? `·R${currentlyGenerating.round_number} ${currentlyGenerating.agent_role}` : ""}
                 </div>

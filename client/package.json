@@ -6,6 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test:lifecycle": "node scripts/test-debate-lifecycle.mjs",
+    "test:process-mapping": "node scripts/test-debate-process-mapping.mjs",
+    "test:round3-verdict": "node scripts/test-round3-verdict.mjs",
+    "test:graph-model": "node scripts/test-debate-graph-model.mjs",
+    "test:cycle-sync": "node scripts/test-debate-cycle-sync.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

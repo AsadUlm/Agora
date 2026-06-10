@@ -125,6 +125,13 @@ LLM_PROVIDER=groq
 alembic upgrade head
 ```
 
+Built-in agent presets are refreshed automatically when the API starts. They
+can also be refreshed manually after applying migrations:
+
+```bash
+python -m app.db.seed_system_presets
+```
+
 **서버 시작**
 
 ```bash

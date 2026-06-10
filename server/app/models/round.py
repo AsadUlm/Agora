@@ -9,25 +9,31 @@ from app.db.base import Base
 
 
 class RoundType(str, enum.Enum):
-    # Cycle 1 (initial debate)
+    # Cycle 1 (initial debate) — 5-stage traceable pipeline
     initial = "initial"
     critique = "critique"
+    critique_response = "critique_response"   # Stage 3: agents respond to critiques received
+    revised_position = "revised_position"     # Stage 4: agents state their updated position
     final = "final"
     # Cycle 2+ (follow-up debate continuation)
     followup_response = "followup_response"
-    followup_critique = "followup_critique"
+    followup_critique = "followup_critique"  # Kept for backward compatibility
+    followup_cross_critique = "followup_cross_critique"
+    followup_response_to_critique = "followup_response_to_critique"
+    followup_revised_position = "followup_revised_position"
     updated_synthesis = "updated_synthesis"
 
 
 class RoundStatus(str, enum.Enum):
     queued = "queued"
     running = "running"      # was "started" — renamed for async lifecycle consistency
+    partially_completed = "partially_completed"
     completed = "completed"
     failed = "failed"
 
 
 class Round(Base):
-    """Stages of debate (1, 2, 3) within a Turn."""
+    """A persisted stage within an original or follow-up debate cycle."""
     __tablename__ = "rounds"
 
     id: Mapped[uuid.UUID] = mapped_column(

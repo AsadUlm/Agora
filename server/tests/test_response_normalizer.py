@@ -225,3 +225,37 @@ def test_direct_fallback_parse_returns_structured_object() -> None:
     assert out.payload["is_fallback"] is True
     assert out.payload["short_summary"] == "Plain usable answer."
     assert out.payload["target_agent"] == "General position"
+
+
+def test_normalizer_extracts_new_contract_aliases() -> None:
+    critique = normalize_round_output(
+        round_number=2,
+        raw_text=json.dumps(
+            {
+                "target": "Policy Analyst",
+                "target_claim": "Targeted licensing is enforceable.",
+                "challenge": "You argued targeted licensing is enforceable, but capacity is limited.",
+                "weakness_found": "Capacity gap",
+                "counterargument": "Stage compliance.",
+                "response": "The proposal depends on regulatory capacity that may not exist across jurisdictions.",
+            }
+        ),
+    )
+    revised = normalize_round_output(
+        round_number=4,
+        round_type="revised_position",
+        raw_text=json.dumps(
+            {
+                "updated_position": "Use staged, risk-based rules with startup exemptions.",
+                "what_changed": "The scope narrowed after the critique.",
+                "change_label": "Partially changed",
+                "reason_for_change": "The critique exposed incumbent-capture risk.",
+                "response": "Use staged, risk-based rules with startup exemptions because broad rules can entrench incumbents.",
+            }
+        ),
+    )
+
+    assert critique.payload["target_agent"] == "Policy Analyst"
+    assert critique.payload["target_claim"] == "Targeted licensing is enforceable."
+    assert revised.payload["revised_position"].startswith("Use staged")
+    assert revised.payload["what_changed"].startswith("The scope narrowed")

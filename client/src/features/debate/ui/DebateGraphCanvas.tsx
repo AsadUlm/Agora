@@ -7,8 +7,9 @@ import {
     useNodesState,
     useEdgesState,
     BackgroundVariant,
+    MarkerType,
 } from "@xyflow/react";
-import type { Node, Edge, NodeMouseHandler, ReactFlowInstance } from "@xyflow/react";
+import type { Node, Edge, NodeMouseHandler, EdgeMouseHandler, ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -20,6 +21,9 @@ import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import { useIsMobile } from "@/hooks/useMediaQuery";
 import { deriveActiveNarration, getGeneratingNodeId, getLoadingCopy, inferRound2Relation } from "../model/execution-ux";
 import { AGENT_COLOR_PALETTE } from "../model/agent-config.types";
+import { buildDebateVisualGraph } from "../model/debate-graph.selectors";
+import { useDebateFocusStore } from "../model/debate-focus.store";
+import type { DebateProcessFocusTarget } from "../model/debate-focus.store";
 
 import QuestionNode from "./nodes/QuestionNode";
 import AgentNode from "./nodes/AgentNode";
@@ -95,9 +99,9 @@ const edgeTypes = {
 
 const LEVEL_Y = {
     question: 40,
-    agents: 250,
-    interactions: 500,
-    synthesis: 720,
+    agents: 260,
+    interactions: 520,
+    synthesis: 880, // Moved down to accommodate staggered R2 nodes
 };
 const CANVAS_CENTER_X = 500;
 const AGENT_HORIZONTAL_GAP = 280;
@@ -154,7 +158,13 @@ function computeLayout(graphNodes: DebateGraphNode[]): Map<string, { x: number; 
         const totalIWidth = (interactionCount - 1) * iGap;
         const iStartX = CANVAS_CENTER_X - totalIWidth / 2 - NODE_WIDTH_ESTIMATE / 2;
         interactionNodes.forEach((node, idx) => {
-            positions.set(node.id, { x: iStartX + idx * iGap, y: LEVEL_Y.interactions });
+            let y = LEVEL_Y.interactions;
+            // Stagger nodes to prevent challenge edges from overlapping the nodes in the middle
+            // Creates a triangle formation for 3 agents (left/right lower, center higher)
+            if (interactionCount >= 3 && idx % 2 === 0) {
+                y += 140;
+            }
+            positions.set(node.id, { x: iStartX + idx * iGap, y });
         });
     }
 
@@ -236,11 +246,15 @@ function edgeRevealRank(edge: DebateGraphEdge, indexById: Map<string, number>): 
 export default function DebateGraphCanvas() {
     const isMobile = useIsMobile();
     const graph = useGraphStore((s) => s.graph);
+    const session = useDebateStore((s) => s.session);
     const agents = useDebateStore((s) => s.agents);
     const agentColorsByPosition = useDebateStore((s) => s.agentColorsByPosition);
     const selectNode = useGraphStore((s) => s.selectNode);
+    const selectEdge = useGraphStore((s) => s.selectEdge);
     const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
+    const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId);
     const clearFocus = useGraphStore((s) => s.clearFocus);
+    const setFocusTarget = useDebateFocusStore((s) => s.setFocusTarget);
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
     const selectedCycle = usePlaybackStore((s) => s.selectedCycle);
     const setSelectedCycle = usePlaybackStore((s) => s.setSelectedCycle);
@@ -275,9 +289,10 @@ export default function DebateGraphCanvas() {
     }, []);
 
     useEffect(() => {
+        const edgeTimeouts = freshEdgeTimeoutsRef.current;
         return () => {
             if (autoRunTimerRef.current) clearTimeout(autoRunTimerRef.current);
-            Object.values(freshEdgeTimeoutsRef.current).forEach((t) => clearTimeout(t));
+            Object.values(edgeTimeouts).forEach((t) => clearTimeout(t));
         };
     }, []);
 
@@ -302,11 +317,11 @@ export default function DebateGraphCanvas() {
         prevDebateStatusRef.current = execution.debateStatus;
     }, [execution.debateStatus]);
 
-    const renderNodes = useMemo(() => {
+    const canonicalRenderNodes = useMemo(() => {
         const nodes = [...graph.nodes];
         const isLive = isLiveExecution;
 
-        const relation = execution.activeRound === 2
+        const relation = execution.activeStage === 2
             ? inferRound2Relation(
                 execution.currentAgentId ? `agent-${execution.currentAgentId}-r2` : null,
                 agents,
@@ -320,7 +335,7 @@ export default function DebateGraphCanvas() {
         const roleById = (id: string | null): string =>
             agents.find((a) => a.id === id)?.role ?? "Agent";
 
-        if (execution.activeRound === 1 && execution.currentAgentId) {
+        if (execution.activeStage === 1 && execution.currentAgentId) {
             const nodeId = `agent-${execution.currentAgentId}`;
             const idx = nodes.findIndex((n) => n.id === nodeId);
             if (idx >= 0) {
@@ -363,7 +378,7 @@ export default function DebateGraphCanvas() {
             }
         }
 
-        if (execution.activeRound === 2 && execution.currentAgentId) {
+        if (execution.activeStage === 2 && execution.currentAgentId) {
             const nodeId = `agent-${execution.currentAgentId}-r2`;
             const parentRole = roleById(execution.currentAgentId);
             const idx = nodes.findIndex((n) => n.id === nodeId);
@@ -409,7 +424,7 @@ export default function DebateGraphCanvas() {
             }
         }
 
-        if (execution.activeRound === 3 && execution.debateStatus === "running") {
+        if (execution.activeStage === 5 && execution.debateStatus === "running") {
             const synthIdx = nodes.findIndex((n) => n.id === "synthesis-node");
             if (synthIdx >= 0) {
                 const node = nodes[synthIdx];
@@ -464,11 +479,14 @@ export default function DebateGraphCanvas() {
      */
     const availableCycles = useMemo(() => {
         const set = new Set<number>([1]);
-        for (const n of renderNodes) {
+        for (const n of canonicalRenderNodes) {
             if (n.cycle && n.cycle >= 1) set.add(n.cycle);
         }
+        for (const followUp of session?.latest_turn?.follow_ups ?? []) {
+            set.add(followUp.cycle_number);
+        }
         return Array.from(set).sort((a, b) => a - b);
-    }, [renderNodes]);
+    }, [canonicalRenderNodes, session?.latest_turn?.follow_ups]);
 
     const maxCycle = availableCycles[availableCycles.length - 1] ?? 1;
 
@@ -496,28 +514,16 @@ export default function DebateGraphCanvas() {
      * Treat undefined cycle as cycle 1 (older data without cycle metadata).
      * The CycleNavigator in the sidebar lets the user switch.
      */
-    const visibleCycleNodes = useMemo(() => {
-        return renderNodes.filter((n) => (n.cycle ?? 1) === selectedCycle);
-    }, [renderNodes, selectedCycle]);
-
-    const visibleCycleNodeIdSet = useMemo(
-        () => new Set(visibleCycleNodes.map((n) => n.id)),
-        [visibleCycleNodes],
+    const visualGraph = useMemo(
+        () => buildDebateVisualGraph(
+            { nodes: canonicalRenderNodes, edges: graph.edges },
+            agents,
+            selectedCycle,
+        ),
+        [canonicalRenderNodes, graph.edges, agents, selectedCycle],
     );
-
-    /**
-     * Edges belonging to this cycle: both endpoints inside the cycle.
-     * Cross-cycle continuity (e.g. cycle-1 synthesis → cycle-2 question)
-     * is intentionally hidden in single-cycle view; the cycle navigator
-     * narrates that transition explicitly.
-     */
-    const visibleCycleEdges = useMemo(() => {
-        return graph.edges.filter(
-            (e) =>
-                visibleCycleNodeIdSet.has(e.source)
-                && visibleCycleNodeIdSet.has(e.target),
-        );
-    }, [graph.edges, visibleCycleNodeIdSet]);
+    const visibleCycleNodes = visualGraph.nodes;
+    const visibleCycleEdges = visualGraph.edges;
 
     const generatingNodeId = useMemo(() => getGeneratingNodeId(execution), [execution]);
 
@@ -692,11 +698,11 @@ export default function DebateGraphCanvas() {
     // or when the user switches cycles (so the new cycle starts framed).
     useEffect(() => {
         if (prevVisibleCountRef.current === 0 && visibleCount > 0) {
-            const t = setTimeout(() => rfInstance.current?.fitView({ padding: 0.18, duration: 420 }), 200);
+            const t = setTimeout(() => rfInstance.current?.fitView({ padding: isMobile ? 0.08 : 0.18, duration: 420 }), 200);
             return () => clearTimeout(t);
         }
         prevVisibleCountRef.current = visibleCount;
-    }, [visibleCount]);
+    }, [visibleCount, isMobile]);
 
     // Track which cycles have already been auto-framed. Manual cycle
     // switching between *already-seen* cycles must feel calm: no big
@@ -713,11 +719,11 @@ export default function DebateGraphCanvas() {
         }
         framedCyclesRef.current.add(selectedCycle);
         const t = setTimeout(
-            () => rfInstance.current?.fitView({ padding: 0.18, duration: 420 }),
+            () => rfInstance.current?.fitView({ padding: isMobile ? 0.08 : 0.18, duration: 420 }),
             120,
         );
         return () => clearTimeout(t);
-    }, [selectedCycle, visibleCycleNodes.length]);
+    }, [selectedCycle, visibleCycleNodes.length, isMobile]);
 
     const onInit = useCallback((instance: ReactFlowInstance) => {
         rfInstance.current = instance;
@@ -728,16 +734,29 @@ export default function DebateGraphCanvas() {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
                 selectNode(null);
+                selectEdge(null);
                 clearFocus();
             }
         };
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [selectNode, clearFocus]);
+    }, [selectNode, selectEdge, clearFocus]);
 
     const revealedNodeSet = useMemo(() => new Set(revealedNodeIds), [revealedNodeIds]);
     const revealedEdgeSet = useMemo(() => new Set(revealedEdgeIds), [revealedEdgeIds]);
     const freshEdgeSet = useMemo(() => new Set(freshEdgeIds), [freshEdgeIds]);
+
+    const connectedNodeIds = useMemo(() => {
+        if (!selectedNodeId) return new Set<string>();
+        const connected = new Set<string>([selectedNodeId]);
+        for (const edge of visibleCycleEdges) {
+            if (edge.source === selectedNodeId || edge.target === selectedNodeId) {
+                connected.add(edge.source);
+                connected.add(edge.target);
+            }
+        }
+        return connected;
+    }, [selectedNodeId, visibleCycleEdges]);
 
     const flowNodes: Node[] = useMemo(() => {
         const baseNodes = visibleCycleNodes
@@ -746,13 +765,15 @@ export default function DebateGraphCanvas() {
                 const metadata = {
                     ...(n.metadata ?? {}),
                     loading:
-                        execution.debateStatus === "completed" || execution.debateStatus === "failed"
+                        execution.debateStatus === "completed"
+                        || execution.debateStatus === "partially_completed"
+                        || execution.debateStatus === "failed"
                             ? false
                             : n.metadata?.["loading"],
                 };
                 const relevant = isNodeRelevant(n, selectedRound);
                 const dimmedByRound = selectedRound !== null && !relevant;
-                const dimmedBySelection = selectedNodeId !== null && n.id !== selectedNodeId;
+                const dimmedBySelection = selectedNodeId !== null && !connectedNodeIds.has(n.id);
                 const dimmedByGeneration = Boolean(
                     generatingNodeId
                     && execution.debateStatus === "running"
@@ -786,9 +807,39 @@ export default function DebateGraphCanvas() {
                 };
             });
 
-        // Cycle band labels removed — the CycleNavigator in the sidebar
-        // is now the single source of truth for which cycle is on screen.
-        return baseNodes;
+        if (baseNodes.length === 0) return baseNodes;
+
+        const labelX = Math.min(
+            ...baseNodes.map((node) => node.position.x),
+            CANVAS_CENTER_X - 420,
+        );
+        const labels: Node[] = [
+            {
+                id: "round-label-1",
+                type: "cycle-label",
+                position: { x: labelX, y: LEVEL_Y.agents - 58 },
+                selectable: false,
+                draggable: false,
+                data: { label: "Round 1 — Initial Answers" },
+            },
+            {
+                id: "round-label-2",
+                type: "cycle-label",
+                position: { x: labelX, y: LEVEL_Y.interactions - 58 },
+                selectable: false,
+                draggable: false,
+                data: { label: "Round 2 — Debate & Critique" },
+            },
+            {
+                id: "round-label-3",
+                type: "cycle-label",
+                position: { x: labelX, y: LEVEL_Y.synthesis - 58 },
+                selectable: false,
+                draggable: false,
+                data: { label: "Round 3 — Final Synthesis" },
+            },
+        ];
+        return [...baseNodes, ...labels];
     }, [
         visibleCycleNodes,
         revealedNodeSet,
@@ -800,6 +851,7 @@ export default function DebateGraphCanvas() {
         completionPulse,
         positions,
         agentColorById,
+        connectedNodeIds,
     ]);
 
     const flowEdges: Edge[] = useMemo(() => {
@@ -815,8 +867,10 @@ export default function DebateGraphCanvas() {
                 const dimmedByRound = selectedRound !== null && !relevantByRound;
                 // Also dim edges not connected to selected node
                 const dimmedBySelection = selectedNodeId !== null
+                    && selectedEdgeId === null
                     && e.source !== selectedNodeId
                     && e.target !== selectedNodeId;
+                const isEdgeSelected = selectedEdgeId === e.id;
                 const dimmedByGeneration = Boolean(
                     generatingNodeId
                     && execution.debateStatus === "running"
@@ -826,17 +880,45 @@ export default function DebateGraphCanvas() {
                 const dimmed = dimmedByRound || dimmedBySelection || dimmedByGeneration;
                 const draw = e.status === "drawing" || freshEdgeSet.has(e.id);
                 const pulse = e.kind === "challenges" && freshEdgeSet.has(e.id);
+                const sourcePosition = positions.get(e.source);
+                const targetPosition = positions.get(e.target);
+                const challengeRunsRight = Boolean(
+                    e.kind === "challenges"
+                    && sourcePosition
+                    && targetPosition
+                    && sourcePosition.x < targetPosition.x,
+                );
                 return {
                     id: e.id,
                     source: e.source,
                     target: e.target,
+                    sourceHandle: e.kind === "challenges"
+                        ? challengeRunsRight ? "right" : "left"
+                        : undefined,
+                    targetHandle: e.kind === "challenges"
+                        ? challengeRunsRight ? "target-left" : "target-right"
+                        : undefined,
                     type: toFlowEdgeType(e.kind),
                     animated: (e.status === "active" || draw) && !dimmed,
-                    label: dimmed ? undefined : e.label,
-                    data: { status: e.status, dimmed, draw, pulse },
+                    label: undefined,
+                    data: {
+                        status: e.status,
+                        dimmed,
+                        draw,
+                        pulse,
+                        selected: isEdgeSelected,
+                        sourceAgentId: e.sourceAgentId,
+                        targetAgentId: e.targetAgentId,
+                    },
+                    markerEnd: {
+                        type: MarkerType.ArrowClosed,
+                        color: e.status === "failed" ? "#ef4444" : edgeColor(e.kind),
+                        width: 18,
+                        height: 18,
+                    },
                     style: {
                         stroke: e.status === "failed" ? "#ef4444" : edgeColor(e.kind),
-                        strokeWidth: dimmed ? 1 : (pulse ? 2.8 : e.status === "active" ? 2.5 : e.status === "failed" ? 2.2 : 1.8),
+                        strokeWidth: dimmed ? 1 : (isEdgeSelected ? 3 : pulse ? 2.8 : e.status === "active" ? 2.5 : e.status === "failed" ? 2.2 : 1.8),
                         opacity: dimmed ? 0.12 : 1,
                     },
                 };
@@ -848,8 +930,10 @@ export default function DebateGraphCanvas() {
         freshEdgeSet,
         selectedRound,
         selectedNodeId,
+        selectedEdgeId,
         generatingNodeId,
         execution.debateStatus,
+        positions,
     ]);
 
     const [nodes, setNodes, onNodesChange] = useNodesState(flowNodes);
@@ -870,24 +954,62 @@ export default function DebateGraphCanvas() {
 
     useEffect(() => {
         if (!import.meta.env.DEV) return;
-        // eslint-disable-next-line no-console
         console.log("[RENDER] rendered nodes", flowNodes.length);
     }, [flowNodes.length]);
 
     const onNodeClick: NodeMouseHandler = useCallback(
         (_event, node) => {
-            selectNode(node.id === selectedNodeId ? null : node.id);
+            if (node.type === "cycle-label") return;
+            const newId = node.id === selectedNodeId ? null : node.id;
+            selectNode(newId);
+
+            if (newId === null) return;
+
+            // Dispatch cross-panel focus target based on node kind
+            const agentId = (node.data as Record<string, unknown>).agentId as string | undefined;
+            let target: DebateProcessFocusTarget | null = null;
+
+            if (node.type === "question" || node.type === "followup-question") {
+                target = { type: "question" };
+            } else if (node.type === "agent" || node.type === "followup-agent") {
+                if (agentId) target = { type: "round1", agentId };
+            } else if (node.type === "intermediate" || node.type === "followup-intermediate") {
+                if (agentId) target = { type: "revision", agentId };
+            } else if (node.type === "synthesis" || node.type === "followup-synthesis") {
+                target = { type: "final" };
+            }
+
+            if (target) setFocusTarget(target);
         },
-        [selectNode, selectedNodeId],
+        [selectNode, selectedNodeId, setFocusTarget],
+    );
+
+    const onEdgeClick: EdgeMouseHandler = useCallback(
+        (_event, edge) => {
+            const newId = edge.id === selectedEdgeId ? null : edge.id;
+            selectEdge(newId);
+
+            if (newId === null) return;
+
+            const edgeData = edge.data as Record<string, unknown> | undefined;
+            const sourceAgentId = edgeData?.sourceAgentId as string | undefined;
+            const targetAgentId = edgeData?.targetAgentId as string | undefined;
+
+            if (edge.type === "challenges" && sourceAgentId && targetAgentId) {
+                setFocusTarget({ type: "critique", sourceAgentId, targetAgentId });
+            }
+        },
+        [selectEdge, selectedEdgeId, setFocusTarget],
     );
 
     const onPaneClick = useCallback(() => {
         selectNode(null);
+        selectEdge(null);
         clearFocus();
-    }, [selectNode, clearFocus]);
+    }, [selectNode, selectEdge, clearFocus]);
 
     // Empty state — no graph at all yet.
-    if (renderNodes.length === 0) {
+    if (canonicalRenderNodes.length === 0) {
         return (
             <div className="absolute inset-0 flex items-center justify-center bg-agora-bg">
                 <div className="text-center space-y-3">
@@ -946,12 +1068,13 @@ export default function DebateGraphCanvas() {
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
+                onEdgeClick={onEdgeClick}
                 onPaneClick={onPaneClick}
                 onInit={onInit}
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 fitView
-                fitViewOptions={{ padding: 0.18 }}
+                fitViewOptions={{ padding: isMobile ? 0.08 : 0.18 }}
                 minZoom={0.25}
                 maxZoom={2.2}
                 proOptions={{ hideAttribution: true }}

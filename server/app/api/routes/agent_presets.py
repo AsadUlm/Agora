@@ -10,9 +10,8 @@ DELETE /agent-presets/{id}             delete (or archive) a user preset
 POST   /agent-presets/{id}/duplicate   duplicate any preset as a user preset
 POST   /agent-presets/{id}/set-default mark a user preset as default
 
-System presets are read-only — they live in
-``app.services.agent_presets.system_presets`` and cannot be edited or
-deleted. They can however be duplicated to create an editable user copy.
+System presets are persisted, seeded by stable ``system_key``, and read-only
+for normal users. They can be duplicated to create an editable user copy.
 """
 
 from __future__ import annotations
@@ -33,24 +32,20 @@ from app.schemas.agent_preset import (
     AgentPresetOut,
     AgentPresetUpdate,
 )
-from app.services.agent_presets.system_presets import (
-    SYSTEM_PRESETS,
-    get_system_preset,
-    is_system_preset_id,
-)
-
 router = APIRouter(prefix="/agent-presets", tags=["Agent Presets"])
 
 
 # ── Serialization helpers ────────────────────────────────────────────────────
 
-def _user_preset_to_dict(preset: AgentPreset) -> dict:
+def _preset_to_dict(preset: AgentPreset) -> dict:
     return {
         "id": str(preset.id),
-        "user_id": str(preset.user_id),
+        "user_id": str(preset.user_id) if preset.user_id else None,
+        "is_system": preset.is_system,
+        "system_key": preset.system_key,
         "name": preset.name,
         "description": preset.description,
-        "type": "user",
+        "type": "system" if preset.is_system else "user",
         "visibility": preset.visibility,
         "role_description": preset.role_description,
         "reasoning_style": preset.reasoning_style,
@@ -96,18 +91,30 @@ async def list_agent_presets(
     result: list[dict] = []
 
     if type in (None, "all", "system"):
-        for sp in SYSTEM_PRESETS:
-            if _matches_search(sp, query or ""):
-                result.append(sp)
+        stmt = (
+            select(AgentPreset)
+            .where(AgentPreset.is_system.is_(True))
+            .where(AgentPreset.is_archived.is_(False))
+            .order_by(AgentPreset.name.asc())
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        for row in rows:
+            payload = _preset_to_dict(row)
+            if _matches_search(payload, query or ""):
+                result.append(payload)
 
     if type in (None, "all", "user"):
-        stmt = select(AgentPreset).where(AgentPreset.user_id == current_user.id)
+        stmt = (
+            select(AgentPreset)
+            .where(AgentPreset.user_id == current_user.id)
+            .where(AgentPreset.is_system.is_(False))
+        )
         if not include_archived:
             stmt = stmt.where(AgentPreset.is_archived.is_(False))
         stmt = stmt.order_by(AgentPreset.updated_at.desc())
         rows = (await db.execute(stmt)).scalars().all()
         for row in rows:
-            payload = _user_preset_to_dict(row)
+            payload = _preset_to_dict(row)
             if _matches_search(payload, query or ""):
                 result.append(payload)
 
@@ -138,6 +145,8 @@ async def create_agent_preset(
         document_ids=list(payload.document_ids or []),
         strict_grounding=payload.strict_grounding,
         is_default=payload.is_default,
+        is_system=False,
+        system_key=None,
     )
 
     if payload.is_default:
@@ -152,7 +161,7 @@ async def create_agent_preset(
     db.add(preset)
     await db.commit()
     await db.refresh(preset)
-    return AgentPresetOut.model_validate(_user_preset_to_dict(preset))
+    return AgentPresetOut.model_validate(_preset_to_dict(preset))
 
 
 @router.get("/{preset_id}", response_model=AgentPresetOut)
@@ -161,21 +170,15 @@ async def get_agent_preset(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AgentPresetOut:
-    if is_system_preset_id(preset_id):
-        sp = get_system_preset(preset_id)
-        if sp is None:
-            raise HTTPException(404, "Preset not found")
-        return AgentPresetOut.model_validate(sp)
-
     try:
         uid = uuid.UUID(preset_id)
     except ValueError:
         raise HTTPException(404, "Preset not found")
 
     row = await db.get(AgentPreset, uid)
-    if row is None or row.user_id != current_user.id:
+    if row is None or (not row.is_system and row.user_id != current_user.id):
         raise HTTPException(404, "Preset not found")
-    return AgentPresetOut.model_validate(_user_preset_to_dict(row))
+    return AgentPresetOut.model_validate(_preset_to_dict(row))
 
 
 @router.patch("/{preset_id}", response_model=AgentPresetOut)
@@ -185,17 +188,16 @@ async def update_agent_preset(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AgentPresetOut:
-    if is_system_preset_id(preset_id):
-        raise HTTPException(403, "System presets cannot be edited. Duplicate first.")
-
     try:
         uid = uuid.UUID(preset_id)
     except ValueError:
         raise HTTPException(404, "Preset not found")
 
     row = await db.get(AgentPreset, uid)
-    if row is None or row.user_id != current_user.id:
+    if row is None or (not row.is_system and row.user_id != current_user.id):
         raise HTTPException(404, "Preset not found")
+    if row.is_system:
+        raise HTTPException(403, "System presets cannot be edited. Duplicate first.")
 
     data = payload.model_dump(exclude_unset=True)
 
@@ -218,7 +220,7 @@ async def update_agent_preset(
 
     await db.commit()
     await db.refresh(row)
-    return AgentPresetOut.model_validate(_user_preset_to_dict(row))
+    return AgentPresetOut.model_validate(_preset_to_dict(row))
 
 
 @router.delete("/{preset_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -228,17 +230,16 @@ async def delete_agent_preset(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
-    if is_system_preset_id(preset_id):
-        raise HTTPException(403, "System presets cannot be deleted.")
-
     try:
         uid = uuid.UUID(preset_id)
     except ValueError:
         raise HTTPException(404, "Preset not found")
 
     row = await db.get(AgentPreset, uid)
-    if row is None or row.user_id != current_user.id:
+    if row is None or (not row.is_system and row.user_id != current_user.id):
         raise HTTPException(404, "Preset not found")
+    if row.is_system:
+        raise HTTPException(403, "System presets cannot be deleted.")
 
     if archive:
         row.is_archived = True
@@ -253,19 +254,14 @@ async def duplicate_agent_preset(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AgentPresetOut:
-    if is_system_preset_id(preset_id):
-        source = get_system_preset(preset_id)
-        if source is None:
-            raise HTTPException(404, "Preset not found")
-    else:
-        try:
-            uid = uuid.UUID(preset_id)
-        except ValueError:
-            raise HTTPException(404, "Preset not found")
-        row = await db.get(AgentPreset, uid)
-        if row is None or row.user_id != current_user.id:
-            raise HTTPException(404, "Preset not found")
-        source = _user_preset_to_dict(row)
+    try:
+        uid = uuid.UUID(preset_id)
+    except ValueError:
+        raise HTTPException(404, "Preset not found")
+    row = await db.get(AgentPreset, uid)
+    if row is None or (not row.is_system and row.user_id != current_user.id):
+        raise HTTPException(404, "Preset not found")
+    source = _preset_to_dict(row)
 
     new_preset = AgentPreset(
         user_id=current_user.id,
@@ -283,11 +279,13 @@ async def duplicate_agent_preset(
         document_ids=list(source.get("document_ids") or []),
         strict_grounding=bool(source.get("strict_grounding", False)),
         is_default=False,
+        is_system=False,
+        system_key=None,
     )
     db.add(new_preset)
     await db.commit()
     await db.refresh(new_preset)
-    return AgentPresetOut.model_validate(_user_preset_to_dict(new_preset))
+    return AgentPresetOut.model_validate(_preset_to_dict(new_preset))
 
 
 @router.post("/{preset_id}/set-default", response_model=AgentPresetOut)
@@ -296,17 +294,16 @@ async def set_default_agent_preset(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AgentPresetOut:
-    if is_system_preset_id(preset_id):
-        raise HTTPException(403, "System presets cannot be marked as default. Duplicate first.")
-
     try:
         uid = uuid.UUID(preset_id)
     except ValueError:
         raise HTTPException(404, "Preset not found")
 
     row = await db.get(AgentPreset, uid)
-    if row is None or row.user_id != current_user.id:
+    if row is None or (not row.is_system and row.user_id != current_user.id):
         raise HTTPException(404, "Preset not found")
+    if row.is_system:
+        raise HTTPException(403, "System presets cannot be marked as default. Duplicate first.")
 
     await db.execute(
         update(AgentPreset)
@@ -317,4 +314,4 @@ async def set_default_agent_preset(
     row.is_default = True
     await db.commit()
     await db.refresh(row)
-    return AgentPresetOut.model_validate(_user_preset_to_dict(row))
+    return AgentPresetOut.model_validate(_preset_to_dict(row))

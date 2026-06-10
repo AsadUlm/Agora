@@ -19,7 +19,7 @@ export async function listAgentPresets(
     if (opts.type) params.type = opts.type;
     if (opts.includeArchived) params.include_archived = "true";
     const res = await apiClient.get<AgentPreset[]>("/agent-presets", { params });
-    return res.data;
+    return Array.isArray(res.data) ? res.data : [];
 }
 
 export async function getAgentPreset(id: string): Promise<AgentPreset> {

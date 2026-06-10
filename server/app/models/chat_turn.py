@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, String, Uuid, ForeignKey, Enum as SQLEnum
+from sqlalchemy import JSON, DateTime, Float, Integer, String, Uuid, ForeignKey, Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -11,6 +11,7 @@ from app.db.base import Base
 class ChatTurnStatus(str, enum.Enum):
     queued = "queued"
     running = "running"
+    partially_completed = "partially_completed"
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"
@@ -36,6 +37,17 @@ class ChatTurn(Base):
     execution_mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="auto", server_default="auto"
     )
+    synthesis_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    request_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=lambda: str(uuid.uuid4())
+    )
+    error_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    response_language_code: Mapped[str] = mapped_column(String(16), nullable=False, default="en", server_default="en")
+    response_language_name: Mapped[str] = mapped_column(String(64), nullable=False, default="English", server_default="English")
+    response_language_source: Mapped[str] = mapped_column(String(24), nullable=False, default="fallback", server_default="fallback")
+    response_language_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.6, server_default="0.6")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

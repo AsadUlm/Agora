@@ -21,6 +21,8 @@ export type AgentRagMode = KnowledgeMode;
 export interface AgentPreset {
     id: string;
     user_id?: string | null;
+    is_system?: boolean;
+    system_key?: string | null;
 
     name: string;
     description?: string | null;
@@ -71,7 +73,7 @@ export type AgentPresetUpdatePayload = Partial<AgentPresetCreatePayload> & {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 export function isSystemPreset(preset: AgentPreset | null | undefined): boolean {
-    return !!preset && preset.type === "system";
+    return !!preset && (preset.type === "system" || preset.is_system === true);
 }
 
 export function isUserPreset(preset: AgentPreset | null | undefined): boolean {

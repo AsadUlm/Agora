@@ -17,12 +17,14 @@ class OpenRouterModel(str, Enum):
     CLAUDE_OPUS_4_8 = "anthropic/claude-opus-4-8"
     CLAUDE_OPUS_4_7 = "anthropic/claude-opus-4-7"
     # ── OpenAI ────────────────────────────────────────────────────────────
-    GPT_5_5 = "openai/gpt-5.5"
-    GPT_5_5_PRO = "openai/gpt-5.5-pro"
     GPT_4_1_MINI = "openai/gpt-4.1-mini"
+    GPT_4_1_NANO = "openai/gpt-4.1-nano"
+    GPT_4O_MINI = "openai/gpt-4o-mini"
     # ── Google ────────────────────────────────────────────────────────────
     GEMINI_3_5_FLASH = "google/gemini-3.5-flash"
     GEMINI_3_1_PRO = "google/gemini-3.1-pro"
+    GEMINI_2_0_FLASH = "google/gemini-2.0-flash-001"
+    GEMINI_2_0_FLASH_LITE = "google/gemini-2.0-flash-lite-001"
     # ── xAI ───────────────────────────────────────────────────────────────
     GROK_4_3 = "xai/grok-4.3"
     GROK_4_THINKING = "x-ai/grok-4"
@@ -36,6 +38,11 @@ class OpenRouterModel(str, Enum):
     # ── Moonshot (Kimi) ───────────────────────────────────────────────────
     KIMI_K2_6 = "moonshot/kimi-k2.6"
     KIMI_K2_5 = "moonshot/kimi-k2.5"
+    # ── Meta (Llama) ──────────────────────────────────────────────────────
+    LLAMA_3_1_8B = "meta-llama/llama-3.1-8b-instruct"
+
+    # ── Anthropic (legacy) ────────────────────────────────────────────────
+    CLAUDE_3_HAIKU = "anthropic/claude-3-haiku"
 
 
 class ModelPresetInfo(BaseModel):
@@ -54,12 +61,14 @@ MODERN_OPENROUTER_MODELS: tuple[tuple[OpenRouterModel, str, int], ...] = (
     (OpenRouterModel.CLAUDE_OPUS_4_8, "Claude Opus 4.8", 200000),
     (OpenRouterModel.CLAUDE_OPUS_4_7, "Claude Opus 4.7", 200000),
     # OpenAI
-    (OpenRouterModel.GPT_5_5, "GPT-5.5", 400000),
-    (OpenRouterModel.GPT_5_5_PRO, "GPT-5.5 Pro", 400000),
     (OpenRouterModel.GPT_4_1_MINI, "GPT-4.1 Mini", 1047576),
+    (OpenRouterModel.GPT_4_1_NANO, "GPT-4.1 Nano", 1047576),
+    (OpenRouterModel.GPT_4O_MINI, "GPT-4o Mini", 128000),
     # Google
     (OpenRouterModel.GEMINI_3_5_FLASH, "Gemini 3.5 Flash", 1000000),
     (OpenRouterModel.GEMINI_3_1_PRO, "Gemini 3.1 Pro", 1000000),
+    (OpenRouterModel.GEMINI_2_0_FLASH, "Gemini 2.0 Flash", 1000000),
+    (OpenRouterModel.GEMINI_2_0_FLASH_LITE, "Gemini 2.0 Flash Lite", 1000000),
     # xAI
     (OpenRouterModel.GROK_4_3, "Grok 4.3", 256000),
     (OpenRouterModel.GROK_4_THINKING, "Grok 4 (Thinking)", 256000),
@@ -73,6 +82,10 @@ MODERN_OPENROUTER_MODELS: tuple[tuple[OpenRouterModel, str, int], ...] = (
     # Moonshot (Kimi)
     (OpenRouterModel.KIMI_K2_6, "Kimi K2.6", 262144),
     (OpenRouterModel.KIMI_K2_5, "Kimi K2.5", 262144),
+    # Meta (Llama)
+    (OpenRouterModel.LLAMA_3_1_8B, "Llama 3.1 8B Instruct", 131072),
+    # Anthropic (legacy)
+    (OpenRouterModel.CLAUDE_3_HAIKU, "Claude 3 Haiku", 200000),
 )
 
 # Backward-compatibility routing for deprecated model IDs.  These IDs are no
@@ -81,6 +94,8 @@ MODERN_OPENROUTER_MODELS: tuple[tuple[OpenRouterModel, str, int], ...] = (
 _DEPRECATED_MODEL_ROUTES: dict[str, str] = {
     "x-ai/grok-4.1-fast": "openrouter",   # removed in catalog refresh
     "moonshotai/kimi-k2.5": "openrouter",  # old provider prefix; replaced by moonshot/kimi-k2.5
+    "openai/gpt-5.5": "openrouter",        # removed; kept for historical debate records
+    "openai/gpt-5.5-pro": "openrouter",   # removed; kept for historical debate records
 }
 
 MODEL_PROVIDER_ROUTES: dict[str, str] = {
@@ -103,7 +118,7 @@ MODEL_PRESETS: tuple[ModelPresetInfo, ...] = (
     ModelPresetInfo(
         id="high_quality",
         name="High Quality",
-        model=OpenRouterModel.GPT_5_5.value,
+        model=OpenRouterModel.CLAUDE_OPUS_4_7.value,
         temperature=0.5,
     ),
     ModelPresetInfo(
@@ -115,7 +130,7 @@ MODEL_PRESETS: tuple[ModelPresetInfo, ...] = (
     ModelPresetInfo(
         id="creative",
         name="Creative",
-        model=OpenRouterModel.GPT_5_5.value,
+        model=OpenRouterModel.CLAUDE_SONNET_4_5.value,
         temperature=0.85,
     ),
     ModelPresetInfo(

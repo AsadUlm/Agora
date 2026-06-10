@@ -129,6 +129,11 @@ _FIELD_ALIASES: dict[str, str] = {
     "recommendation": "policy_direction",
     "weakest_argument": "losing_argument",
     "consensus": "consensus_statement",
+    "final_answer": "recommended_answer",
+    "target": "target_agent",
+    "criticized_agent": "target_agent",
+    "critic_agent": "responding_to_agent",
+    "updated_position": "revised_position",
 }
 
 
@@ -188,12 +193,18 @@ def normalize_round_output(
         dispatch = (round_type or "").lower()
         if dispatch == "followup_response":
             payload = _normalize_followup_response(parsed_payload, raw_text)
-        elif dispatch == "followup_critique":
+        elif dispatch in ("followup_critique", "followup_cross_critique"):
             payload = _normalize_followup_critique(parsed_payload, raw_text)
         elif dispatch == "updated_synthesis":
             payload = _normalize_updated_synthesis(parsed_payload, raw_text)
         elif dispatch == "synthesis_verdict":
             payload = _normalize_synthesis_verdict(parsed_payload, raw_text)
+        elif dispatch in ("critique_response", "followup_response_to_critique"):
+            payload = _normalize_critique_response(parsed_payload, raw_text)
+        elif dispatch in ("revised_position", "followup_revised_position"):
+            payload = _normalize_revised_position(parsed_payload, raw_text)
+        elif dispatch == "final":
+            payload = _normalize_round3(parsed_payload, raw_text)
         elif round_number == 1:
             payload = _normalize_round1(parsed_payload, raw_text)
         elif round_number == 2:
@@ -416,6 +427,33 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
                 "risks_or_caveats": [],
             }
         )
+    elif rt == "critique_response":
+        payload.update(
+            {
+                "received_critique_summary": short_summary,
+                "response": cleaned_text,
+                "accepted_points": [],
+                "rejected_points": [],
+                "planned_revision": "",
+                "stance_update": "unchanged",
+                "display_content": cleaned_text,
+            }
+        )
+        payload.setdefault("parse_warnings", []).append("critique_response_parse_fallback")
+    elif rt == "revised_position":
+        payload.update(
+            {
+                "initial_position_summary": "",
+                "revised_position": cleaned_text,
+                "change_summary": "",
+                "changed": False,
+                "change_type": "no_change",
+                "reason_for_change": "",
+                "key_claims": _derive_points_from_text(cleaned_text),
+                "display_content": cleaned_text,
+            }
+        )
+        payload.setdefault("parse_warnings", []).append("revised_position_parse_fallback")
     elif round_number == 2:
         payload.update(
             {
@@ -429,7 +467,7 @@ def fallback_parse(raw_text: str, round_number: int = 0, round_type: str | None 
                 "real_world_implication": "If the assumption fails, the recommended action would need to be re-scoped before deployment.",
             }
         )
-    elif round_number == 3:
+    elif rt == "final" or round_number == 3:
         round3_fields = _build_round3_fallback_fields(cleaned_text, paragraph_text)
         round3_warnings = round3_fields.pop("_parse_warnings_round3", [])
         payload.update(round3_fields)
@@ -546,9 +584,9 @@ def _normalize_round1(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
 def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
     first_critique = _first_critique(payload)
 
-    target_agent = _pick_string(payload, ["target_agent", "target_role"]) or _pick_string(
+    target_agent = _pick_string(payload, ["target_agent", "target_role", "target", "criticized_agent"]) or _pick_string(
         first_critique,
-        ["target_agent", "target_role"],
+        ["target_agent", "target_role", "target", "criticized_agent"],
     )
     challenge = _pick_long_text(payload, ["challenge", "critique"]) or _pick_long_text(
         first_critique,
@@ -603,6 +641,7 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "target_agent": target_agent,
+        "target_claim": _pick_string(payload, ["target_claim", "quoted_claim"]) or _first_sentence(challenge),
         "target_roles": _parse_target_roles(target_agent),
         "challenge": challenge,
         "weakness_found": weakness,
@@ -613,6 +652,135 @@ def _normalize_round2(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
         "why_my_framework_disagrees": why_my_framework_disagrees,
         "real_world_implication": real_world_implication,
         "response": response,
+    }
+
+
+def _normalize_critique_response(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    """Normalize Stage 3 — Critique Response output.
+
+    Expected fields from prompt:
+      received_critique_summary, response, accepted_points, rejected_points,
+      planned_revision, stance_update
+    """
+    response = _pick_long_text(payload, ["response", "reply", "main_argument"])
+    if not response:
+        response = _sanitize_text(raw_text, preserve_paragraphs=True)
+    if not response:
+        raise LLMParseError("Critique response output missing response content.")
+
+    received_summary = _pick_string(payload, ["challenge_received", "received_critique_summary", "critique_summary", "short_summary"])
+    accepted = payload.get("accepted_points") or []
+    rejected = payload.get("rejected_points") or []
+    if not isinstance(accepted, list):
+        accepted = [str(accepted)] if accepted else []
+    if not isinstance(rejected, list):
+        rejected = [str(rejected)] if rejected else []
+    planned_revision = _pick_string(payload, ["planned_revision", "revision_plan"])
+    stance_update = _pick_string(payload, ["stance_update", "position_update"]) or "unchanged"
+
+    short_summary = normalize_summary(
+        _pick_string(payload, ["one_sentence_takeaway", "short_summary"]),
+        response,
+    )
+
+    return {
+        "one_sentence_takeaway": short_summary,
+        "short_summary": short_summary,
+        "received_critique_summary": received_summary,
+        "responding_to_agent": _pick_string(payload, ["responding_to_agent", "critic_agent", "from_agent"]),
+        "challenge_received": received_summary,
+        "response": response,
+        "accepted_points": [str(p) for p in accepted if p],
+        "rejected_points": [str(p) for p in rejected if p],
+        "planned_revision": planned_revision,
+        "defense": _pick_long_text(payload, ["defense", "counterargument"]),
+        "clarification": _pick_long_text(payload, ["clarification", "clarified_position"]),
+        "stance_update": stance_update,
+        "display_content": response,
+        "raw_content": raw_text,
+        "is_fallback": False,
+    }
+
+
+def _normalize_revised_position(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    """Normalize Stage 4 — Revised Position output.
+
+    Expected fields from prompt:
+      initial_position_summary, revised_position, change_summary, changed,
+      change_type, reason_for_change, key_claims, remaining_uncertainties
+    """
+    VALID_CHANGE_TYPES = {
+        "no_change", "narrowed_position", "expanded_position",
+        "changed_stance", "added_condition", "resolved_uncertainty", "other",
+    }
+
+    revised_position = _pick_long_text(payload, ["revised_position", "updated_position", "response", "final_position"])
+    if not revised_position:
+        revised_position = _sanitize_text(raw_text, preserve_paragraphs=True)
+    if not revised_position:
+        raise LLMParseError("Revised position output missing revised_position content.")
+
+    initial_summary = _pick_string(payload, ["initial_position_summary", "initial_position", "original_position", "initial_followup_position"])
+    change_summary = _pick_string(payload, ["change_summary", "what_changed"])
+    reason = _pick_string(payload, ["reason_for_change", "reason", "why_changed"])
+
+    # Extract change_label if present (for follow-up revised position)
+    change_label = _pick_string(payload, ["change_label", "label"]).lower()
+    if change_label:
+        changed = "unchanged" not in change_label
+    else:
+        # Normalize `changed` to bool — LLMs sometimes output "true"/"false" as strings
+        raw_changed = payload.get("changed", False)
+        if isinstance(raw_changed, str):
+            changed = raw_changed.lower() in ("true", "yes", "1")
+        else:
+            changed = bool(raw_changed)
+
+    # Normalize change_type
+    raw_change_type = str(payload.get("change_type") or "").strip().lower().replace(" ", "_")
+    if not raw_change_type and change_label:
+        if "partially" in change_label:
+            raw_change_type = "narrowed_position"
+        elif "strengthened" in change_label:
+            raw_change_type = "expanded_position"
+        elif "changed" in change_label:
+            raw_change_type = "changed_stance"
+        else:
+            raw_change_type = "no_change"
+
+    if raw_change_type not in VALID_CHANGE_TYPES:
+        raw_change_type = "no_change" if not changed else "other"
+
+    key_claims = payload.get("key_claims") or []
+    if not isinstance(key_claims, list):
+        key_claims = []
+    key_claims = [str(c) for c in key_claims if str(c or "").strip()][:5]
+
+    short_summary = normalize_summary(
+        _pick_string(payload, ["one_sentence_takeaway", "short_summary"]),
+        revised_position,
+    )
+
+    return {
+        "one_sentence_takeaway": short_summary,
+        "short_summary": short_summary,
+        "initial_position_summary": initial_summary,
+        "initial_position": initial_summary,
+        "critique_received_from": _pick_string(payload, ["critique_received_from", "responding_to_agent", "critic_agent"]),
+        "revised_position": revised_position,
+        "change_summary": change_summary,
+        "what_changed": change_summary,
+        "change_label": _pick_string(payload, ["change_label", "label"]) or ("Changed" if changed else "Unchanged"),
+        "changed": changed,
+        "change_type": raw_change_type,
+        "reason_for_change": reason,
+        "confidence": (_pick_string(payload, ["confidence"]) or "medium").lower(),
+        "key_claims": key_claims,
+        "remaining_uncertainties": _pick_string(payload, ["remaining_uncertainties", "uncertainties"]),
+        "response": revised_position,
+        "display_content": revised_position,
+        "raw_content": raw_text,
+        "is_fallback": False,
     }
 
 
@@ -707,8 +875,8 @@ def _normalize_round3(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
 # ── Follow-up cycle normalizers ──────────────────────────────────────────────
 
 def _normalize_followup_response(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
-    response = _pick_long_text(payload, ["response", "answer_to_followup", "main_argument", "text"])
-    answer = _pick_long_text(payload, ["answer_to_followup", "answer", "response"]) or response
+    response = _pick_long_text(payload, ["response", "followup_answer", "answer_to_followup", "main_argument", "text"])
+    answer = _pick_long_text(payload, ["followup_answer", "answer_to_followup", "answer", "response"]) or response
     position_update = _pick_string(payload, ["position_update", "stance_update", "position_change"])
     confidence = (_pick_string(payload, ["confidence"]) or "medium").lower()
     if confidence not in ("low", "medium", "high"):
@@ -741,6 +909,9 @@ def _normalize_followup_response(payload: dict[str, Any], raw_text: str) -> dict
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "answer_to_followup": answer or response,
+        "followup_answer": answer or response,
+        "current_position": _pick_string(payload, ["current_position", "updated_position"]) or answer or response,
+        "what_changed_from_original": _pick_string(payload, ["what_changed_from_original", "position_update"]),
         "position_update": position_update,
         "position_evolution": position_evolution,
         "key_points": key_points,
@@ -750,7 +921,7 @@ def _normalize_followup_response(payload: dict[str, Any], raw_text: str) -> dict
 
 
 def _normalize_followup_critique(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
-    target_agent = _pick_string(payload, ["target_agent", "target_role"]) or "General position"
+    target_agent = _pick_string(payload, ["target_agent", "target_role", "target", "criticized_agent"]) or "General position"
     target_kind = (_pick_string(payload, ["target_kind"]) or "").lower()
     if target_kind not in ("peer", "strongest_argument", "unresolved_question"):
         target_kind = "peer"
@@ -786,9 +957,11 @@ def _normalize_followup_critique(payload: dict[str, Any], raw_text: str) -> dict
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "target_agent": target_agent,
+        "target_claim": _pick_string(payload, ["target_claim", "quoted_claim"]) or _first_sentence(challenge),
         "target_roles": _parse_target_roles(target_agent),
         "target_kind": target_kind,
         "challenge": challenge,
+        "weakness_found": _pick_string(payload, ["weakness_found", "weakness"]) or why_it_breaks,
         "counterargument": counter,
         "impact": impact,
         "assumption_attacked": assumption_attacked,
@@ -799,8 +972,8 @@ def _normalize_followup_critique(payload: dict[str, Any], raw_text: str) -> dict
 
 
 def _normalize_updated_synthesis(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
-    updated_conclusion = _pick_long_text(payload, ["updated_conclusion", "conclusion", "final_position"])
-    what_changed = _pick_long_text(payload, ["what_changed"])
+    updated_conclusion = _pick_long_text(payload, ["recommended_answer", "updated_conclusion", "conclusion", "final_position", "final_answer"])
+    what_changed = _pick_long_text(payload, ["what_changed_from_previous_verdict", "what_changed"])
     strongest_argument = _pick_long_text(payload, ["strongest_argument", "main_argument"])
     remaining = _pick_long_text(payload, ["remaining_disagreement", "remaining_concerns", "open_questions"])
     response = _pick_long_text(payload, ["response", "text", "updated_conclusion", "conclusion"])
@@ -869,6 +1042,10 @@ def _normalize_updated_synthesis(payload: dict[str, Any], raw_text: str) -> dict
         "one_sentence_takeaway": short_summary,
         "short_summary": short_summary,
         "updated_conclusion": updated_conclusion,
+        "recommended_answer": updated_conclusion,
+        "what_changed_from_previous_verdict": what_changed,
+        "consensus_statement": _pick_string(payload, ["consensus_statement", "core_consensus", "consensus"]),
+        "main_disagreement": _pick_string(payload, ["main_disagreement", "remaining_disagreement"]),
         "conclusion_changed": conclusion_changed,
         "change_reason": change_reason,
         "what_changed": what_changed,
@@ -1112,6 +1289,7 @@ def _normalize_synthesis_verdict(payload: dict[str, Any], raw_text: str) -> dict
         "what_changed": what_changed,
         "reasoning_basis": reasoning_basis,
         "unresolved_questions": unresolved,
+        "tradeoffs": _pick_string_list(payload, ["tradeoffs", "risk_tradeoffs", "trade_offs"]),
         "response": response,
     }
     if warnings:

@@ -40,6 +40,9 @@ from app.schemas.contracts import (
 from app.services.debate_engine.prompts.round1_prompts import build_opening_statement_prompt
 from app.services.debate_engine.prompts.round2_prompts import build_critique_prompt
 from app.services.debate_engine.prompts.round3_prompts import build_final_synthesis_prompt
+from app.services.debate_engine.prompts.round_critique_response_prompts import build_critique_response_prompt
+from app.services.debate_engine.prompts.round_revised_position_prompts import build_revised_position_prompt
+from app.services.debate_engine.lifecycle import FinalSynthesisFailed, RequiredStageFailed
 from app.services.debate_engine.prompts.synthesis_verdict_prompts import (
     build_synthesis_verdict_prompt,
 )
@@ -47,6 +50,8 @@ from app.services.debate_engine.prompts.followup_prompts import (
     build_followup_response_prompt,
     build_followup_critique_prompt,
     build_updated_synthesis_prompt,
+    build_followup_critique_response_prompt,
+    build_followup_revised_position_prompt,
 )
 from app.services.debate_engine.prompts.personas import resolve_temperature
 from app.services.debate_engine.response_normalizer import normalize_round_output
@@ -70,6 +75,7 @@ from app.services.llm.provider_error_classifier import (
     UNKNOWN_ERROR,
     DebateSafeError,
 )
+from app.services.language_detection import language_requirement_block, looks_like_language
 from app.services.retrieval.retrieval_service import RetrievalService
 from app.services.retrieval.evidence import (
     EvidencePacket,
@@ -93,6 +99,7 @@ ROUND_MAX_TOKENS: dict[int, int] = {
 DEFAULT_MAX_TOKENS = 1500
 FOLLOWUP_MAX_TOKENS = 1800
 RETRIEVAL_TOP_K = 3
+MIN_FOLLOWUP_RESPONSES = 2
 
 # Per-round-type token budgets. Critique/synthesis rounds were tightened in
 # Step 25, but observation showed that this was the dominant cause of
@@ -102,6 +109,8 @@ RETRIEVAL_TOP_K = 3
 ROUND_TYPE_MAX_TOKENS: dict[str, int] = {
     "initial": 2000,
     "critique": 2200,
+    "critique_response": 2000,
+    "revised_position": 2200,
     "final": 2500,
     "followup_response": 2000,
     "followup_critique": 1800,
@@ -260,9 +269,9 @@ class RoundManager:
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 1."
             await self._fail_round(round_record, reason, ctx=ctx)
-            raise RuntimeError(reason)
+            raise RequiredStageFailed(reason, results=results, stage=1, phase="initial", request_id=str(ctx.turn_id))
 
-        await self._complete_round(round_record, ctx)
+        await self._complete_round(round_record, ctx, results)
         return results
 
     async def execute_round_2(
@@ -291,12 +300,20 @@ class RoundManager:
                 ]
             )
 
+            # Deterministic circular mapping: Agent i challenges Agent (i + 1) % N.
+            # This same relationship is reversed in Stage 3/4 when agents respond
+            # to and revise after the critique they received.
             other_agents: list[dict[str, Any]] = []
-            for r in round1_results:
-                if r.agent_id == agent_ctx.agent_id:
-                    continue
-                if r.generation_status != "success":
-                    continue
+            target_ctx = (
+                ctx.agents[(agent_index + 1) % len(ctx.agents)]
+                if len(ctx.agents) > 1
+                else None
+            )
+            target_result = (
+                r1_by_id.get(str(target_ctx.agent_id)) if target_ctx is not None else None
+            )
+            if target_result is not None and target_result.generation_status == "success":
+                r = target_result
                 summary = _first_non_empty(
                     [
                         r.structured.get("main_argument", ""),
@@ -307,7 +324,8 @@ class RoundManager:
                 key_points = r.structured.get("key_points", [])
                 if not isinstance(key_points, list):
                     key_points = []
-                other_agents.append(
+                if summary:
+                    other_agents.append(
                     {
                         "role": r.role,
                         "stance": summary,
@@ -379,6 +397,7 @@ class RoundManager:
                     sequence_no=sequence_no,
                     message_type=MessageType.critique,
                     prompt_builder=_build_prompt,
+                    extra_payload_fields={"target_agent": target_ctx.role},
                 )
             )
 
@@ -386,9 +405,9 @@ class RoundManager:
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 2."
             await self._fail_round(round_record, reason, ctx=ctx)
-            raise RuntimeError(reason)
+            raise RequiredStageFailed(reason, results=results, stage=2, phase="critique", request_id=str(ctx.turn_id))
 
-        await self._complete_round(round_record, ctx)
+        await self._complete_round(round_record, ctx, results)
         return results
 
     async def execute_round_3(
@@ -459,7 +478,7 @@ class RoundManager:
         if self._all_agents_failed(results):
             reason = "All agents failed in Round 3."
             await self._fail_round(round_record, reason, ctx=ctx)
-            raise RuntimeError(reason)
+            raise RequiredStageFailed(reason, results=results, stage=3, phase="final_synthesis", request_id=str(ctx.turn_id))
 
         # Step 37: neutral moderator aggregation across the three syntheses.
         # Best-effort — verdict failure must not fail the whole round.
@@ -472,7 +491,321 @@ class RoundManager:
             debate_summary=None,
         )
 
-        await self._complete_round(round_record, ctx)
+        await self._complete_round(round_record, ctx, results)
+        return results
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public execution methods — 5-stage traceable debate pipeline (Stage 3-4)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def execute_round_final(
+        self,
+        ctx: TurnContext,
+        round1_results: list[AgentRoundResult],
+        round2_results: list[AgentRoundResult],
+        revised_results: list[AgentRoundResult],
+    ) -> list[AgentRoundResult]:
+        """Stage 5 — Final Synthesis using revised positions.
+
+        Same as execute_round_3 but uses revised positions (Stage 4) as the
+        primary input rather than initial positions. This ensures the final
+        answer reflects debate-driven revisions.
+        """
+        round_record = await self._create_round(
+            ctx,
+            round_number=5,
+            round_type=RoundType.final,
+        )
+
+        # Build a richer digest that includes revised positions
+        r1_by_id: dict[str, AgentRoundResult] = {str(r.agent_id): r for r in round1_results}
+        debate_digest = _build_final_synthesis_digest(
+            question=ctx.question,
+            round1_results=round1_results,
+            round2_results=round2_results,
+            revised_results=revised_results,
+        )
+        debate_digest_text = json.dumps(debate_digest, ensure_ascii=False)
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+            own_r1 = r1_by_id.get(str(agent_ctx.agent_id))
+            # Use initial position for the "original stance" field
+            original_stance = _first_non_empty(
+                [
+                    own_r1.structured.get("final_position", "") if own_r1 else "",
+                    own_r1.structured.get("main_argument", "") if own_r1 else "",
+                    own_r1.structured.get("short_summary", "") if own_r1 else "",
+                    own_r1.structured.get("stance", "") if own_r1 else "",
+                ]
+            )
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
+                agent: AgentContext = agent_ctx,
+                stance: str = original_stance,
+                summary: str = debate_digest_text,
+            ) -> str:
+                return build_final_synthesis_prompt(
+                    role=agent.role,
+                    question=ctx.question,
+                    original_stance=stance,
+                    debate_digest=summary,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                    retrieved_chunks=[c.model_dump() for c in chunks],
+                    knowledge_mode=agent.knowledge_mode,
+                    knowledge_strict=agent.knowledge_strict,
+                    evidence_packets=packets,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.final_summary,
+                    prompt_builder=_build_prompt,
+                )
+            )
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in final synthesis round."
+            await self._fail_round(round_record, reason, ctx=ctx)
+            raise FinalSynthesisFailed(
+                reason,
+                results=results,
+                request_id=str(ctx.turn_id),
+            )
+
+        verdict = await self._generate_synthesis_verdict(
+            ctx=ctx,
+            round_record=round_record,
+            cycle_number=1,
+            agent_syntheses=results,
+            followup_question=None,
+            debate_summary=None,
+        )
+
+        verdict_payload: dict[str, Any] = {}
+        if verdict is not None:
+            try:
+                parsed_verdict = json.loads(verdict.content)
+                if isinstance(parsed_verdict, dict):
+                    verdict_payload = parsed_verdict
+            except (TypeError, json.JSONDecodeError):
+                verdict_payload = {}
+        if verdict is None or verdict_payload.get("generation_status") == "failed":
+            reason = "Final synthesis failed after agent responses were generated."
+            await self._partially_complete_round(round_record, ctx, results)
+            raise FinalSynthesisFailed(
+                reason,
+                results=results,
+                request_id=str(ctx.turn_id),
+            )
+
+        await self._complete_round(round_record, ctx, results)
+        return results
+
+    async def execute_round_critique_response(
+        self,
+        ctx: TurnContext,
+        round_number: int,
+        round1_results: list[AgentRoundResult],
+        round2_results: list[AgentRoundResult],
+    ) -> list[AgentRoundResult]:
+        """Stage 3 — Critique Response: each agent explicitly responds to critiques received.
+
+        This makes the debate traceable: every critique has an explicit response
+        with accepted/rejected points and a planned revision.
+        """
+        round_record = await self._create_round(
+            ctx,
+            round_number=round_number,
+            round_type=RoundType.critique_response,
+        )
+
+        # Build mapping: target_agent_role → list of critique dicts
+        critiques_by_target: dict[str, list[dict[str, Any]]] = {}
+        for r2 in round2_results:
+            if r2.generation_status not in ("success",):
+                continue
+            target = (r2.structured.get("target_agent") or "").strip()
+            if not target:
+                continue
+            critique_dict: dict[str, Any] = {
+                "from_role": r2.role,
+                "from_agent_id": str(r2.agent_id),
+                "target_claim": r2.structured.get("challenge", ""),
+                "critique_summary": r2.structured.get("short_summary", ""),
+                "weakness_found": r2.structured.get("weakness_found", ""),
+                "counterargument": r2.structured.get("counterargument", ""),
+            }
+            critiques_by_target.setdefault(target, []).append(critique_dict)
+
+        r1_by_role: dict[str, AgentRoundResult] = {r.role: r for r in round1_results}
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+            critiques = critiques_by_target.get(agent_ctx.role, [])
+            own_r1 = r1_by_role.get(agent_ctx.role)
+            own_position = _first_non_empty(
+                [
+                    own_r1.structured.get("main_argument", "") if own_r1 else "",
+                    own_r1.structured.get("short_summary", "") if own_r1 else "",
+                    own_r1.structured.get("stance", "") if own_r1 else "",
+                ]
+            )
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
+                agent: AgentContext = agent_ctx,
+                pos: str = own_position,
+                crits: list[dict[str, Any]] = critiques,
+            ) -> str:
+                return build_critique_response_prompt(
+                    role=agent.role,
+                    question=ctx.question,
+                    own_initial_position=pos,
+                    critiques_received=crits,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.agent_response,
+                    prompt_builder=_build_prompt,
+                    extra_payload_fields={
+                        "responding_to_agent": critiques[0]["from_role"]
+                        if critiques
+                        else "General criticism"
+                    },
+                )
+            )
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in critique response round."
+            await self._fail_round(round_record, reason, ctx=ctx)
+            raise RequiredStageFailed(reason, results=results, stage=3, phase="critique_response", request_id=str(ctx.turn_id))
+
+        await self._complete_round(round_record, ctx, results)
+        return results
+
+    async def execute_round_revised_position(
+        self,
+        ctx: TurnContext,
+        round_number: int,
+        round1_results: list[AgentRoundResult],
+        round2_results: list[AgentRoundResult],
+        round3_results: list[AgentRoundResult],  # critique_response results
+    ) -> list[AgentRoundResult]:
+        """Stage 4 — Revised Position: each agent states their updated position.
+
+        Produces explicit before/after evidence per agent. The change_summary and
+        reason_for_change fields are the primary traceability artifacts used in
+        the Agent Evolution view.
+        """
+        round_record = await self._create_round(
+            ctx,
+            round_number=round_number,
+            round_type=RoundType.revised_position,
+        )
+
+        # Build critique mapping (same as in critique_response round)
+        critiques_by_target: dict[str, list[dict[str, Any]]] = {}
+        for r2 in round2_results:
+            if r2.generation_status not in ("success",):
+                continue
+            target = (r2.structured.get("target_agent") or "").strip()
+            if not target:
+                continue
+            critique_dict: dict[str, Any] = {
+                "from_role": r2.role,
+                "from_agent_id": str(r2.agent_id),
+                "target_claim": r2.structured.get("challenge", ""),
+                "critique_summary": r2.structured.get("short_summary", ""),
+                "weakness_found": r2.structured.get("weakness_found", ""),
+                "counterargument": r2.structured.get("counterargument", ""),
+            }
+            critiques_by_target.setdefault(target, []).append(critique_dict)
+
+        r1_by_role: dict[str, AgentRoundResult] = {r.role: r for r in round1_results}
+        r3_by_id: dict[str, AgentRoundResult] = {str(r.agent_id): r for r in round3_results}
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+            own_r1 = r1_by_role.get(agent_ctx.role)
+            own_r3 = r3_by_id.get(str(agent_ctx.agent_id))
+            critiques = critiques_by_target.get(agent_ctx.role, [])
+
+            initial_position = _first_non_empty(
+                [
+                    own_r1.structured.get("main_argument", "") if own_r1 else "",
+                    own_r1.structured.get("short_summary", "") if own_r1 else "",
+                    own_r1.structured.get("stance", "") if own_r1 else "",
+                ]
+            )
+            initial_key_claims: list[str] = []
+            if own_r1:
+                kp = own_r1.structured.get("key_points", [])
+                if isinstance(kp, list):
+                    initial_key_claims = [str(x) for x in kp if str(x or "").strip()][:5]
+
+            critique_response_dict = own_r3.structured if own_r3 else None
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
+                agent: AgentContext = agent_ctx,
+                pos: str = initial_position,
+                claims: list[str] = initial_key_claims,
+                crits: list[dict[str, Any]] = critiques,
+                resp: dict[str, Any] | None = critique_response_dict,
+            ) -> str:
+                return build_revised_position_prompt(
+                    role=agent.role,
+                    question=ctx.question,
+                    initial_position=pos,
+                    initial_key_claims=claims,
+                    critiques_received=crits,
+                    critique_response=resp,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.agent_response,
+                    prompt_builder=_build_prompt,
+                    extra_payload_fields={
+                        "critique_received_from": critiques[0]["from_role"]
+                        if critiques
+                        else "General criticism"
+                    },
+                )
+            )
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if self._all_agents_failed(results):
+            reason = "All agents failed in revised position round."
+            await self._fail_round(round_record, reason, ctx=ctx)
+            raise RequiredStageFailed(reason, results=results, stage=4, phase="revised_position", request_id=str(ctx.turn_id))
+
+        await self._complete_round(round_record, ctx, results)
         return results
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -562,8 +895,8 @@ class RoundManager:
         if self._all_agents_failed(results):
             reason = "All agents failed in follow-up response."
             await self._fail_round(round_record, reason, ctx=ctx)
-            raise RuntimeError(reason)
-        await self._complete_round(round_record, ctx)
+            raise RequiredStageFailed(reason, results=results, stage=round_number, phase="follow_up", request_id=str(ctx.turn_id))
+        await self._complete_round(round_record, ctx, results)
         return results
 
     async def start_followup_response_streaming(
@@ -709,16 +1042,22 @@ class RoundManager:
             # decide whether to abort.
             if not ready_future.done():
                 ready_future.set_result(list(gathered))
-            if self._all_agents_failed(gathered):
-                reason = "All agents failed in follow-up response."
+            if not self._has_minimum_success(gathered, threshold):
+                reason = f"Insufficient successful follow-up responses (needed {threshold})."
                 try:
-                    await self._fail_round(round_record, reason, ctx=ctx)
+                    from app.services.llm.provider_error_classifier import FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES, make_safe_error
+                    safe_err = make_safe_error(FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES, message=reason, round_number=round_record.round_number)
+                    await self._fail_round(round_record, reason, ctx=ctx, safe_error=safe_err)
                 finally:
                     if not all_done_future.done():
-                        all_done_future.set_exception(RuntimeError(reason))
+                        from app.services.llm.provider_error_classifier import FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES
+                        from app.services.debate_engine.lifecycle import RequiredStageFailed
+                        all_done_future.set_exception(
+                            RequiredStageFailed(reason, results=gathered, stage=round_record.round_number, phase="follow_up", request_id=str(ctx.turn_id), error_code=FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES)
+                        )
                 return
             try:
-                await self._complete_round(round_record, ctx)
+                await self._complete_round(round_record, ctx, gathered)
             finally:
                 if not all_done_future.done():
                     all_done_future.set_result(gathered)
@@ -735,11 +1074,11 @@ class RoundManager:
         memory: dict[str, Any],
         followup_responses: list[AgentRoundResult],
     ) -> list[AgentRoundResult]:
-        """Cycle 2+ Round B — agents challenge the weakest peer follow-up answer."""
+        """Cycle 2+ Round B — agents challenge the weakest peer follow-up answer using deterministic circular mapping."""
         round_record = await self._create_round(
             ctx,
             round_number=round_number,
-            round_type=RoundType.followup_critique,
+            round_type=RoundType.followup_cross_critique,
             cycle_number=cycle_number,
         )
 
@@ -753,12 +1092,6 @@ class RoundManager:
         used_evidence_tuple = tuple(
             str(x) for x in (evidence_memory.get("cited_sources") or [])
         )
-
-        # When no peer answers are available, the critique prompt itself must
-        # still produce a useful challenge by targeting the strongest argument
-        # or an unresolved question. We surface those via debate_summary so the
-        # prompt's selection rules (peer → strongest_argument → unresolved) can
-        # apply uniformly. We never "skip" anymore.
 
         plans: list[_AgentTaskPlan] = []
         for agent_index, agent_ctx in enumerate(ctx.agents):
@@ -774,19 +1107,22 @@ class RoundManager:
                     ]
                 )
 
+            # Circular mapping: Agent i challenges Agent (i + 1) % N
+            target_index = (agent_index + 1) % len(ctx.agents)
+            target_agent_ctx = ctx.agents[target_index]
+            target_response = responses_by_id.get(str(target_agent_ctx.agent_id))
+
             other: list[dict[str, Any]] = []
-            for r in followup_responses:
-                if r.agent_id == agent_ctx.agent_id or r.generation_status != "success":
-                    continue
-                ans = _first_non_empty(
+            if target_response is not None and target_response.generation_status == "success":
+                target_answer = _first_non_empty(
                     [
-                        r.structured.get("answer_to_followup", ""),
-                        r.structured.get("response", ""),
-                        r.structured.get("display_content", ""),
+                        target_response.structured.get("answer_to_followup", ""),
+                        target_response.structured.get("response", ""),
+                        target_response.structured.get("display_content", ""),
                     ]
                 )
-                if ans:
-                    other.append({"role": r.role, "answer": ans})
+                if target_answer:
+                    other.append({"role": target_agent_ctx.role, "answer": target_answer})
 
             def _build_prompt(
                 chunks: list[RetrievedChunk],
@@ -827,16 +1163,242 @@ class RoundManager:
                     extra_payload_fields={
                         "followup_question": follow_up_question,
                         "followup_cycle": cycle_number,
+                        "target_agent": (
+                            target_agent_ctx.role if other else "General Position"
+                        ),
                     },
                 )
             )
 
         results = await self._execute_round_parallel(ctx, round_record, plans)
-        if self._all_agents_failed(results):
-            reason = "All agents failed in follow-up critique."
-            await self._fail_round(round_record, reason, ctx=ctx)
-            raise RuntimeError(reason)
-        await self._complete_round(round_record, ctx)
+        if not self._has_minimum_success(results, MIN_FOLLOWUP_RESPONSES):
+            reason = f"Insufficient successful follow-up critiques (needed {MIN_FOLLOWUP_RESPONSES})."
+            from app.services.llm.provider_error_classifier import FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES, make_safe_error
+            safe_err = make_safe_error(FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES, message=reason, round_number=round_record.round_number)
+            await self._fail_round(round_record, reason, ctx=ctx, safe_error=safe_err)
+            raise RequiredStageFailed(reason, results=results, stage=round_number, phase="follow_up", request_id=str(ctx.turn_id), error_code=FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES)
+        await self._complete_round(round_record, ctx, results)
+        return results
+
+    async def execute_followup_response_to_critique(
+        self,
+        ctx: TurnContext,
+        cycle_number: int,
+        round_number: int,
+        follow_up_question: str,
+        memory: dict[str, Any],
+        followup_responses: list[AgentRoundResult],
+        followup_critiques: list[AgentRoundResult],
+    ) -> list[AgentRoundResult]:
+        """Cycle 2+ Round C — agents respond to critiques received on their follow-up answer."""
+        round_record = await self._create_round(
+            ctx,
+            round_number=round_number,
+            round_type=RoundType.followup_response_to_critique,
+            cycle_number=cycle_number,
+        )
+
+        original_question = memory.get("original_question", "") or ctx.question
+        previous_synthesis = memory.get("previous_synthesis", "") or ""
+        evidence_memory = memory.get("evidence_memory") or {}
+        used_evidence_tuple = tuple(
+            str(x) for x in (evidence_memory.get("cited_sources") or [])
+        )
+
+        responses_by_agent_id = {str(r.agent_id): r for r in followup_responses}
+        critiques_by_agent_id = {str(c.agent_id): c for c in followup_critiques}
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+            own_resp = responses_by_agent_id.get(str(agent_ctx.agent_id))
+            own_answer = ""
+            if own_resp is not None:
+                own_answer = _first_non_empty(
+                    [
+                        own_resp.structured.get("answer_to_followup", ""),
+                        own_resp.structured.get("response", ""),
+                        own_resp.structured.get("display_content", ""),
+                    ]
+                )
+
+            # Circular mapping: Agent i receives critique from Agent (i - 1 + N) % N
+            critiques_received = []
+            critic_idx = (agent_index - 1 + len(ctx.agents)) % len(ctx.agents)
+            critic_agent = ctx.agents[critic_idx]
+            critic_res = critiques_by_agent_id.get(str(critic_agent.agent_id))
+            if critic_res and critic_res.generation_status == "success":
+                critiques_received.append({
+                    "from_role": critic_agent.role,
+                    "from_agent_id": str(critic_agent.agent_id),
+                    "target_claim": critic_res.structured.get("challenge", ""),
+                    "critique_summary": critic_res.structured.get("short_summary", ""),
+                    "weakness_found": critic_res.structured.get("weakness_found", ""),
+                    "counterargument": critic_res.structured.get("counterargument", ""),
+                })
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
+                agent: AgentContext = agent_ctx,
+                pos: str = own_answer,
+                crits: list[dict[str, Any]] = critiques_received,
+            ) -> str:
+                return build_followup_critique_response_prompt(
+                    role=agent.role,
+                    original_question=original_question,
+                    follow_up_question=follow_up_question,
+                    previous_synthesis=previous_synthesis,
+                    own_followup_response=pos,
+                    critiques_received=crits,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.agent_response,
+                    prompt_builder=_build_prompt,
+                    used_evidence_ids=used_evidence_tuple,
+                    cycle_number=cycle_number,
+                    evidence_memory_view=evidence_memory,
+                    extra_payload_fields={
+                        "followup_question": follow_up_question,
+                        "followup_cycle": cycle_number,
+                        "responding_to_agent": (
+                            critic_agent.role
+                            if critic_res and critic_res.generation_status == "success"
+                            else "General criticism"
+                        ),
+                    },
+                )
+            )
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if not self._has_minimum_success(results, MIN_FOLLOWUP_RESPONSES):
+            reason = f"Insufficient successful follow-up critique responses (needed {MIN_FOLLOWUP_RESPONSES})."
+            from app.services.llm.provider_error_classifier import FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES, make_safe_error
+            safe_err = make_safe_error(FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES, message=reason, round_number=round_record.round_number)
+            await self._fail_round(round_record, reason, ctx=ctx, safe_error=safe_err)
+            raise RequiredStageFailed(reason, results=results, stage=round_number, phase="follow_up", request_id=str(ctx.turn_id), error_code=FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES)
+        await self._complete_round(round_record, ctx, results)
+        return results
+
+    async def execute_followup_revised_position(
+        self,
+        ctx: TurnContext,
+        cycle_number: int,
+        round_number: int,
+        follow_up_question: str,
+        memory: dict[str, Any],
+        followup_responses: list[AgentRoundResult],
+        followup_critiques: list[AgentRoundResult],
+        followup_critique_responses: list[AgentRoundResult],
+    ) -> list[AgentRoundResult]:
+        """Cycle 2+ Round D — agents state their revised follow-up positions."""
+        round_record = await self._create_round(
+            ctx,
+            round_number=round_number,
+            round_type=RoundType.followup_revised_position,
+            cycle_number=cycle_number,
+        )
+
+        original_question = memory.get("original_question", "") or ctx.question
+        previous_synthesis = memory.get("previous_synthesis", "") or ""
+        evidence_memory = memory.get("evidence_memory") or {}
+        used_evidence_tuple = tuple(
+            str(x) for x in (evidence_memory.get("cited_sources") or [])
+        )
+
+        responses_by_agent_id = {str(r.agent_id): r for r in followup_responses}
+        critiques_by_agent_id = {str(c.agent_id): c for c in followup_critiques}
+        critique_responses_by_agent_id = {str(cr.agent_id): cr for cr in followup_critique_responses}
+
+        plans: list[_AgentTaskPlan] = []
+        for agent_index, agent_ctx in enumerate(ctx.agents):
+            sequence_no = self.next_seq
+            own_resp = responses_by_agent_id.get(str(agent_ctx.agent_id))
+            own_answer = ""
+            if own_resp is not None:
+                own_answer = _first_non_empty(
+                    [
+                        own_resp.structured.get("answer_to_followup", ""),
+                        own_resp.structured.get("response", ""),
+                        own_resp.structured.get("display_content", ""),
+                    ]
+                )
+
+            # Circular mapping: Agent i receives critique from Agent (i - 1 + N) % N
+            critiques_received = []
+            critic_idx = (agent_index - 1 + len(ctx.agents)) % len(ctx.agents)
+            critic_agent = ctx.agents[critic_idx]
+            critic_res = critiques_by_agent_id.get(str(critic_agent.agent_id))
+            if critic_res and critic_res.generation_status == "success":
+                critiques_received.append({
+                    "from_role": critic_agent.role,
+                    "from_agent_id": str(critic_agent.agent_id),
+                    "target_claim": critic_res.structured.get("challenge", ""),
+                    "critique_summary": critic_res.structured.get("short_summary", ""),
+                    "weakness_found": critic_res.structured.get("weakness_found", ""),
+                    "counterargument": critic_res.structured.get("counterargument", ""),
+                })
+
+            own_critique_response = critique_responses_by_agent_id.get(str(agent_ctx.agent_id))
+            critique_response_dict = own_critique_response.structured if own_critique_response else None
+
+            def _build_prompt(
+                chunks: list[RetrievedChunk],
+                packets: list[EvidencePacket],
+                agent: AgentContext = agent_ctx,
+                pos: str = own_answer,
+                crits: list[dict[str, Any]] = critiques_received,
+                resp: dict[str, Any] | None = critique_response_dict,
+            ) -> str:
+                return build_followup_revised_position_prompt(
+                    role=agent.role,
+                    original_question=original_question,
+                    follow_up_question=follow_up_question,
+                    previous_synthesis=previous_synthesis,
+                    initial_followup_position=pos,
+                    critiques_received=crits,
+                    critique_response=resp,
+                    reasoning_style=agent.reasoning_style,
+                    reasoning_depth=agent.reasoning_depth,
+                )
+
+            plans.append(
+                _AgentTaskPlan(
+                    agent_ctx=agent_ctx,
+                    agent_index=agent_index,
+                    sequence_no=sequence_no,
+                    message_type=MessageType.agent_response,
+                    prompt_builder=_build_prompt,
+                    used_evidence_ids=used_evidence_tuple,
+                    cycle_number=cycle_number,
+                    evidence_memory_view=evidence_memory,
+                    extra_payload_fields={
+                        "followup_question": follow_up_question,
+                        "followup_cycle": cycle_number,
+                        "critique_received_from": (
+                            critic_agent.role
+                            if critic_res and critic_res.generation_status == "success"
+                            else "General criticism"
+                        ),
+                    },
+                )
+            )
+
+        results = await self._execute_round_parallel(ctx, round_record, plans)
+        if not self._has_minimum_success(results, MIN_FOLLOWUP_RESPONSES):
+            reason = f"Insufficient successful follow-up revised positions (needed {MIN_FOLLOWUP_RESPONSES})."
+            from app.services.llm.provider_error_classifier import FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES, make_safe_error
+            safe_err = make_safe_error(FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES, message=reason, round_number=round_record.round_number)
+            await self._fail_round(round_record, reason, ctx=ctx, safe_error=safe_err)
+            raise RequiredStageFailed(reason, results=results, stage=round_number, phase="follow_up", request_id=str(ctx.turn_id), error_code=FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES)
+        await self._complete_round(round_record, ctx, results)
         return results
 
     async def execute_updated_synthesis(
@@ -848,8 +1410,28 @@ class RoundManager:
         memory: dict[str, Any],
         followup_responses: list[AgentRoundResult],
         followup_critiques: list[AgentRoundResult],
+        followup_revised_positions: list[AgentRoundResult] | None = None,
     ) -> list[AgentRoundResult]:
-        """Cycle 2+ Round C — updated synthesis reflecting the new debate state."""
+        """Cycle 2+ Round E — updated synthesis reflecting the new debate state."""
+        usable_responses = [
+            result
+            for result in followup_responses
+            if result.generation_status == "success"
+        ]
+        if not usable_responses:
+            reason = "No usable follow-up responses were available for updated synthesis."
+            from app.services.llm.provider_error_classifier import (
+                FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES,
+            )
+            raise RequiredStageFailed(
+                reason,
+                results=followup_responses,
+                stage=round_number,
+                phase="follow_up",
+                request_id=str(ctx.turn_id),
+                error_code=FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES,
+            )
+
         round_record = await self._create_round(
             ctx,
             round_number=round_number,
@@ -895,6 +1477,23 @@ class RoundManager:
             for c in followup_critiques
             if c.generation_status == "success"
         ]
+        revised_block = []
+        if followup_revised_positions:
+            revised_block = [
+                {
+                    "role": r.role,
+                    "revised_position": _first_non_empty(
+                        [
+                            r.structured.get("revised_position", ""),
+                            r.structured.get("response", ""),
+                            r.structured.get("display_content", ""),
+                        ]
+                    ),
+                    "change_label": r.structured.get("change_label", "Unchanged"),
+                }
+                for r in followup_revised_positions
+                if r.generation_status == "success"
+            ]
 
         plans: list[_AgentTaskPlan] = []
         for agent_index, agent_ctx in enumerate(ctx.agents):
@@ -906,6 +1505,7 @@ class RoundManager:
                 agent: AgentContext = agent_ctx,
                 resp: list[dict[str, Any]] = responses_block,
                 crit: list[dict[str, Any]] = critiques_block,
+                rev_pos: list[dict[str, Any]] = revised_block,
             ) -> str:
                 return build_updated_synthesis_prompt(
                     role=agent.role,
@@ -914,6 +1514,7 @@ class RoundManager:
                     previous_synthesis=previous_synthesis,
                     followup_responses=resp,
                     followup_critiques=crit,
+                    followup_revised_positions=rev_pos,
                     reasoning_style=agent.reasoning_style,
                     reasoning_depth=agent.reasoning_depth,
                     retrieved_chunks=[c.model_dump() for c in chunks],
@@ -947,7 +1548,7 @@ class RoundManager:
         if self._all_agents_failed(results):
             reason = "All agents failed in updated synthesis."
             await self._fail_round(round_record, reason, ctx=ctx)
-            raise RuntimeError(reason)
+            raise RequiredStageFailed(reason, results=results, stage=round_number, phase="follow_up", request_id=str(ctx.turn_id))
 
         # Step 37: neutral moderator aggregation across the updated syntheses
         # for this follow-up cycle. Best-effort.
@@ -960,7 +1561,7 @@ class RoundManager:
             debate_summary=debate_summary,
         )
 
-        await self._complete_round(round_record, ctx)
+        await self._complete_round(round_record, ctx, results)
         return results
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1085,6 +1686,12 @@ class RoundManager:
             except TypeError:
                 # Backward compatibility: legacy single-arg builders.
                 prompt = plan.prompt_builder(chunks)
+            language_block = language_requirement_block(
+                ctx.response_language_code,
+                ctx.response_language_name,
+            )
+            if language_block and language_block not in prompt:
+                prompt = f"{prompt}\n\n{language_block}"
 
             # ── Evidence-injection visibility (single consolidated log line).
             # We capture the data once per agent turn so logs can be grepped
@@ -1139,7 +1746,15 @@ class RoundManager:
                 agent_index=plan.agent_index,
                 retrieved_chunks=chunks,
                 evidence_packets=packets,
-                extra_payload_fields=plan.extra_payload_fields,
+                extra_payload_fields={
+                    **(plan.extra_payload_fields or {}),
+                    "response_language_code": ctx.response_language_code,
+                    "response_language_name": ctx.response_language_name,
+                    "response_language_source": ctx.response_language_source,
+                    "response_language_confidence": ctx.response_language_confidence,
+                },
+                response_language_code=ctx.response_language_code,
+                response_language_name=ctx.response_language_name,
             )
 
         elapsed_s = time.perf_counter() - agent_started_perf
@@ -1190,6 +1805,8 @@ class RoundManager:
                     payload={
                         "message_id": message_id,
                         "round_id": str(round_record.id),
+                        "cycle_number": round_record.cycle_number,
+                        "round_type": round_record.round_type.value,
                         "sender_type": SenderType.agent.value,
                         "message_type": plan.message_type.value,
                         "content": skipped.content,
@@ -1246,6 +1863,8 @@ class RoundManager:
                     payload={
                         "message_id": message_id,
                         "round_id": str(round_record.id),
+                        "cycle_number": round_record.cycle_number,
+                        "round_type": round_record.round_type.value,
                         "sender_type": SenderType.agent.value,
                         "message_type": plan.message_type.value,
                         "content": content,
@@ -1272,7 +1891,7 @@ class RoundManager:
 
     @staticmethod
     def _build_session_factory_from_db(db: AsyncSession) -> Any:
-        bind = db.get_bind()
+        bind = db.bind
         if bind is None:
             raise RuntimeError("Unable to resolve DB bind for RoundManager session factory.")
         return async_sessionmaker(
@@ -1324,21 +1943,39 @@ class RoundManager:
                     event_type=ExecutionEventType.round_started,
                     session_id=ctx.session_id,
                     turn_id=ctx.turn_id,
+                    round_id=round_record.id,
                     round_number=round_number,
+                    payload={
+                        "cycle_number": cycle_number,
+                        "round_type": round_type.value,
+                        "status": RoundStatus.running.value,
+                    },
                 )
             )
 
         return round_record
 
-    async def _complete_round(self, round_record: Round, ctx: TurnContext) -> None:
-        """Transition round: running → completed and emit round_completed."""
+    async def _complete_round(
+        self,
+        round_record: Round,
+        ctx: TurnContext,
+        results: list[AgentRoundResult] | None = None,
+    ) -> None:
+        """Complete a round while preserving partial agent success."""
+        has_failed = bool(results) and any(r.generation_status != "success" for r in results)
+        has_success = bool(results) and any(r.generation_status == "success" for r in results)
+        status = (
+            RoundStatus.partially_completed
+            if has_failed and has_success
+            else RoundStatus.completed
+        )
         async with self._round_write_lock:
-            round_record.status = RoundStatus.completed
+            round_record.status = status
             round_record.ended_at = datetime.now(timezone.utc)
             await self.db.flush()
             await self.db.commit()
 
-        logger.info("Round %d completed.", round_record.round_number)
+        logger.info("Round %d completed with status=%s.", round_record.round_number, status.value)
         if self._on_event is not None:
             logger.info(
                 "WS emit round_completed round=%d turn=%s",
@@ -1352,6 +1989,46 @@ class RoundManager:
                     turn_id=ctx.turn_id,
                     round_id=round_record.id,
                     round_number=round_record.round_number,
+                    payload={
+                        "cycle_number": round_record.cycle_number,
+                        "round_type": round_record.round_type.value,
+                        "status": status.value,
+                    },
+                )
+            )
+
+    async def _partially_complete_round(
+        self,
+        round_record: Round,
+        ctx: TurnContext,
+        results: list[AgentRoundResult],
+    ) -> None:
+        """Persist usable agent output when a synthesis sub-phase fails."""
+        async with self._round_write_lock:
+            round_record.status = RoundStatus.partially_completed
+            round_record.ended_at = datetime.now(timezone.utc)
+            await self.db.flush()
+            await self.db.commit()
+
+        if self._on_event is not None:
+            await self._on_event(
+                ExecutionEvent(
+                    event_type=ExecutionEventType.round_completed,
+                    session_id=ctx.session_id,
+                    turn_id=ctx.turn_id,
+                    round_id=round_record.id,
+                    round_number=round_record.round_number,
+                    payload={
+                        "cycle_number": round_record.cycle_number,
+                        "round_type": round_record.round_type.value,
+                        "status": RoundStatus.partially_completed.value,
+                        "successful_agents": [
+                            r.role for r in results if r.generation_status == "success"
+                        ],
+                        "failed_agents": [
+                            r.role for r in results if r.generation_status != "success"
+                        ],
+                    },
                 )
             )
 
@@ -1401,6 +2078,8 @@ class RoundManager:
                         payload={
                             "round_id": str(round_record.id),
                             "round_number": round_record.round_number,
+                            "cycle_number": round_record.cycle_number,
+                            "status": RoundStatus.failed.value,
                             "round_type": (
                                 round_record.round_type.value
                                 if round_record.round_type is not None
@@ -1496,6 +2175,8 @@ class RoundManager:
             debate_summary=debate_summary,
             followup_question=followup_question,
             has_evidence=has_evidence,
+            response_language_code=ctx.response_language_code,
+            response_language_name=ctx.response_language_name,
         )
 
         request = LLMRequest(
@@ -1553,6 +2234,8 @@ class RoundManager:
                         model=moderator_model,
                         temperature=0.0,
                         max_tokens=900,
+                        response_language_code=ctx.response_language_code,
+                        response_language_name=ctx.response_language_name,
                     )
                 except Exception as recovery_exc:  # noqa: BLE001
                     logger.warning(
@@ -1638,6 +2321,60 @@ class RoundManager:
                         normalized = retry_normalized
                         raw_content = retry_raw
 
+            verdict_text = _first_non_empty(
+                [
+                    normalized.payload.get("response", ""),
+                    normalized.payload.get("recommended_answer", ""),
+                    normalized.payload.get("one_sentence_takeaway", ""),
+                ]
+            )
+            if verdict_text and not looks_like_language(verdict_text, ctx.response_language_code):
+                repair_prompt = (
+                    f"Translate only the natural-language VALUES of this JSON into "
+                    f"{ctx.response_language_name}. Keep every JSON key unchanged in "
+                    "English. Preserve meaning, agent names, model/provider names, URLs, "
+                    "code identifiers, and technical identifiers. Return only valid JSON.\n\n"
+                    + json.dumps(normalized.payload, ensure_ascii=False)
+                )
+                try:
+                    language_response = await self._llm.generate(
+                        request.model_copy(update={"prompt": repair_prompt, "temperature": 0.0})
+                    )
+                    language_raw = (language_response.content or "").strip()
+                    language_normalized = normalize_round_output(
+                        round_number=round_record.round_number,
+                        raw_text=language_raw,
+                        round_type="synthesis_verdict",
+                    )
+                    repaired_text = _first_non_empty(
+                        [
+                            language_normalized.payload.get("response", ""),
+                            language_normalized.payload.get("recommended_answer", ""),
+                        ]
+                    )
+                    if repaired_text and looks_like_language(repaired_text, ctx.response_language_code):
+                        normalized = language_normalized
+                        raw_content = language_raw
+                except Exception:  # noqa: BLE001
+                    logger.warning("Moderator language repair failed; keeping original verdict.", exc_info=True)
+
+            final_verdict_text = _first_non_empty(
+                [
+                    normalized.payload.get("response", ""),
+                    normalized.payload.get("recommended_answer", ""),
+                ]
+            )
+            if final_verdict_text and not looks_like_language(
+                final_verdict_text,
+                ctx.response_language_code,
+            ):
+                warnings = normalized.payload.get("parse_warnings")
+                if not isinstance(warnings, list):
+                    warnings = []
+                if "response_language_mismatch" not in warnings:
+                    warnings.append("response_language_mismatch")
+                normalized.payload["parse_warnings"] = warnings
+
             normalized_payload = normalized.payload
         except LLMError as exc:
             error_msg = str(exc)
@@ -1694,6 +2431,11 @@ class RoundManager:
         normalized_payload["moderator_model"] = moderator_model
         normalized_payload["moderator_temperature"] = moderator_temperature
         normalized_payload["moderator_max_tokens"] = settings.MODERATOR_MAX_TOKENS
+        normalized_payload["generation_status"] = generation_status
+        normalized_payload["response_language_code"] = ctx.response_language_code
+        normalized_payload["response_language_name"] = ctx.response_language_name
+        normalized_payload["response_language_source"] = ctx.response_language_source
+        normalized_payload["response_language_confidence"] = ctx.response_language_confidence
 
         content_json = json.dumps(normalized_payload, ensure_ascii=False)
 
@@ -1740,6 +2482,7 @@ class RoundManager:
                 "agent_role": "moderator",
                 "agent_index": -1,
                 "cycle_number": cycle_number,
+                "round_type": round_record.round_type.value,
                 "is_synthesis_verdict": True,
                 "is_followup_cycle": is_followup_cycle,
             }
@@ -1961,6 +2704,8 @@ class RoundManager:
         retrieved_chunks: list[RetrievedChunk] | None = None,
         evidence_packets: list[EvidencePacket] | None = None,
         extra_payload_fields: dict[str, Any] | None = None,
+        response_language_code: str = "en",
+        response_language_name: str = "English",
     ) -> AgentRoundResult:
         step_meta = {
             "round_number": round_record.round_number,
@@ -2128,6 +2873,8 @@ class RoundManager:
                         model=agent_ctx.model,
                         temperature=0.0,
                         max_tokens=700,
+                        response_language_code=response_language_code,
+                        response_language_name=response_language_name,
                     )
                 except Exception as recovery_exc:  # noqa: BLE001
                     logger.warning(
@@ -2312,6 +3059,8 @@ class RoundManager:
                             model=settings.MODERATOR_MODEL,
                             temperature=0.0,
                             max_tokens=900,
+                            response_language_code=response_language_code,
+                            response_language_name=response_language_name,
                         )
                     except Exception as repair_exc:  # noqa: BLE001
                         logger.warning(
@@ -2381,6 +3130,21 @@ class RoundManager:
                     )
 
             structured = normalized.payload
+            display_text = _first_non_empty(
+                [
+                    structured.get("response", ""),
+                    structured.get("recommended_answer", ""),
+                    structured.get("revised_position", ""),
+                    structured.get("main_argument", ""),
+                ]
+            )
+            if display_text and not looks_like_language(display_text, response_language_code):
+                warnings = structured.get("parse_warnings")
+                if not isinstance(warnings, list):
+                    warnings = []
+                if "response_language_mismatch" not in warnings:
+                    warnings.append("response_language_mismatch")
+                structured["parse_warnings"] = warnings
 
             # FIX-09: persist extra payload fields (e.g. follow-up question /
             # cycle number) so every saved message carries the context that
@@ -2388,7 +3152,13 @@ class RoundManager:
             # the field wins.
             if extra_payload_fields:
                 for key, value in extra_payload_fields.items():
-                    if key not in structured or structured[key] in (None, "", []):
+                    if key in {
+                        "target_agent",
+                        "responding_to_agent",
+                        "critique_received_from",
+                    }:
+                        structured[key] = value
+                    elif key not in structured or structured[key] in (None, "", []):
                         structured[key] = value
             content = json.dumps(normalized.payload, ensure_ascii=False)
 
@@ -2492,6 +3262,8 @@ class RoundManager:
             event_payload: dict[str, Any] = {
                 "message_id": str(msg.id),
                 "round_id": str(round_record.id),
+                "cycle_number": round_record.cycle_number,
+                "round_type": round_record.round_type.value,
                 "sender_type": msg.sender_type.value,
                 "message_type": msg.message_type.value,
                 "content": msg.content,
@@ -2570,6 +3342,10 @@ class RoundManager:
     @staticmethod
     def _all_agents_failed(results: list[AgentRoundResult]) -> bool:
         return bool(results) and all(r.generation_status == "failed" for r in results)
+
+    @staticmethod
+    def _has_minimum_success(results: list[AgentRoundResult], min_required: int = 2) -> bool:
+        return sum(1 for r in results if r.generation_status == "success") >= min_required
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2699,6 +3475,64 @@ def _build_round3_summary(
         round2_results=round2_results,
     )
     return json.dumps(digest, ensure_ascii=False)
+
+
+def _build_final_synthesis_digest(
+    question: str,
+    round1_results: list[AgentRoundResult],
+    round2_results: list[AgentRoundResult],
+    revised_results: list[AgentRoundResult],
+) -> dict[str, Any]:
+    """Build a richer debate digest that includes revised positions.
+
+    Used by execute_round_final (Stage 5) to ensure the final synthesis is
+    based primarily on revised positions rather than initial answers.
+    """
+    # Build base digest from rounds 1+2
+    base = _build_round3_digest(question=question, round1_results=round1_results, round2_results=round2_results)
+
+    # Add revised positions
+    revised_items: list[dict[str, Any]] = []
+    for r in revised_results:
+        if r.generation_status not in ("success",):
+            continue
+        revised_items.append(
+            {
+                "agent": r.role,
+                "revised_position": _clip_text(
+                    _first_non_empty(
+                        [
+                            r.structured.get("revised_position", ""),
+                            r.structured.get("response", ""),
+                        ]
+                    ),
+                    300,
+                ),
+                "change_summary": _clip_text(
+                    r.structured.get("change_summary", ""),
+                    200,
+                ),
+                "changed": r.structured.get("changed", False),
+                "change_type": r.structured.get("change_type", ""),
+                "reason_for_change": _clip_text(
+                    r.structured.get("reason_for_change", ""),
+                    200,
+                ),
+                "key_claims": [
+                    _clip_text(str(c), 150)
+                    for c in (r.structured.get("key_claims") or [])
+                    if str(c or "").strip()
+                ][:3],
+            }
+        )
+
+    return {
+        "question": _clip_text(question, 400),
+        "round1": base["round1"],
+        "round2": base["round2"],
+        "revised_positions": revised_items,
+        "note": "Final synthesis must primarily reference revised_positions, not round1.",
+    }
 
 
 def _first_non_empty(values: list[Any]) -> str:

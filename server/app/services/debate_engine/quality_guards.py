@@ -296,8 +296,11 @@ def evaluate_round_quality(
     issues: list[QualityIssue] = list(PromptLeakValidator.validate(payload))
 
     dispatch = (round_type or "").lower()
-    if dispatch in ("critique", "followup_critique") or round_number == 2:
+    if dispatch in ("critique", "followup_critique", "followup_cross_critique") or round_number == 2:
         issues.extend(CritiqueQualityValidator.validate(payload))
+    elif dispatch in ("critique_response", "revised_position", "followup_response_to_critique", "followup_revised_position"):
+        # New 5-stage pipeline rounds — leak check only, no structural quality guard
+        pass
     elif dispatch in ("final", "synthesis_verdict", "updated_synthesis") or round_number == 3:
         issues.extend(SynthesisQualityValidator.validate(payload))
     elif dispatch in ("initial", "followup_response") or round_number == 1:
@@ -329,6 +332,9 @@ _MALFORMED_SUBSTRINGS: tuple[str, ...] = (
     "<point 1>",
     "<risk or caveat>",
     "<same sentence",
+    "i cannot answer",
+    "i can't answer",
+    "i am unable to answer",
 )
 
 # Lines that look like leaked schema bullets, e.g. ``*: 523 words`` or
@@ -366,6 +372,13 @@ _REQUIRED_FIELDS: dict[str, tuple[tuple[str, ...], ...]] = {
     "synthesis_verdict": (
         ("response", "recommended_answer"),
     ),
+    # New 5-stage pipeline round types
+    "critique_response": (
+        ("response",),
+    ),
+    "revised_position": (
+        ("revised_position", "response"),
+    ),
 }
 
 
@@ -385,7 +398,12 @@ def _has_malformed_fragments(text: str) -> bool:
 
 def _required_groups_for(round_number: int, round_type: str | None) -> tuple[tuple[str, ...], ...]:
     dispatch = (round_type or "").lower()
-    if dispatch in ("critique", "followup_critique") or round_number == 2:
+    # New 5-stage pipeline rounds — must come BEFORE generic round_number checks
+    if dispatch in ("critique_response", "followup_response_to_critique"):
+        return _REQUIRED_FIELDS["critique_response"]
+    if dispatch in ("revised_position", "followup_revised_position"):
+        return _REQUIRED_FIELDS["revised_position"]
+    if dispatch in ("critique", "followup_critique", "followup_cross_critique") or round_number == 2:
         return _REQUIRED_FIELDS["round2"]
     if dispatch == "synthesis_verdict":
         return _REQUIRED_FIELDS["synthesis_verdict"]

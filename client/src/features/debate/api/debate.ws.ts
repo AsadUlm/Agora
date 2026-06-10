@@ -2,6 +2,8 @@ import { tokenStorage } from "@/shared/api/client";
 import type { WsEvent } from "./debate.types";
 
 type EventHandler = (event: WsEvent) => void;
+export type StreamStatus = "disconnected" | "connecting" | "connected" | "interrupted";
+type StatusHandler = (status: StreamStatus) => void;
 
 // Derive WebSocket base from VITE_WS_BASE_URL when set, otherwise use same
 // origin so the production Docker image (http → ws, https → wss) works without
@@ -19,6 +21,7 @@ const WS_BASE = _getWsBase();
 export class DebateWebSocket {
     private ws: WebSocket | null = null;
     private handlers: Set<EventHandler> = new Set();
+    private statusHandlers: Set<StatusHandler> = new Set();
     private _turnId: string | null = null;
     private _disposed = false;
     private _reconnectAttempts = 0;
@@ -43,6 +46,7 @@ export class DebateWebSocket {
         if (!token || !this._turnId) return;
 
         const url = `${WS_BASE}/ws/chat-turns/${this._turnId}?token=${encodeURIComponent(token)}`;
+        this._emitStatus("connecting");
         this.ws = new WebSocket(url);
 
         if (import.meta.env.DEV) {
@@ -51,6 +55,7 @@ export class DebateWebSocket {
         }
 
         this.ws.onopen = () => {
+            this._emitStatus("connected");
             if (import.meta.env.DEV) {
                 // eslint-disable-next-line no-console
                 console.log("[WS] connected", this._turnId);
@@ -82,6 +87,7 @@ export class DebateWebSocket {
                 console.log("[WS] closed", { turnId: this._turnId, disposed: this._disposed });
             }
             if (this._disposed) return;
+            this._emitStatus("interrupted");
             this._tryReconnect();
         };
 
@@ -113,12 +119,23 @@ export class DebateWebSocket {
         };
     }
 
+    subscribeStatus(handler: StatusHandler): () => void {
+        this.statusHandlers.add(handler);
+        return () => this.statusHandlers.delete(handler);
+    }
+
+    private _emitStatus(status: StreamStatus): void {
+        this.statusHandlers.forEach((handler) => handler(status));
+    }
+
     disconnect(): void {
         this._disposed = true;
         if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
         this.ws?.close();
         this.ws = null;
         this.handlers.clear();
+        this._emitStatus("disconnected");
+        this.statusHandlers.clear();
     }
 }
 

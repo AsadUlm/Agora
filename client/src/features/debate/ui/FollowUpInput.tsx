@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useDebateStore } from "../model/debate.store";
+import { useDebateViewState } from "../model/useDebateViewState";
 import { usePlaybackStore } from "../model/playback.store";
 import { cn } from "@/shared/lib/cn";
 
@@ -20,7 +21,7 @@ import { cn } from "@/shared/lib/cn";
  * Shown only when the previous turn has fully completed.
  */
 export default function FollowUpInput() {
-    const turnStatus = useDebateStore((s) => s.turnStatus);
+    const view = useDebateViewState();
     const stepBusy = useDebateStore((s) => s.stepBusy);
     const stepError = useDebateStore((s) => s.stepError);
     const submitFollowUp = useDebateStore((s) => s.submitFollowUp);
@@ -42,7 +43,7 @@ export default function FollowUpInput() {
         }
     }, [expanded]);
 
-    if (turnStatus !== "completed") return null;
+    if (view.derivedStatus !== "completed") return null;
 
     const onSubmit = async (e?: React.FormEvent) => {
         if (e) e.preventDefault();
@@ -67,7 +68,7 @@ export default function FollowUpInput() {
     };
 
     return (
-        <div className="border-t border-agora-border bg-agora-surface/70 backdrop-blur-sm">
+        <div className="shrink-0 border-t border-agora-border bg-agora-surface/85 backdrop-blur-sm">
             <AnimatePresence initial={false} mode="wait">
                 {expanded ? (
                     <motion.div
@@ -78,7 +79,7 @@ export default function FollowUpInput() {
                         transition={{ duration: 0.22, ease: "easeOut" }}
                         className="overflow-hidden"
                     >
-                        <div className="px-6 py-4 max-w-[1200px] mx-auto">
+                        <div className="px-3 sm:px-6 py-3 sm:py-4 max-w-[1200px] mx-auto">
                             <div className="flex items-start justify-between gap-4 mb-3">
                                 <div>
                                     <div className="text-[10px] uppercase tracking-widest text-violet-300 font-semibold">
@@ -107,7 +108,7 @@ export default function FollowUpInput() {
                                     onChange={(e) => setQuestion(e.target.value)}
                                     onKeyDown={onKeyDown}
                                     placeholder="Ask a sharper question, challenge an assumption, or pivot the discussion…"
-                                    rows={4}
+                                    rows={3}
                                     className="w-full px-3 py-2.5 text-sm bg-agora-bg border border-agora-border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500/60 resize-none text-white placeholder:text-agora-text-muted/60 leading-relaxed"
                                     disabled={stepBusy}
                                 />
@@ -178,7 +179,7 @@ export default function FollowUpInput() {
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.15 }}
-                        className="w-full px-6 py-3 flex items-center gap-3 text-left hover:bg-agora-surface-light/40 transition-colors"
+                        className="w-full min-h-12 px-3 sm:px-6 py-2.5 flex items-center gap-3 text-left hover:bg-agora-surface-light/40 transition-colors"
                     >
                         <div className="w-7 h-7 rounded-full bg-violet-500/15 border border-violet-500/40 flex items-center justify-center text-violet-300 text-sm">
                             +
@@ -192,7 +193,7 @@ export default function FollowUpInput() {
                                     </span>
                                 )}
                             </div>
-                            <div className="text-[11px] text-agora-text-muted/80">
+                            <div className="hidden sm:block text-[11px] text-agora-text-muted/80">
                                 Continue the debate without losing the existing thread.
                             </div>
                         </div>

@@ -3,6 +3,7 @@ import AgoraLogoIcon from "@/features/debate/ui/AgoraLogoIcon";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { useDebateStore } from "@/features/debate/model/debate.store";
+import { useSelectedCycleState } from "@/features/debate/model/useSelectedCycleState";
 import DebateLayout from "@/features/debate/ui/DebateLayout";
 
 export default function DebateWorkspacePage() {
@@ -12,7 +13,8 @@ export default function DebateWorkspacePage() {
     // `error` is a LOAD error (404, network failure). `generationError` is a
     // debate-generation failure that must NOT trigger a full-page crash.
     const error = useDebateStore((s) => s.error);
-    const turnStatus = useDebateStore((s) => s.turnStatus);
+    const sessionStatus = useDebateStore((s) => s.session?.latest_turn?.status ?? null);
+    const { state: selectedCycleState } = useSelectedCycleState();
     const loadDebate = useDebateStore((s) => s.loadDebate);
     const reset = useDebateStore((s) => s.reset);
 
@@ -27,7 +29,13 @@ export default function DebateWorkspacePage() {
 
     useEffect(() => {
         if (!debateId) return;
-        if (turnStatus !== "queued" && turnStatus !== "running") return;
+        const shouldPoll =
+            selectedCycleState.status === "queued"
+            || selectedCycleState.status === "running"
+            || selectedCycleState.isStuckSuspected
+            || sessionStatus === "queued"
+            || sessionStatus === "running";
+        if (!shouldPoll) return;
 
         // REST polling is a fallback for missed WS events; WS is the
         // primary channel. We intentionally avoid an immediate poll so
@@ -39,7 +47,13 @@ export default function DebateWorkspacePage() {
             void loadDebate(debateId, { silent: true });
         }, 2500);
         return () => clearInterval(intervalId);
-    }, [debateId, turnStatus, loadDebate]);
+    }, [
+        debateId,
+        loadDebate,
+        selectedCycleState.isStuckSuspected,
+        selectedCycleState.status,
+        sessionStatus,
+    ]);
 
     if (loading) {
         return <LoadingScreen />;

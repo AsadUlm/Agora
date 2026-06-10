@@ -127,6 +127,10 @@ class TurnContext(BaseModel):
     # ``document_count`` is informational only.
     rag_active: bool = False
     document_count: int = 0
+    response_language_code: str = "en"
+    response_language_name: str = "English"
+    response_language_source: str = "fallback"
+    response_language_confidence: float = 0.6
 
 
 # ── WebSocket / Streaming Contracts ──────────────────────────────────────────
@@ -140,6 +144,7 @@ class ExecutionEventType(str, Enum):
     round_completed = "round_completed"
     round_failed = "round_failed"
     turn_completed = "turn_completed"
+    turn_partially_completed = "turn_partially_completed"
     turn_failed = "turn_failed"
 
 

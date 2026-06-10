@@ -111,7 +111,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
         key: "high_quality",
         label: "High Quality",
         provider: "openrouter",
-        model: "openai/gpt-5.5",
+        model: "anthropic/claude-opus-4-7",
         temperature: 0.5,
     },
     {
@@ -125,7 +125,7 @@ export const MODEL_PRESETS: ModelPreset[] = [
         key: "creative",
         label: "Creative",
         provider: "openrouter",
-        model: "openai/gpt-5.5",
+        model: "anthropic/claude-sonnet-4.5",
         temperature: 0.85,
     },
     {
@@ -265,7 +265,7 @@ export const DEFAULT_AGENT_CONFIGS: AgentConfig[] = [
         reasoningStyle: "creative",
         reasoningDepth: "normal",
         provider: "openrouter",
-        model: "openai/gpt-5.5",
+        model: "anthropic/claude-sonnet-4.5",
         modelPreset: "high_quality",
         temperature: 0.5,
         enabled: true,
@@ -293,13 +293,16 @@ export const MODEL_OPTIONS: Record<string, string[]> = {
         "anthropic/claude-haiku-4.5",
         "anthropic/claude-opus-4-8",
         "anthropic/claude-opus-4-7",
+        "anthropic/claude-3-haiku",
         // OpenAI
-        "openai/gpt-5.5",
-        "openai/gpt-5.5-pro",
         "openai/gpt-4.1-mini",
+        "openai/gpt-4.1-nano",
+        "openai/gpt-4o-mini",
         // Google
         "google/gemini-3.5-flash",
         "google/gemini-3.1-pro",
+        "google/gemini-2.0-flash-001",
+        "google/gemini-2.0-flash-lite-001",
         // xAI
         "xai/grok-4.3",
         "x-ai/grok-4",
@@ -313,6 +316,8 @@ export const MODEL_OPTIONS: Record<string, string[]> = {
         // Moonshot (Kimi)
         "moonshot/kimi-k2.6",
         "moonshot/kimi-k2.5",
+        // Meta (Llama)
+        "meta-llama/llama-3.1-8b-instruct",
     ],
 };
 
@@ -327,11 +332,13 @@ export const EXPERIMENTAL_MODELS: ReadonlySet<string> = new Set([
     "xiaomi/mimo-v2.5",
     "xiaomi/mimo-v2.5-pro",
     "google/gemini-3.5-flash",
+    "google/gemini-2.0-flash-lite-001",
     "deepseek/deepseek-v4-flash",
     "xai/grok-4.3",
     "x-ai/grok-4",
     "moonshot/kimi-k2.5",
     "moonshot/kimi-k2.6",
+    "meta-llama/llama-3.1-8b-instruct",
 ]);
 
 export const EXPERIMENTAL_MODEL_WARNING =

@@ -14,8 +14,9 @@ from app.api.routes.users import router as users_router
 from app.api.routes.ws import router as ws_router
 from app.api.static import mount_frontend
 from app.core.config import settings
-from app.db.seed import seed_default_user
-from app.db.session import AsyncSessionLocal
+from app.db.seed import seed_default_user, seed_system_agent_presets
+from app.db.session import AsyncSessionLocal, invalidate_stale_connections
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,8 +26,12 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Flush asyncpg's prepared-statement cache so new PostgreSQL enum values
+    # (added by recent Alembic migrations) are recognised by fresh connections.
+    await invalidate_stale_connections()
     async with AsyncSessionLocal() as db:
         await seed_default_user(db)
+        await seed_system_agent_presets(db)
     yield
 
 

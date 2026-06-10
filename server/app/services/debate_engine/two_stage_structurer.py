@@ -41,6 +41,7 @@ _SCHEMA_HINTS: dict[str, list[str]] = {
         "one_sentence_takeaway",
         "short_summary",
         "target_agent",
+        "target_claim",
         "challenge",
         "weakness_found",
         "counterargument",
@@ -67,6 +68,9 @@ _SCHEMA_HINTS: dict[str, list[str]] = {
         "one_sentence_takeaway",
         "short_summary",
         "answer_to_followup",
+        "followup_answer",
+        "current_position",
+        "what_changed_from_original",
         "key_points",
         "confidence",
         "position_evolution",
@@ -76,8 +80,10 @@ _SCHEMA_HINTS: dict[str, list[str]] = {
         "one_sentence_takeaway",
         "short_summary",
         "target_agent",
+        "target_claim",
         "target_kind",
         "challenge",
+        "weakness_found",
         "assumption_attacked",
         "why_it_breaks",
         "real_world_implication",
@@ -89,6 +95,10 @@ _SCHEMA_HINTS: dict[str, list[str]] = {
         "one_sentence_takeaway",
         "short_summary",
         "updated_conclusion",
+        "recommended_answer",
+        "what_changed_from_previous_verdict",
+        "consensus_statement",
+        "main_disagreement",
         "conclusion_changed",
         "change_reason",
         "key_tradeoff",
@@ -98,6 +108,84 @@ _SCHEMA_HINTS: dict[str, list[str]] = {
         "what_changed",
         "strongest_argument",
         "remaining_disagreement",
+        "response",
+    ],
+    "synthesis_verdict": [
+        "one_sentence_takeaway",
+        "recommended_answer",
+        "consensus_statement",
+        "main_disagreement",
+        "winning_side",
+        "confidence",
+        "unresolved_questions",
+        "tradeoffs",
+        "response",
+    ],
+    "critique_response": [
+        "one_sentence_takeaway",
+        "short_summary",
+        "received_critique_summary",
+        "responding_to_agent",
+        "challenge_received",
+        "response",
+        "accepted_points",
+        "rejected_points",
+        "planned_revision",
+        "stance_update"
+    ],
+    "revised_position": [
+        "one_sentence_takeaway",
+        "short_summary",
+        "initial_position_summary",
+        "initial_position",
+        "critique_received_from",
+        "revised_position",
+        "what_changed",
+        "change_label",
+        "change_summary",
+        "changed",
+        "change_type",
+        "reason_for_change",
+        "key_claims",
+        "remaining_uncertainties",
+        "response"
+    ],
+    "followup_cross_critique": [
+        "one_sentence_takeaway",
+        "short_summary",
+        "target_agent",
+        "target_claim",
+        "target_kind",
+        "challenge",
+        "weakness_found",
+        "assumption_attacked",
+        "why_it_breaks",
+        "real_world_implication",
+        "counterargument",
+        "impact",
+        "response",
+    ],
+    "followup_response_to_critique": [
+        "one_sentence_takeaway",
+        "short_summary",
+        "responding_to_agent",
+        "challenge_received",
+        "accepted_points",
+        "rejected_points",
+        "defense",
+        "clarification",
+        "planned_revision",
+        "response",
+    ],
+    "followup_revised_position": [
+        "one_sentence_takeaway",
+        "short_summary",
+        "initial_followup_position",
+        "critique_received_from",
+        "revised_position",
+        "what_changed",
+        "change_label",
+        "confidence",
         "response",
     ],
 }
@@ -121,6 +209,8 @@ def build_recovery_prompt(
     round_number: int,
     round_type: str | None,
     max_chars: int = 1800,
+    response_language_code: str = "en",
+    response_language_name: str = "English",
 ) -> str:
     """Build a tiny, focused prompt that converts RAW text into strict JSON."""
     key = _resolve_schema_key(round_number, round_type)
@@ -135,6 +225,10 @@ def build_recovery_prompt(
         "Convert the following debate response into a single JSON object that "
         "preserves the original meaning. Do not invent new content. "
         "Do not add commentary, markdown, code fences, or prose outside JSON.\n\n"
+        f"Preserve the target response language: {response_language_name} "
+        f"({response_language_code}). Keep natural-language values in "
+        f"{response_language_name} whenever possible. Only repair JSON structure; "
+        "do not translate or rewrite the argument. Keep JSON keys in English.\n\n"
         f"Required keys (use empty string \"\" or empty list [] when the source "
         f"does not cover a key — never omit a key):\n{field_lines}\n\n"
         "- one_sentence_takeaway must be ONE complete sentence (15-25 words) "
@@ -168,6 +262,8 @@ async def recover_json_with_llm(
     model: str,
     temperature: float = 0.0,
     max_tokens: int = 700,
+    response_language_code: str = "en",
+    response_language_name: str = "English",
 ) -> dict | None:
     """Stage 2: ask the LLM to convert its own RAW output into strict JSON.
 
@@ -177,7 +273,13 @@ async def recover_json_with_llm(
     """
     if not (raw_text or "").strip():
         return None
-    prompt = build_recovery_prompt(raw_text, round_number, round_type)
+    prompt = build_recovery_prompt(
+        raw_text,
+        round_number,
+        round_type,
+        response_language_code=response_language_code,
+        response_language_name=response_language_name,
+    )
     request = LLMRequest(
         provider=provider,
         model=model,
@@ -215,6 +317,8 @@ async def repair_structured_output_with_moderator(
     model: str,
     temperature: float = 0.0,
     max_tokens: int = 900,
+    response_language_code: str = "en",
+    response_language_name: str = "English",
 ) -> dict | None:
     """Phase 4: last-resort JSON repair using the stable moderator model.
 
@@ -235,6 +339,8 @@ async def repair_structured_output_with_moderator(
         model=model,
         temperature=temperature,
         max_tokens=max_tokens,
+        response_language_code=response_language_code,
+        response_language_name=response_language_name,
     )
 
 

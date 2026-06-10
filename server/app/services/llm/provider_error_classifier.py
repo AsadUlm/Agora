@@ -28,7 +28,11 @@ MODEL_INVALID_JSON = "MODEL_INVALID_JSON"
 STRUCTURED_VALIDATION_FAILED = "STRUCTURED_VALIDATION_FAILED"
 RAG_RETRIEVAL_FAILED = "RAG_RETRIEVAL_FAILED"
 ROUND_ALL_AGENTS_FAILED = "ROUND_ALL_AGENTS_FAILED"
+FINAL_SYNTHESIS_FAILED = "FINAL_SYNTHESIS_FAILED"
+STREAM_INTERRUPTED = "STREAM_INTERRUPTED"
 DEBATE_CONTEXT_MISSING = "DEBATE_CONTEXT_MISSING"
+FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES = "FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES"
+FOLLOWUP_PARTIAL_COMPLETION = "FOLLOWUP_PARTIAL_COMPLETION"
 UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
 # Human-readable user messages per code (safe, no internal details)
@@ -68,8 +72,21 @@ _USER_MESSAGES: dict[str, str] = {
         "All agents failed to generate a response in this round. "
         "Please check your API key, credits, or selected models, then retry."
     ),
+    FINAL_SYNTHESIS_FAILED: (
+        "Final synthesis failed. Agent responses are available. Retry synthesis."
+    ),
+    STREAM_INTERRUPTED: (
+        "Connection was interrupted while generation was running. Checking saved status."
+    ),
     DEBATE_CONTEXT_MISSING: (
         "Required debate context was missing. Please retry."
+    ),
+    FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES: (
+        "Insufficient agent responses were generated to continue the follow-up cycle. "
+        "Please retry the follow-up question."
+    ),
+    FOLLOWUP_PARTIAL_COMPLETION: (
+        "Updated synthesis is available, but some follow-up exchange stages were incomplete."
     ),
     UNKNOWN_ERROR: (
         "An unexpected error occurred during debate generation. Please retry."
@@ -88,12 +105,13 @@ _RETRYABLE: dict[str, bool] = {
     STRUCTURED_VALIDATION_FAILED: True,
     RAG_RETRIEVAL_FAILED: False,  # not retryable by itself; debate continues without RAG
     ROUND_ALL_AGENTS_FAILED: True,
-    DEBATE_CONTEXT_MISSING: False,
+    FINAL_SYNTHESIS_FAILED: True,
+    STREAM_INTERRUPTED: True,
+    DEBATE_CONTEXT_MISSING: True,
+    FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES: True,
+    FOLLOWUP_PARTIAL_COMPLETION: True,
     UNKNOWN_ERROR: True,
 }
-
-
-# ── Safe error data object ────────────────────────────────────────────────────
 
 @dataclass
 class DebateSafeError:
@@ -120,6 +138,13 @@ class DebateSafeError:
     round_number: int | None = None
     round_type: str | None = None
     cycle_number: int | None = None
+    severity: str = "fatal"
+    phase: str | None = None
+    failed_agents: list[str] = field(default_factory=list)
+    successful_agents: list[str] = field(default_factory=list)
+    partial_results_available: bool = False
+    request_id: str | None = None
+    last_successful_stage: int | None = None
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -143,6 +168,13 @@ class DebateSafeError:
             "round_number": self.round_number,
             "round_type": self.round_type,
             "cycle_number": self.cycle_number,
+            "severity": self.severity,
+            "phase": self.phase,
+            "failed_agents": self.failed_agents,
+            "successful_agents": self.successful_agents,
+            "partial_results_available": self.partial_results_available,
+            "request_id": self.request_id,
+            "last_successful_stage": self.last_successful_stage,
             "timestamp": self.timestamp,
         }
 
@@ -166,6 +198,13 @@ def classify_provider_error(
     round_number: int | None = None,
     round_type: str | None = None,
     cycle_number: int | None = None,
+    severity: str = "fatal",
+    phase: str | None = None,
+    failed_agents: list[str] | None = None,
+    successful_agents: list[str] | None = None,
+    partial_results_available: bool = False,
+    request_id: str | None = None,
+    last_successful_stage: int | None = None,
 ) -> DebateSafeError:
     """
     Classify a provider/model exception into a ``DebateSafeError``.
@@ -200,6 +239,13 @@ def classify_provider_error(
         round_number=round_number,
         round_type=round_type,
         cycle_number=cycle_number,
+        severity=severity,
+        phase=phase,
+        failed_agents=failed_agents or [],
+        successful_agents=successful_agents or [],
+        partial_results_available=partial_results_available,
+        request_id=request_id,
+        last_successful_stage=last_successful_stage,
     )
 
     logger.warning(
@@ -226,6 +272,13 @@ def make_safe_error(
     round_number: int | None = None,
     round_type: str | None = None,
     cycle_number: int | None = None,
+    severity: str = "fatal",
+    phase: str | None = None,
+    failed_agents: list[str] | None = None,
+    successful_agents: list[str] | None = None,
+    partial_results_available: bool = False,
+    request_id: str | None = None,
+    last_successful_stage: int | None = None,
 ) -> DebateSafeError:
     """Construct a safe error directly from a known code (for synthetic/round-level errors)."""
     return DebateSafeError(
@@ -240,6 +293,13 @@ def make_safe_error(
         round_number=round_number,
         round_type=round_type,
         cycle_number=cycle_number,
+        severity=severity,
+        phase=phase,
+        failed_agents=failed_agents or [],
+        successful_agents=successful_agents or [],
+        partial_results_available=partial_results_available,
+        request_id=request_id,
+        last_successful_stage=last_successful_stage,
     )
 
 

@@ -13,6 +13,9 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.APP_ENV == "development",
     pool_pre_ping=True,
+    # Recycle connections every 5 min so stale asyncpg prepared-statement
+    # caches (e.g. after an ALTER TYPE … ADD VALUE migration) get flushed.
+    pool_recycle=300,
 )
 
 AsyncSessionLocal = async_sessionmaker(
@@ -22,6 +25,19 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
     autocommit=False,
 )
+
+
+async def invalidate_stale_connections() -> None:
+    """Dispose the connection pool, forcing fresh connections on next use.
+
+    Call this at application startup (or after running Alembic migrations)
+    so that asyncpg picks up any new PostgreSQL enum values that were added
+    via ``ALTER TYPE … ADD VALUE``.  Without this, asyncpg's internal
+    prepared-statement cache holds a stale copy of the enum descriptor and
+    rejects the new values with ``InvalidTextRepresentationError``.
+    """
+    await engine.dispose()
+
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

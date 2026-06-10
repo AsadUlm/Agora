@@ -353,7 +353,7 @@ async def test_one_agent_fails_round_continues(
     First agent call raises a quota error; subsequent calls succeed.
 
     Expected:
-    - Round completes (status=completed) because not all agents failed
+    - Round is partially_completed because usable output exists
     - One message has failed generation_status, two have success
     - Failed message_created event contains safe_error
     - Successful messages are persisted normally
@@ -381,13 +381,13 @@ async def test_one_agent_fails_round_continues(
     assert len(failed_results) == 1
     assert len(success_results) == 2
 
-    # Round should be completed (partial failure allowed)
+    # Round explicitly records partial success while debate execution continues.
     round_obj = (
         await db_session.execute(
             select(Round).where(Round.chat_turn_id == ctx.turn_id, Round.round_number == 1)
         )
     ).scalar_one()
-    assert round_obj.status == RoundStatus.completed
+    assert round_obj.status == RoundStatus.partially_completed
 
     # All 3 messages persisted
     msgs = (

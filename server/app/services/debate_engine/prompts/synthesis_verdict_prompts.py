@@ -11,6 +11,7 @@ The verdict generator is *not* a fourth debater. It must:
 """
 
 from __future__ import annotations
+from app.services.language_detection import language_requirement_block
 
 import json
 from typing import Any
@@ -19,6 +20,7 @@ from app.services.debate_engine.prompts.quality_constraints import (
     ASSUMPTION_LABELING_BLOCK,
     FACTUALITY_BLOCK,
     FIELD_DIFFERENTIATION_BLOCK,
+    STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK,
     evidence_mode_block,
 )
 
@@ -104,6 +106,8 @@ def build_synthesis_verdict_prompt(
     debate_summary: dict[str, Any] | None = None,
     followup_question: str | None = None,
     has_evidence: bool = False,
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     """Build the moderator-aggregator prompt for the synthesis verdict.
 
@@ -157,6 +161,7 @@ conclusion that fairly represents the debate state.
 
 Original question:
 {_compact_text(original_question, 600)}
+{language_requirement_block(response_language_code, response_language_name)}
 {followup_block}{debate_summary_section}
 Agent syntheses (the only material you may aggregate from):
 {agents_block}
@@ -213,6 +218,11 @@ Anti-convergence rule (mandatory):
 
 {ASSUMPTION_LABELING_BLOCK}
 
+Create one unified final answer. Do not simply list agent opinions. Resolve the
+debate into a clear recommendation. Mention consensus, remaining disagreement,
+trade-offs, and confidence.
+
+{STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK}
 Output contract — return ONLY this JSON, no markdown fences, no commentary:
 {{
   "one_sentence_takeaway": "One concise sentence, max 24 words.",
@@ -239,6 +249,10 @@ Output contract — return ONLY this JSON, no markdown fences, no commentary:
     "Remaining question 1",
     "Remaining question 2"
   ],
+  "tradeoffs": [
+    "Trade-off 1",
+    "Trade-off 2"
+  ],
   "response": "A polished user-facing synthesis in 3-5 paragraphs."
 }}
 
@@ -255,7 +269,7 @@ Strict field rules:
   - unresolved_questions MAY be an empty array if the verdict is strong.
 {response_requirement}{what_changed_rule}  - response MUST NOT simply concatenate the other JSON fields.
   - response MUST NOT be a verbatim copy of any single agent's synthesis.
-  - All fields MUST be in the same language as the original question.
+  - All natural-language values MUST follow the active response-language requirement.
 
 Forbidden meta phrases inside any field: "I will", "Generating", "Here is",
 "As an AI", "JSON", "schema". Every field must be user-facing prose.

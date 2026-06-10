@@ -1,30 +1,24 @@
-import type {
-    AgentDTO,
-    MessageDTO,
-    RoundDTO,
-    SessionDetailDTO,
-    TurnDTO,
-} from "../api/debate.types";
-import { isErrorPayload, isErrorText } from "./error-normalizer";
+import type { AgentDTO, RoundDTO, SessionDetailDTO, TurnDTO } from "../api/debate.types";
 
 export type DebateExecutionStatus =
     | "queued"
     | "running"
+    | "partially_completed"
     | "completed"
-    | "failed";
+    | "failed"
+    | "cancelled";
 
-export type RoundStatus =
+export type StageStatus =
     | "locked"
     | "waiting"
     | "running"
+    | "partially_completed"
     | "completed"
-    | "failed";
+    | "failed"
+    | "skipped";
 
-export type AgentTurnStatus =
-    | "waiting"
-    | "generating"
-    | "completed"
-    | "failed";
+export type RoundStatus = StageStatus;
+export type AgentTurnStatus = "waiting" | "generating" | "completed" | "failed";
 
 export interface AgentTurnState {
     agentId: string;
@@ -32,16 +26,23 @@ export interface AgentTurnState {
     status: AgentTurnStatus;
 }
 
-export interface RoundExecutionState {
-    roundNumber: 1 | 2 | 3;
+export interface DebateStage {
+    index: number;
     label: string;
-    status: RoundStatus;
-    lockedReason: string | null;
+    shortLabel: string;
+    roundType: string;
+    status: StageStatus;
     completedCount: number;
     totalCount: number;
     failedCount: number;
     generatingAgentId: string | null;
     generatingAgentRole: string | null;
+    lockedReason: string | null;
+    activityMessages: string[];
+}
+
+export interface RoundExecutionState extends DebateStage {
+    roundNumber: number;
     agentTurns: AgentTurnState[];
 }
 
@@ -55,409 +56,189 @@ export interface DebateProgressState {
 
 export interface DebateExecutionState {
     debateStatus: DebateExecutionStatus;
-    activeRound: 1 | 2 | 3;
+    activeRound: number;
+    activeStage: number | null;
     currentAgentId: string | null;
     currentAgentRole: string | null;
     rounds: RoundExecutionState[];
+    stages: DebateStage[];
     progress: DebateProgressState;
     failureMessage: string | null;
+    is5Stage: true;
 }
 
-interface AgentRoundCounter {
-    completed: Set<string>;
-    failed: Set<string>;
-}
-
-const ROUND_LABELS: Record<1 | 2 | 3, string> = {
-    1: "Initial Proposal",
-    2: "Debate & Critique",
-    3: "Synthesis",
-};
+export const DEBATE_STAGE_DEFS = [
+    { index: 1, label: "Stage 1: Initial Positions", shortLabel: "Initial Positions", roundType: "initial" },
+    { index: 2, label: "Stage 2: Cross-Critiques", shortLabel: "Cross-Critiques", roundType: "critique" },
+    { index: 3, label: "Stage 3: Responses to Critiques", shortLabel: "Responses to Critiques", roundType: "critique_response" },
+    { index: 4, label: "Stage 4: Revised Positions", shortLabel: "Revised Positions", roundType: "revised_position" },
+    { index: 5, label: "Stage 5: Final Synthesis", shortLabel: "Final Synthesis", roundType: "final" },
+] as const;
 
 export function deriveDebateExecutionState(
     session: SessionDetailDTO | null,
     turnStatusOverride: string | null,
     storeError: string | null,
 ): DebateExecutionState {
-    const agents = session?.agents ?? [];
     const turn = session?.latest_turn ?? null;
-    const totalAgentTurns = agents.length;
-
-    const debateStatus = normalizeDebateStatus(
-        turnStatusOverride ?? turn?.status ?? session?.status ?? "queued",
+    const agents = session?.agents ?? [];
+    // A loaded REST snapshot is the durable source of truth. WebSocket/store
+    // state is only a fallback while no snapshot is available.
+    const debateStatus = normalizeStatus(turn?.status ?? session?.status ?? turnStatusOverride);
+    const stages = DEBATE_STAGE_DEFS.map((definition) =>
+        deriveStage(definition, turn, agents, debateStatus),
     );
-
-    const round1 = findRound(turn, 1);
-    const round2 = findRound(turn, 2);
-    const round3 = findRound(turn, 3);
-
-    const r1 = countRoundByAgent(round1);
-    const r2 = countRoundByAgent(round2);
-
-    const round1Done = r1.completed.size + r1.failed.size;
-    const round2Done = r2.completed.size + r2.failed.size;
-
-    const round1Completed = totalAgentTurns > 0
-        ? round1Done >= totalAgentTurns || round1?.status === "completed"
-        : round1?.status === "completed";
-
-    const round2Completed = totalAgentTurns > 0
-        ? round2Done >= totalAgentTurns || round2?.status === "completed"
-        : round2?.status === "completed";
-
-    const synthesisCompleted =
-        Boolean(turn?.final_summary) ||
-        round3?.status === "completed" ||
-        // Also detect completed follow-up synthesis rounds (updated_synthesis round type
-        // or any round with round_type "updated_synthesis" that has messages).
-        (turn?.rounds ?? []).some(
-            (r) =>
-                (r.round_type === "updated_synthesis" || r.round_type === "final") &&
-                r.status === "completed",
-        ) ||
-        debateStatus === "completed";
-
-    const activeRound = inferActiveRound(
-        debateStatus,
-        round1Completed,
-        round2Completed,
-    );
-
-    const round1Generating =
-        debateStatus === "running" && activeRound === 1
-            ? inferGeneratingAgentId(agents, r1)
-            : null;
-
-    const round2Generating =
-        debateStatus === "running" && activeRound === 2
-            ? inferGeneratingAgentId(agents, r2)
-            : null;
-
-    const roundStates: RoundExecutionState[] = [
-        buildRoundState({
-            roundNumber: 1,
-            status: buildRound1Status(
-                debateStatus,
-                round1Completed,
-                round1,
-                activeRound,
-            ),
-            lockedReason: null,
-            counters: r1,
-            agents,
-            generatingAgentId: round1Generating,
-        }),
-        buildRoundState({
-            roundNumber: 2,
-            status: buildRound2Status(
-                debateStatus,
-                round1Completed,
-                round2Completed,
-                round2,
-                activeRound,
-            ),
-            lockedReason: round1Completed ? null : "Waiting for Round 1",
-            counters: r2,
-            agents,
-            generatingAgentId: round2Generating,
-        }),
-        {
-            roundNumber: 3,
-            label: ROUND_LABELS[3],
-            status: buildRound3Status(
-                debateStatus,
-                round2Completed,
-                synthesisCompleted,
-                round3,
-                activeRound,
-            ),
-            lockedReason: round2Completed ? null : "Waiting for Round 2",
-            completedCount: synthesisCompleted ? 1 : 0,
-            totalCount: 1,
-            failedCount: round3?.status === "failed" ? 1 : 0,
-            generatingAgentId:
-                debateStatus === "running" && activeRound === 3 && !synthesisCompleted
-                    ? "synthesis"
-                    : null,
-            generatingAgentRole:
-                debateStatus === "running" && activeRound === 3 && !synthesisCompleted
-                    ? "Synthesis"
-                    : null,
-            agentTurns: [],
-        },
-    ];
-
-    const doneStepCount =
-        1 + // question node
-        round1Done +
-        round2Done +
-        (synthesisCompleted ? 1 : 0);
-
-    const totalSteps = 1 + totalAgentTurns + totalAgentTurns + 1;
-    const clampedDone = Math.max(0, Math.min(doneStepCount, totalSteps));
-    const percentage = totalSteps > 0
-        ? Math.round((clampedDone / totalSteps) * 100)
-        : 0;
-
-    const currentAgentRole =
-        activeRound === 1
-            ? roleById(agents, round1Generating)
-            : activeRound === 2
-                ? roleById(agents, round2Generating)
-                : debateStatus === "running" && !synthesisCompleted
-                    ? "Synthesis"
-                    : null;
-
-    const progressLabel = buildProgressLabel(
-        debateStatus,
-        activeRound,
-        currentAgentRole,
-    );
-
+    const runningStage = stages.find((stage) => stage.status === "running");
+    const currentStage = clampStage(turn?.current_stage ?? runningStage?.index ?? inferActiveStage(stages, debateStatus));
+    const current = stages[currentStage - 1];
+    const terminalCount = stages.filter((stage) =>
+        stage.status === "completed" || stage.status === "partially_completed" || stage.status === "skipped",
+    ).length;
+    const percentage = debateStatus === "completed"
+        ? 100
+        : Math.round((terminalCount / DEBATE_STAGE_DEFS.length) * 100);
     const failureMessage =
-        debateStatus === "failed"
-            ? storeError ?? extractTurnFailure(turn)
-            : null;
+        turn?.error?.user_message
+        ?? turn?.error?.message
+        ?? (debateStatus === "failed" ? storeError : null)
+        ?? null;
 
     return {
         debateStatus,
-        activeRound,
-        currentAgentId:
-            activeRound === 1
-                ? round1Generating
-                : activeRound === 2
-                    ? round2Generating
-                    : debateStatus === "running" && !synthesisCompleted
-                        ? "synthesis"
-                        : null,
-        currentAgentRole,
-        rounds: roundStates,
+        activeRound: currentStage,
+        activeStage: currentStage,
+        currentAgentId: current?.generatingAgentId ?? null,
+        currentAgentRole: current?.generatingAgentRole ?? null,
+        rounds: stages.map((stage) => ({
+            ...stage,
+            roundNumber: stage.index,
+            agentTurns: deriveAgentTurns(stage, agents),
+        })),
+        stages,
         progress: {
-            completedSteps: clampedDone,
-            totalSteps,
+            completedSteps: terminalCount,
+            totalSteps: DEBATE_STAGE_DEFS.length,
             percentage,
-            label: progressLabel,
-            sublabel: `${clampedDone} / ${totalSteps} steps completed`,
+            label: statusLabel(debateStatus),
+            sublabel: current?.label ?? "Stage 1: Initial Positions",
         },
         failureMessage,
+        is5Stage: true,
     };
 }
 
-function buildRoundState(args: {
-    roundNumber: 1 | 2;
-    status: RoundStatus;
-    lockedReason: string | null;
-    counters: AgentRoundCounter;
-    agents: AgentDTO[];
-    generatingAgentId: string | null;
-}): RoundExecutionState {
-    const { roundNumber, status, lockedReason, counters, agents, generatingAgentId } = args;
-
-    const completedCount = counters.completed.size;
-    const failedCount = counters.failed.size;
-
-    const agentTurns: AgentTurnState[] = agents.map((agent) => {
-        let turnStatus: AgentTurnStatus = "waiting";
-        if (counters.failed.has(agent.id)) {
-            turnStatus = "failed";
-        } else if (counters.completed.has(agent.id)) {
-            turnStatus = "completed";
-        } else if (status === "running" && generatingAgentId === agent.id) {
-            turnStatus = "generating";
-        }
-        return {
-            agentId: agent.id,
-            role: agent.role,
-            status: turnStatus,
-        };
-    });
+function deriveStage(
+    definition: typeof DEBATE_STAGE_DEFS[number],
+    turn: TurnDTO | null,
+    agents: AgentDTO[],
+    debateStatus: DebateExecutionStatus,
+): DebateStage {
+    const round = findBaseRound(turn, definition.roundType);
+    const messages = round?.messages.filter((message) => message.sender_type === "agent") ?? [];
+    const failedIds = new Set(
+        messages
+            .filter((message) =>
+                message.payload?.generation_status === "failed"
+                || message.payload?.is_fallback === true,
+            )
+            .map((message) => message.agent_id),
+    );
+    const completedIds = new Set(
+        messages
+            .filter((message) => message.agent_id && !failedIds.has(message.agent_id))
+            .map((message) => message.agent_id),
+    );
+    const status = deriveStageStatus(definition.index, round, turn, debateStatus);
+    const nextAgent = status === "running"
+        ? agents.find((agent) => !completedIds.has(agent.id) && !failedIds.has(agent.id))
+        : null;
 
     return {
-        roundNumber,
-        label: ROUND_LABELS[roundNumber],
+        ...definition,
         status,
-        lockedReason,
-        completedCount,
+        completedCount: completedIds.size,
         totalCount: agents.length,
-        failedCount,
-        generatingAgentId,
-        generatingAgentRole: roleById(agents, generatingAgentId),
-        agentTurns,
+        failedCount: failedIds.size,
+        generatingAgentId: nextAgent?.id ?? null,
+        generatingAgentRole: nextAgent?.role ?? null,
+        lockedReason: status === "locked" ? "Previous stage is not complete" : null,
+        activityMessages: messages
+            .filter((message) => !failedIds.has(message.agent_id))
+            .map((message) => `${message.agent_role ?? "Agent"} completed ${definition.shortLabel}.`),
     };
 }
 
-function normalizeDebateStatus(raw: string): DebateExecutionStatus {
-    if (raw === "running") return "running";
-    if (raw === "completed") return "completed";
-    if (raw === "failed") return "failed";
+function deriveStageStatus(
+    index: number,
+    round: RoundDTO | undefined,
+    turn: TurnDTO | null,
+    debateStatus: DebateExecutionStatus,
+): StageStatus {
+    if (index === 5 && turn?.synthesis_status === "failed") return "failed";
+    if (index === 5 && turn?.synthesis_status === "skipped") return "skipped";
+    if (round?.status === "partially_completed") return "partially_completed";
+    if (round?.status === "completed") return "completed";
+    if (round?.status === "failed") return "failed";
+    if (round?.status === "running") return "running";
+    if (debateStatus === "completed") return "completed";
+    const current = clampStage(turn?.current_stage ?? 1);
+    if (index === current && debateStatus === "running") return "running";
+    if (index < current) return "completed";
+    if (index === current || index === current + 1) return "waiting";
+    return "locked";
+}
+
+function deriveAgentTurns(stage: DebateStage, agents: AgentDTO[]): AgentTurnState[] {
+    return agents.map((agent) => ({
+        agentId: agent.id,
+        role: agent.role,
+        status:
+            stage.generatingAgentId === agent.id
+                ? "generating"
+                : stage.failedCount > 0 && stage.completedCount + stage.failedCount >= stage.totalCount
+                    ? "failed"
+                    : stage.status === "completed" || stage.status === "partially_completed"
+                        ? "completed"
+                        : "waiting",
+    }));
+}
+
+function findBaseRound(turn: TurnDTO | null, roundType: string): RoundDTO | undefined {
+    return turn?.rounds.find((round) =>
+        (round.cycle_number ?? 1) === 1 && round.round_type === roundType,
+    );
+}
+
+function inferActiveStage(stages: DebateStage[], status: DebateExecutionStatus): number {
+    if (status === "completed" || status === "partially_completed") return 5;
+    const failed = stages.find((stage) => stage.status === "failed");
+    if (failed) return failed.index;
+    const firstOpen = stages.find((stage) => stage.status !== "completed" && stage.status !== "partially_completed");
+    return firstOpen?.index ?? 5;
+}
+
+function clampStage(value: number): number {
+    return Math.max(1, Math.min(5, value));
+}
+
+function normalizeStatus(value: string | null | undefined): DebateExecutionStatus {
+    if (
+        value === "running"
+        || value === "partially_completed"
+        || value === "completed"
+        || value === "failed"
+        || value === "cancelled"
+    ) {
+        return value;
+    }
     return "queued";
 }
 
-function findRound(turn: TurnDTO | null, roundNumber: number): RoundDTO | null {
-    if (!turn) return null;
-    return turn.rounds.find((r) => r.round_number === roundNumber) ?? null;
-}
-
-function inferActiveRound(
-    debateStatus: DebateExecutionStatus,
-    round1Completed: boolean,
-    round2Completed: boolean,
-): 1 | 2 | 3 {
-    if (debateStatus === "queued") return 1;
-    if (debateStatus === "running") {
-        if (!round1Completed) return 1;
-        if (!round2Completed) return 2;
-        return 3;
-    }
-    if (debateStatus === "failed") {
-        if (!round1Completed) return 1;
-        if (!round2Completed) return 2;
-        return 3;
-    }
-    return 3;
-}
-
-function buildRound1Status(
-    debateStatus: DebateExecutionStatus,
-    round1Completed: boolean,
-    round1: RoundDTO | null,
-    activeRound: 1 | 2 | 3,
-): RoundStatus {
-    if (round1?.status === "failed" || (debateStatus === "failed" && activeRound === 1 && !round1Completed)) {
-        return "failed";
-    }
-    if (round1Completed) return "completed";
-    if (debateStatus === "running" && activeRound === 1) return "running";
-    return "waiting";
-}
-
-function buildRound2Status(
-    debateStatus: DebateExecutionStatus,
-    round1Completed: boolean,
-    round2Completed: boolean,
-    round2: RoundDTO | null,
-    activeRound: 1 | 2 | 3,
-): RoundStatus {
-    if (!round1Completed) return "locked";
-    if (round2?.status === "failed" || (debateStatus === "failed" && activeRound === 2 && !round2Completed)) {
-        return "failed";
-    }
-    if (round2Completed) return "completed";
-    if (debateStatus === "running" && activeRound === 2) return "running";
-    return "waiting";
-}
-
-function buildRound3Status(
-    debateStatus: DebateExecutionStatus,
-    round2Completed: boolean,
-    synthesisCompleted: boolean,
-    round3: RoundDTO | null,
-    activeRound: 1 | 2 | 3,
-): RoundStatus {
-    if (!round2Completed) return "locked";
-    if (round3?.status === "failed" || (debateStatus === "failed" && activeRound === 3 && !synthesisCompleted)) {
-        return "failed";
-    }
-    if (synthesisCompleted) return "completed";
-    if (debateStatus === "running") return "running";
-    return "waiting";
-}
-
-function countRoundByAgent(round: RoundDTO | null): AgentRoundCounter {
-    const completed = new Set<string>();
-    const failed = new Set<string>();
-    if (!round) return { completed, failed };
-
-    const ordered = [...round.messages].sort((a, b) => a.sequence_no - b.sequence_no);
-    const latestByAgent = new Map<string, MessageDTO>();
-    for (const msg of ordered) {
-        if (!msg.agent_id) continue;
-        latestByAgent.set(msg.agent_id, msg);
-    }
-
-    for (const [agentId, msg] of latestByAgent) {
-        if (isFailedMessage(msg)) failed.add(agentId);
-        else completed.add(agentId);
-    }
-
-    return { completed, failed };
-}
-
-function inferGeneratingAgentId(
-    agents: AgentDTO[],
-    counters: AgentRoundCounter,
-): string | null {
-    for (const agent of agents) {
-        if (!counters.completed.has(agent.id) && !counters.failed.has(agent.id)) {
-            return agent.id;
-        }
-    }
-    return null;
-}
-
-function isFailedMessage(message: MessageDTO): boolean {
-    const generationStatus =
-        typeof message.payload?.["generation_status"] === "string"
-            ? String(message.payload["generation_status"]).toLowerCase()
-            : "";
-
-    if (generationStatus === "failed") return true;
-    if (isErrorPayload(message.payload ?? {})) return true;
-    if (isErrorText(message.text)) return true;
-    return false;
-}
-
-function roleById(agents: AgentDTO[], agentId: string | null): string | null {
-    if (!agentId) return null;
-    return agents.find((a) => a.id === agentId)?.role ?? null;
-}
-
-function buildProgressLabel(
-    debateStatus: DebateExecutionStatus,
-    activeRound: 1 | 2 | 3,
-    currentAgentRole: string | null,
-): string {
-    if (debateStatus === "completed") return "Debate Complete";
-    if (debateStatus === "failed") return "Debate Failed";
-    if (debateStatus === "queued") return "Queued for execution";
-
-    if (activeRound === 3) {
-        return "Generating Round 3: Synthesis";
-    }
-
-    if (currentAgentRole) {
-        return `Generating Round ${activeRound}: ${capitalize(currentAgentRole)}`;
-    }
-
-    return `Generating Round ${activeRound}`;
-}
-
-function extractTurnFailure(turn: TurnDTO | null): string | null {
-    if (!turn) return null;
-    for (const round of turn.rounds) {
-        for (const msg of round.messages) {
-            if (!isFailedMessage(msg)) continue;
-            const err = messageErrorText(msg);
-            if (err) return err;
-        }
-    }
-    return null;
-}
-
-function messageErrorText(msg: MessageDTO): string | null {
-    const payload = msg.payload ?? {};
-    if (typeof payload["error"] === "string" && payload["error"].trim()) {
-        return payload["error"].trim();
-    }
-    if (typeof payload["text"] === "string" && payload["text"].trim()) {
-        return payload["text"].trim();
-    }
-    if (typeof msg.text === "string" && msg.text.trim()) {
-        return msg.text.trim();
-    }
-    return null;
-}
-
-function capitalize(value: string): string {
-    return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+function statusLabel(status: DebateExecutionStatus): string {
+    if (status === "partially_completed") return "Debate Partially Completed";
+    if (status === "completed") return "Debate Complete";
+    if (status === "failed") return "Debate Failed";
+    if (status === "cancelled") return "Debate Cancelled";
+    if (status === "running") return "Debate Running";
+    return "Queued for execution";
 }

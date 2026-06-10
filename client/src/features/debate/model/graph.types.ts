@@ -45,6 +45,13 @@ export interface DebateGraphNode {
     agentModel?: string;
     agentProvider?: string;
     content?: string;
+    /**
+     * Free-form metadata bag. Well-known keys for intermediate (R2) nodes:
+     * - `challengesAgentRole`: display name of the agent this node challenges
+     * - `respondsToAgentRole`: display name of the agent this node responds to
+     * - `challengesAgentId`: stable ID of the challenged agent
+     * - `respondsToAgentId`: stable ID of the agent responded to
+     */
     metadata?: Record<string, unknown>;
     /** Optional knowledge attachment summary used by AgentNode to render a badge. */
     knowledge?: {
@@ -63,6 +70,10 @@ export interface DebateGraphEdge {
     round: number;
     status: GraphEdgeStatus;
     label?: string;
+    /** For challenge edges: the agentId of the source agent (challenger). */
+    sourceAgentId?: string;
+    /** For challenge edges: the agentId of the target agent (challenged). */
+    targetAgentId?: string;
 }
 
 export interface DebateGraph {

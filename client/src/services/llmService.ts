@@ -31,5 +31,5 @@ export interface LLMProviderInfo {
  */
 export async function fetchLLMProviders(): Promise<LLMProviderInfo[]> {
     const { data } = await api.get<LLMProviderInfo[]>("/llm/providers");
-    return data;
+    return Array.isArray(data) ? data : [];
 }
