@@ -11,6 +11,7 @@ The verdict generator is *not* a fourth debater. It must:
 """
 
 from __future__ import annotations
+from app.services.language_detection import language_requirement_block
 
 import json
 from typing import Any
@@ -105,6 +106,8 @@ def build_synthesis_verdict_prompt(
     debate_summary: dict[str, Any] | None = None,
     followup_question: str | None = None,
     has_evidence: bool = False,
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     """Build the moderator-aggregator prompt for the synthesis verdict.
 
@@ -158,6 +161,7 @@ conclusion that fairly represents the debate state.
 
 Original question:
 {_compact_text(original_question, 600)}
+{language_requirement_block(response_language_code, response_language_name)}
 {followup_block}{debate_summary_section}
 Agent syntheses (the only material you may aggregate from):
 {agents_block}
@@ -265,7 +269,7 @@ Strict field rules:
   - unresolved_questions MAY be an empty array if the verdict is strong.
 {response_requirement}{what_changed_rule}  - response MUST NOT simply concatenate the other JSON fields.
   - response MUST NOT be a verbatim copy of any single agent's synthesis.
-  - All fields MUST be in the same language as the original question.
+  - All natural-language values MUST follow the active response-language requirement.
 
 Forbidden meta phrases inside any field: "I will", "Generating", "Here is",
 "As an AI", "JSON", "schema". Every field must be user-facing prose.

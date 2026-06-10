@@ -12,6 +12,7 @@ required for the debate traceability requirement.
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.language_detection import language_requirement_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK
 
@@ -59,6 +60,8 @@ def build_revised_position_prompt(
     other_agents_revised_summaries: list[dict] | None = None,
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     """Build the Round 4 prompt for an agent's revised final position.
 
@@ -105,6 +108,7 @@ Never narrate instructions, your role, output formatting, schemas, or your own p
 role: {role}.
 {persona_block(role)}
 Question: {question}
+{language_requirement_block(response_language_code, response_language_name)}
 
 Your initial position: {_compact_text(initial_position, 400)}{claims_block}
 

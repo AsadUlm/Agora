@@ -11,6 +11,7 @@ from app.services.debate_engine.prompts.followup_prompts import (
     build_followup_revised_position_prompt,
     build_updated_synthesis_prompt,
 )
+from app.services.debate_engine.two_stage_structurer import build_recovery_prompt
 
 
 def test_round1_prompt_requires_short_summary_schema() -> None:
@@ -141,3 +142,109 @@ def test_round3_prompt_requires_final_schema_with_response() -> None:
     assert '"remaining_concerns"' in prompt
     assert '"conclusion"' in prompt
     assert '"response"' in prompt
+
+
+def test_all_stage_prompts_contain_response_language_instruction() -> None:
+    language = {"response_language_code": "ru", "response_language_name": "Russian"}
+    prompts = [
+        build_opening_statement_prompt(role="A", question="Вопрос?", **language),
+        build_critique_prompt(
+            role="A",
+            question="Вопрос?",
+            own_stance="Позиция",
+            other_agents=[{"role": "B", "stance": "Другая позиция", "key_points": []}],
+            **language,
+        ),
+        build_critique_response_prompt(
+            role="A",
+            question="Вопрос?",
+            own_initial_position="Позиция",
+            critiques_received=[],
+            **language,
+        ),
+        build_revised_position_prompt(
+            role="A",
+            question="Вопрос?",
+            initial_position="Позиция",
+            initial_key_claims=[],
+            critiques_received=[],
+            critique_response=None,
+            **language,
+        ),
+        build_final_synthesis_prompt(
+            role="A",
+            question="Вопрос?",
+            original_stance="Позиция",
+            debate_digest="Обсуждение",
+            **language,
+        ),
+        build_followup_response_prompt(
+            role="A",
+            original_question="Вопрос?",
+            follow_up_question="Почему?",
+            previous_synthesis="Вывод",
+            own_previous_position="Позиция",
+            own_key_arguments=[],
+            **language,
+        ),
+        build_followup_critique_prompt(
+            role="A",
+            original_question="Вопрос?",
+            follow_up_question="Почему?",
+            previous_synthesis="Вывод",
+            own_followup="Ответ",
+            other_followups=[],
+            **language,
+        ),
+        build_followup_critique_response_prompt(
+            role="A",
+            original_question="Вопрос?",
+            follow_up_question="Почему?",
+            previous_synthesis="Вывод",
+            own_followup_response="Ответ",
+            critiques_received=[],
+            **language,
+        ),
+        build_followup_revised_position_prompt(
+            role="A",
+            original_question="Вопрос?",
+            follow_up_question="Почему?",
+            previous_synthesis="Вывод",
+            initial_followup_position="Ответ",
+            critiques_received=[],
+            critique_response=None,
+            **language,
+        ),
+        build_updated_synthesis_prompt(
+            role="A",
+            original_question="Вопрос?",
+            follow_up_question="Почему?",
+            previous_synthesis="Вывод",
+            followup_responses=[],
+            followup_critiques=[],
+            **language,
+        ),
+        build_synthesis_verdict_prompt(
+            original_question="Вопрос?",
+            cycle_number=1,
+            round_type="final",
+            agent_syntheses=[],
+            **language,
+        ),
+    ]
+    for prompt in prompts:
+        assert "LANGUAGE REQUIREMENT" in prompt
+        assert "natural-language values in Russian" in prompt
+        assert "Keep JSON keys exactly as specified in English" in prompt
+
+
+def test_structured_repair_prompt_preserves_response_language() -> None:
+    prompt = build_recovery_prompt(
+        '{"response":"Правительствам следует действовать."}',
+        round_number=5,
+        round_type="synthesis_verdict",
+        response_language_code="ru",
+        response_language_name="Russian",
+    )
+    assert "Preserve the target response language: Russian (ru)" in prompt
+    assert "Keep JSON keys in English" in prompt

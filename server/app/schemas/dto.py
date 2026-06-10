@@ -204,6 +204,10 @@ def serialize_turn(
         request_id=turn.request_id,
         error=turn.error_metadata,
         execution_mode=getattr(turn, "execution_mode", "auto") or "auto",
+        response_language_code=getattr(turn, "response_language_code", "en") or "en",
+        response_language_name=getattr(turn, "response_language_name", "English") or "English",
+        response_language_source=getattr(turn, "response_language_source", "fallback") or "fallback",
+        response_language_confidence=float(getattr(turn, "response_language_confidence", 0.6) or 0.6),
         started_at=turn.started_at,
         ended_at=turn.ended_at,
         user_message=user_message,
@@ -216,6 +220,10 @@ def serialize_turn(
                 chat_turn_id=fu.chat_turn_id,
                 cycle_number=fu.cycle_number,
                 question=fu.question,
+                response_language_code=getattr(fu, "response_language_code", "en") or "en",
+                response_language_name=getattr(fu, "response_language_name", "English") or "English",
+                response_language_source=getattr(fu, "response_language_source", "fallback") or "fallback",
+                response_language_confidence=float(getattr(fu, "response_language_confidence", 0.6) or 0.6),
                 created_at=fu.created_at,
             )
             for fu in sorted(follow_ups or [], key=lambda x: x.cycle_number)

@@ -142,6 +142,10 @@ class ChatEngine:
                 # a normal mode (reasoning-only) — never an error.
                 "rag_active": ctx.rag_active,
                 "document_count": ctx.document_count,
+                "response_language_code": ctx.response_language_code,
+                "response_language_name": ctx.response_language_name,
+                "response_language_source": ctx.response_language_source,
+                "response_language_confidence": ctx.response_language_confidence,
             },
         ))
 
@@ -339,6 +343,10 @@ class ChatEngine:
             # No documents is a valid mode — never treated as an error.
             rag_active=any(bindings_by_agent.get(a.id) for a in active_agents),
             document_count=len({d for ids in bindings_by_agent.values() for d in ids}),
+            response_language_code=turn.response_language_code,
+            response_language_name=turn.response_language_name,
+            response_language_source=turn.response_language_source,
+            response_language_confidence=turn.response_language_confidence,
         )
 
     async def _emit(self, event: ExecutionEvent) -> None:

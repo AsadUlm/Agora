@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.language_detection import language_requirement_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
     STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK,
@@ -57,6 +58,8 @@ def build_final_synthesis_prompt(
     knowledge_mode: str = "shared_session_docs",
     knowledge_strict: bool = False,
     evidence_packets: list[EvidencePacket] | None = None,
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     """Build the prompt for an agent's Round 3 final synthesis."""
     depth_instruction = {
@@ -84,6 +87,7 @@ Resolve the debate with intellectual rigour — never narrate instructions, your
 role: {role}.
 {persona_block(role)}
 Question: {question}
+{language_requirement_block(response_language_code, response_language_name)}
 
 Your opening stance: {_compact_text(original_stance, 260)}
 

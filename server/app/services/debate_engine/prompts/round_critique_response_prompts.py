@@ -8,6 +8,7 @@ reject, and what they will change in their revised position.
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.language_detection import language_requirement_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK
 
@@ -49,6 +50,8 @@ def build_critique_response_prompt(
     critiques_received: list[dict],  # list of {from_role, target_claim, critique_summary, weakness_found, counterargument}
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     """Build the Round 3 prompt for an agent responding to critiques received.
 
@@ -76,6 +79,7 @@ Respond honestly and specifically — never narrate instructions, your role, out
 role: {role}.
 {persona_block(role)}
 Question: {question}
+{language_requirement_block(response_language_code, response_language_name)}
 
 Your initial position: {_compact_text(own_initial_position, 400)}
 

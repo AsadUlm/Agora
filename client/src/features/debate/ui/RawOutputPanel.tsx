@@ -477,6 +477,22 @@ export default function RawOutputPanel() {
         ...(turn?.rounds ?? []).map((round) => round.cycle_number ?? 1),
     );
     const selectedError = cycle.cycleNumber === latestCycleNumber ? view.error : null;
+    const selectedFollowUp = (turn?.follow_ups ?? []).find(
+        (item) => item.cycle_number === cycle.cycleNumber,
+    );
+    const responseLanguage = selectedFollowUp
+        ? {
+            code: selectedFollowUp.response_language_code ?? "en",
+            name: selectedFollowUp.response_language_name ?? "English",
+            source: selectedFollowUp.response_language_source ?? "fallback",
+            confidence: selectedFollowUp.response_language_confidence ?? 0.6,
+        }
+        : {
+            code: turn?.response_language_code ?? "en",
+            name: turn?.response_language_name ?? "English",
+            source: turn?.response_language_source ?? "fallback",
+            confidence: turn?.response_language_confidence ?? 0.6,
+        };
 
     if (!turn) {
         return (
@@ -505,6 +521,9 @@ export default function RawOutputPanel() {
                         selected_cycle: cycle.cycleNumber,
                         cycle_type: cycle.cycleType,
                         current_question: cycle.question,
+                        response_language: `${responseLanguage.name} (${responseLanguage.code})`,
+                        language_detection_source: responseLanguage.source,
+                        language_detection_confidence: responseLanguage.confidence,
                         cycle_status: cycleState.status,
                         turn_status: turn.status,
                         active_stage: cycleState.activeStageLabel ?? null,

@@ -316,6 +316,10 @@ async def run_followup_cycle(
     follow_up_question: str,
     on_event: OnEventCallback,
     session_factory: Any | None = None,
+    response_language_code: str = "en",
+    response_language_name: str = "English",
+    response_language_source: str = "fallback",
+    response_language_confidence: float = 0.6,
 ) -> None:
     """Run and terminally reconcile one expanded follow-up cycle."""
     factory = session_factory or AsyncSessionLocal
@@ -407,6 +411,10 @@ async def run_followup_cycle(
                         "document_count": len(
                             {d for ids in bindings_by_agent.values() for d in ids}
                         ),
+                        "response_language_code": response_language_code,
+                        "response_language_name": response_language_name,
+                        "response_language_source": response_language_source,
+                        "response_language_confidence": response_language_confidence,
                     },
                 )
             )
@@ -421,6 +429,10 @@ async def run_followup_cycle(
                 # FIX-12: surface RAG state so follow-up cycles also expose it.
                 rag_active=any(bindings_by_agent.get(a.id) for a in agents),
                 document_count=len({d for ids in bindings_by_agent.values() for d in ids}),
+                response_language_code=response_language_code,
+                response_language_name=response_language_name,
+                response_language_source=response_language_source,
+                response_language_confidence=response_language_confidence,
             )
 
             round_manager = RoundManager(

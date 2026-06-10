@@ -116,6 +116,10 @@ export interface FollowUpCreateResponse {
     cycle_number: number;
     question: string;
     status: string;
+    response_language_code?: string;
+    response_language_name?: string;
+    response_language_source?: string;
+    response_language_confidence?: number;
     ws_session_url: string;
     ws_turn_url: string;
 }

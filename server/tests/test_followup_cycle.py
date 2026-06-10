@@ -131,6 +131,42 @@ async def test_multiple_followups_preserve_history(client: AsyncClient):
     assert {r.get("cycle_number") for r in rounds} == {1, 2, 3}
 
 
+async def test_followup_language_inherits_then_overrides(client: AsyncClient):
+    start = await client.post(
+        "/debates/start",
+        json={
+            "question": "Должны ли правительства строго регулировать высокорисковые AI-системы?",
+            "agents": [{"role": "Analyst"}, {"role": "Critic"}],
+            "execution_mode": "auto",
+        },
+    )
+    assert start.status_code == 201, start.text
+    assert start.json()["response_language_code"] == "ru"
+    debate_id = start.json()["debate_id"]
+
+    inherited = await client.post(
+        f"/debates/{debate_id}/follow-ups",
+        json={"question": "why?"},
+    )
+    assert inherited.status_code == 201, inherited.text
+    assert inherited.json()["response_language_code"] == "ru"
+    assert inherited.json()["response_language_source"] == "inherited"
+
+    overridden = await client.post(
+        f"/debates/{debate_id}/follow-ups",
+        json={"question": "그럼 스타트업에는 어떤 영향이 있나요?"},
+    )
+    assert overridden.status_code == 201, overridden.text
+    assert overridden.json()["response_language_code"] == "ko"
+
+    turn = (await client.get(f"/debates/{debate_id}")).json()["latest_turn"]
+    assert turn["response_language_code"] == "ru"
+    assert turn["response_language_name"] == "Russian"
+    assert turn["follow_ups"][0]["response_language_code"] == "ru"
+    assert turn["follow_ups"][0]["response_language_source"] == "inherited"
+    assert turn["follow_ups"][1]["response_language_code"] == "ko"
+
+
 async def test_followup_on_empty_question_rejected(client: AsyncClient):
     """An empty follow-up question is rejected before any background work."""
     debate_id = await _start_completed_debate(client)

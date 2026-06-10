@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.language_detection import language_requirement_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
     ANTI_STRAWMAN_BLOCK,
@@ -241,6 +242,8 @@ def build_followup_response_prompt(
     evolving_positions: list[dict[str, Any]] | None = None,
     evidence_packets: list[EvidencePacket] | None = None,
     evidence_memory: dict[str, Any] | None = None,
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     depth = {
         "shallow": "Be concise. A few sentences per field.",
@@ -277,6 +280,7 @@ Your previously expressed key arguments: {points}
 
 The user has just asked a follow-up question:
 "{_compact(follow_up_question, 600)}"
+{language_requirement_block(response_language_code, response_language_name)}
 {knw}{ctx}
 Your task — answer the follow-up while staying coherent with your role and prior position.
 You may refine, strengthen, or change your stance, but you MUST report it explicitly
@@ -342,6 +346,8 @@ def build_followup_critique_prompt(
     evolving_positions: list[dict[str, Any]] | None = None,
     evidence_packets: list[EvidencePacket] | None = None,
     evidence_memory: dict[str, Any] | None = None,
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     """Critique prompt — never skips.
 
@@ -384,6 +390,7 @@ Previous synthesis (context):
 {_compact(previous_synthesis, 500)}
 {summary_block}{cycles_block}{evolution_block}{evidence_mem_block}
 The user just asked: "{_compact(follow_up_question, 400)}"
+{language_requirement_block(response_language_code, response_language_name)}
 
 Your own follow-up answer:
 {_compact(own_followup, 360)}
@@ -461,6 +468,8 @@ def build_updated_synthesis_prompt(
     evolving_positions: list[dict[str, Any]] | None = None,
     evidence_packets: list[EvidencePacket] | None = None,
     evidence_memory: dict[str, Any] | None = None,
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     depth = {
         "shallow": "Be concise.",
@@ -522,6 +531,7 @@ Previous synthesis (the conclusion before this follow-up cycle):
 {summary_block}{cycles_block}{evolution_block}{evidence_mem_block}
 The user just asked a follow-up question:
 "{_compact(follow_up_question, 400)}"
+{language_requirement_block(response_language_code, response_language_name)}
 
 Follow-up responses from agents:
 {resp_block}
@@ -645,6 +655,8 @@ def build_followup_critique_response_prompt(
     critiques_received: list[dict],
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     depth_instruction = {
         "shallow": "Be concise. 2-3 sentences per accepted/rejected point.",
@@ -664,6 +676,7 @@ role: {role}.
 Original debate question: {_compact(original_question, 280)}
 Previous debate synthesis: {_compact(previous_synthesis, 400)}
 Follow-up question: {_compact(follow_up_question, 400)}
+{language_requirement_block(response_language_code, response_language_name)}
 
 Your initial follow-up answer:
 {_compact(own_followup_response, 400)}
@@ -733,6 +746,8 @@ def build_followup_revised_position_prompt(
     critique_response: dict | None,
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     depth_instruction = {
         "shallow": "Be concise. A few sentences per section.",
@@ -752,6 +767,7 @@ role: {role}.
 Original debate question: {_compact(original_question, 280)}
 Previous debate synthesis: {_compact(previous_synthesis, 400)}
 Follow-up question: {_compact(follow_up_question, 400)}
+{language_requirement_block(response_language_code, response_language_name)}
 
 Your initial follow-up position: {_compact(initial_followup_position, 400)}
 

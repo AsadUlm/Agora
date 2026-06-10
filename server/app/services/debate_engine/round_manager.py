@@ -75,6 +75,7 @@ from app.services.llm.provider_error_classifier import (
     UNKNOWN_ERROR,
     DebateSafeError,
 )
+from app.services.language_detection import language_requirement_block, looks_like_language
 from app.services.retrieval.retrieval_service import RetrievalService
 from app.services.retrieval.evidence import (
     EvidencePacket,
@@ -1685,6 +1686,12 @@ class RoundManager:
             except TypeError:
                 # Backward compatibility: legacy single-arg builders.
                 prompt = plan.prompt_builder(chunks)
+            language_block = language_requirement_block(
+                ctx.response_language_code,
+                ctx.response_language_name,
+            )
+            if language_block and language_block not in prompt:
+                prompt = f"{prompt}\n\n{language_block}"
 
             # ── Evidence-injection visibility (single consolidated log line).
             # We capture the data once per agent turn so logs can be grepped
@@ -1739,7 +1746,15 @@ class RoundManager:
                 agent_index=plan.agent_index,
                 retrieved_chunks=chunks,
                 evidence_packets=packets,
-                extra_payload_fields=plan.extra_payload_fields,
+                extra_payload_fields={
+                    **(plan.extra_payload_fields or {}),
+                    "response_language_code": ctx.response_language_code,
+                    "response_language_name": ctx.response_language_name,
+                    "response_language_source": ctx.response_language_source,
+                    "response_language_confidence": ctx.response_language_confidence,
+                },
+                response_language_code=ctx.response_language_code,
+                response_language_name=ctx.response_language_name,
             )
 
         elapsed_s = time.perf_counter() - agent_started_perf
@@ -2160,6 +2175,8 @@ class RoundManager:
             debate_summary=debate_summary,
             followup_question=followup_question,
             has_evidence=has_evidence,
+            response_language_code=ctx.response_language_code,
+            response_language_name=ctx.response_language_name,
         )
 
         request = LLMRequest(
@@ -2217,6 +2234,8 @@ class RoundManager:
                         model=moderator_model,
                         temperature=0.0,
                         max_tokens=900,
+                        response_language_code=ctx.response_language_code,
+                        response_language_name=ctx.response_language_name,
                     )
                 except Exception as recovery_exc:  # noqa: BLE001
                     logger.warning(
@@ -2302,6 +2321,60 @@ class RoundManager:
                         normalized = retry_normalized
                         raw_content = retry_raw
 
+            verdict_text = _first_non_empty(
+                [
+                    normalized.payload.get("response", ""),
+                    normalized.payload.get("recommended_answer", ""),
+                    normalized.payload.get("one_sentence_takeaway", ""),
+                ]
+            )
+            if verdict_text and not looks_like_language(verdict_text, ctx.response_language_code):
+                repair_prompt = (
+                    f"Translate only the natural-language VALUES of this JSON into "
+                    f"{ctx.response_language_name}. Keep every JSON key unchanged in "
+                    "English. Preserve meaning, agent names, model/provider names, URLs, "
+                    "code identifiers, and technical identifiers. Return only valid JSON.\n\n"
+                    + json.dumps(normalized.payload, ensure_ascii=False)
+                )
+                try:
+                    language_response = await self._llm.generate(
+                        request.model_copy(update={"prompt": repair_prompt, "temperature": 0.0})
+                    )
+                    language_raw = (language_response.content or "").strip()
+                    language_normalized = normalize_round_output(
+                        round_number=round_record.round_number,
+                        raw_text=language_raw,
+                        round_type="synthesis_verdict",
+                    )
+                    repaired_text = _first_non_empty(
+                        [
+                            language_normalized.payload.get("response", ""),
+                            language_normalized.payload.get("recommended_answer", ""),
+                        ]
+                    )
+                    if repaired_text and looks_like_language(repaired_text, ctx.response_language_code):
+                        normalized = language_normalized
+                        raw_content = language_raw
+                except Exception:  # noqa: BLE001
+                    logger.warning("Moderator language repair failed; keeping original verdict.", exc_info=True)
+
+            final_verdict_text = _first_non_empty(
+                [
+                    normalized.payload.get("response", ""),
+                    normalized.payload.get("recommended_answer", ""),
+                ]
+            )
+            if final_verdict_text and not looks_like_language(
+                final_verdict_text,
+                ctx.response_language_code,
+            ):
+                warnings = normalized.payload.get("parse_warnings")
+                if not isinstance(warnings, list):
+                    warnings = []
+                if "response_language_mismatch" not in warnings:
+                    warnings.append("response_language_mismatch")
+                normalized.payload["parse_warnings"] = warnings
+
             normalized_payload = normalized.payload
         except LLMError as exc:
             error_msg = str(exc)
@@ -2359,6 +2432,10 @@ class RoundManager:
         normalized_payload["moderator_temperature"] = moderator_temperature
         normalized_payload["moderator_max_tokens"] = settings.MODERATOR_MAX_TOKENS
         normalized_payload["generation_status"] = generation_status
+        normalized_payload["response_language_code"] = ctx.response_language_code
+        normalized_payload["response_language_name"] = ctx.response_language_name
+        normalized_payload["response_language_source"] = ctx.response_language_source
+        normalized_payload["response_language_confidence"] = ctx.response_language_confidence
 
         content_json = json.dumps(normalized_payload, ensure_ascii=False)
 
@@ -2627,6 +2704,8 @@ class RoundManager:
         retrieved_chunks: list[RetrievedChunk] | None = None,
         evidence_packets: list[EvidencePacket] | None = None,
         extra_payload_fields: dict[str, Any] | None = None,
+        response_language_code: str = "en",
+        response_language_name: str = "English",
     ) -> AgentRoundResult:
         step_meta = {
             "round_number": round_record.round_number,
@@ -2794,6 +2873,8 @@ class RoundManager:
                         model=agent_ctx.model,
                         temperature=0.0,
                         max_tokens=700,
+                        response_language_code=response_language_code,
+                        response_language_name=response_language_name,
                     )
                 except Exception as recovery_exc:  # noqa: BLE001
                     logger.warning(
@@ -2978,6 +3059,8 @@ class RoundManager:
                             model=settings.MODERATOR_MODEL,
                             temperature=0.0,
                             max_tokens=900,
+                            response_language_code=response_language_code,
+                            response_language_name=response_language_name,
                         )
                     except Exception as repair_exc:  # noqa: BLE001
                         logger.warning(
@@ -3047,6 +3130,21 @@ class RoundManager:
                     )
 
             structured = normalized.payload
+            display_text = _first_non_empty(
+                [
+                    structured.get("response", ""),
+                    structured.get("recommended_answer", ""),
+                    structured.get("revised_position", ""),
+                    structured.get("main_argument", ""),
+                ]
+            )
+            if display_text and not looks_like_language(display_text, response_language_code):
+                warnings = structured.get("parse_warnings")
+                if not isinstance(warnings, list):
+                    warnings = []
+                if "response_language_mismatch" not in warnings:
+                    warnings.append("response_language_mismatch")
+                structured["parse_warnings"] = warnings
 
             # FIX-09: persist extra payload fields (e.g. follow-up question /
             # cycle number) so every saved message carries the context that

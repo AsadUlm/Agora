@@ -131,6 +131,10 @@ export interface DebateFollowUpDTO {
     chat_turn_id: string;
     cycle_number: number;
     question: string;
+    response_language_code?: string;
+    response_language_name?: string;
+    response_language_source?: string;
+    response_language_confidence?: number;
     created_at: string;
 }
 
@@ -142,6 +146,10 @@ export interface TurnDTO {
     synthesis_status?: "pending" | "running" | "completed" | "failed" | "skipped";
     request_id?: string | null;
     error?: GenerationErrorMetadata | null;
+    response_language_code?: string;
+    response_language_name?: string;
+    response_language_source?: string;
+    response_language_confidence?: number;
     started_at: string | null;
     ended_at: string | null;
     user_message: UserMessageDTO | null;
@@ -178,6 +186,10 @@ export interface DebateStartResponse {
     turn_id: string;
     question: string;
     status: string;
+    response_language_code?: string;
+    response_language_name?: string;
+    response_language_source?: string;
+    response_language_confidence?: number;
     ws_session_url: string;
     ws_turn_url: string;
 }

@@ -187,6 +187,10 @@ class FollowUpDTO(BaseModel):
     chat_turn_id: uuid.UUID
     cycle_number: int
     question: str
+    response_language_code: str = "en"
+    response_language_name: str = "English"
+    response_language_source: str = "fallback"
+    response_language_confidence: float = 0.6
     created_at: datetime
 
 
@@ -212,6 +216,10 @@ class TurnDTO(BaseModel):
     request_id: str | None = None
     error: dict[str, Any] | None = None
     execution_mode: str = "auto"        # auto | manual
+    response_language_code: str = "en"
+    response_language_name: str = "English"
+    response_language_source: str = "fallback"
+    response_language_confidence: float = 0.6
     started_at: datetime | None
     ended_at: datetime | None
     user_message: UserMessageDTO | None
@@ -251,6 +259,10 @@ class DebateStartResponse(BaseModel):
     turn_id: uuid.UUID
     question: str
     status: str  # always 'queued' — execution runs in the background
+    response_language_code: str = "en"
+    response_language_name: str = "English"
+    response_language_source: str = "fallback"
+    response_language_confidence: float = 0.6
     ws_session_url: str  # e.g. /ws/chat-sessions/{debate_id}
     ws_turn_url: str     # e.g. /ws/chat-turns/{turn_id}
 
@@ -282,6 +294,10 @@ class FollowUpCreateResponse(BaseModel):
     cycle_number: int
     question: str
     status: str  # always 'queued' — runs in the background
+    response_language_code: str = "en"
+    response_language_name: str = "English"
+    response_language_source: str = "fallback"
+    response_language_confidence: float = 0.6
     ws_session_url: str
     ws_turn_url: str
 

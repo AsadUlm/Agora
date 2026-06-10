@@ -63,6 +63,7 @@ from app.schemas.debate import (
 from app.schemas.dto import serialize_session, serialize_turn, _agents_index
 from app.services.execution_runner import run_turn_background
 from app.services.followup_runner import run_followup_cycle
+from app.services.language_detection import DetectedLanguage, detect_response_language, resolve_response_language
 from app.services.topic_guard.topic_guard_service import (
     CATEGORY_SUGGESTIONS,
     TopicGateDecision,
@@ -213,11 +214,16 @@ async def start_debate(
 
     # ── 3. Create ChatTurn (queued — background task transitions it to running)
     mode = request.execution_mode if request.execution_mode in ("auto", "manual") else "auto"
+    detected_language = detect_response_language(request.question)
     turn = ChatTurn(
         chat_session_id=session.id,
         turn_index=1,
         status=ChatTurnStatus.queued,
         execution_mode=mode,
+        response_language_code=detected_language.code,
+        response_language_name=detected_language.name,
+        response_language_source=detected_language.source,
+        response_language_confidence=detected_language.confidence,
     )
     db.add(turn)
     await db.flush()
@@ -253,6 +259,10 @@ async def start_debate(
         turn_id=turn.id,
         question=request.question,
         status="queued",
+        response_language_code=detected_language.code,
+        response_language_name=detected_language.name,
+        response_language_source=detected_language.source,
+        response_language_confidence=detected_language.confidence,
         ws_session_url=f"/ws/chat-sessions/{session.id}",
         ws_turn_url=f"/ws/chat-turns/{turn.id}",
     )
@@ -404,11 +414,29 @@ async def create_follow_up(
     cycle_number = max(existing_max_cycle + 1, 2)
 
     # 4. Persist follow-up record
+    previous_follow_up_row = await db.execute(
+        select(DebateFollowUp)
+        .where(DebateFollowUp.chat_turn_id == turn.id)
+        .order_by(DebateFollowUp.cycle_number.desc())
+        .limit(1)
+    )
+    previous_follow_up = previous_follow_up_row.scalar_one_or_none()
+    previous_language = DetectedLanguage(
+        code=previous_follow_up.response_language_code if previous_follow_up else turn.response_language_code,
+        name=previous_follow_up.response_language_name if previous_follow_up else turn.response_language_name,
+        confidence=previous_follow_up.response_language_confidence if previous_follow_up else turn.response_language_confidence,
+        source=previous_follow_up.response_language_source if previous_follow_up else turn.response_language_source,
+    )
+    detected_language = resolve_response_language(question, previous_language)
     follow_up = DebateFollowUp(
         chat_session_id=debate_id,
         chat_turn_id=turn.id,
         question=question,
         cycle_number=cycle_number,
+        response_language_code=detected_language.code,
+        response_language_name=detected_language.name,
+        response_language_source=detected_language.source,
+        response_language_confidence=detected_language.confidence,
     )
     db.add(follow_up)
     await db.flush()
@@ -429,6 +457,10 @@ async def create_follow_up(
         follow_up_question=question,
         on_event=ws_manager.emit,
         session_factory=session_factory,
+        response_language_code=detected_language.code,
+        response_language_name=detected_language.name,
+        response_language_source=detected_language.source,
+        response_language_confidence=detected_language.confidence,
     )
 
     return FollowUpCreateResponse(
@@ -438,6 +470,10 @@ async def create_follow_up(
         cycle_number=cycle_number,
         question=question,
         status="queued",
+        response_language_code=detected_language.code,
+        response_language_name=detected_language.name,
+        response_language_source=detected_language.source,
+        response_language_confidence=detected_language.confidence,
         ws_session_url=f"/ws/chat-sessions/{debate_id}",
         ws_turn_url=f"/ws/chat-turns/{turn.id}",
     )

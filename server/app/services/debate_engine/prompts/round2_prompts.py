@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
+from app.services.language_detection import language_requirement_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
     ANTI_STRAWMAN_BLOCK,
@@ -62,6 +63,8 @@ def build_critique_prompt(
     knowledge_mode: str = "shared_session_docs",
     knowledge_strict: bool = False,
     evidence_packets: list[EvidencePacket] | None = None,
+    response_language_code: str = "",
+    response_language_name: str = "",
 ) -> str:
     """
     Build the Round 2 prompt for an agent critiquing its deterministic target.
@@ -98,6 +101,7 @@ Challenge the other panelists' actual arguments — never narrate instructions, 
 role: {role}.
 {persona_block(role)}
 Question: {question}
+{language_requirement_block(response_language_code, response_language_name)}
 
 Your opening stance: {_compact_text(own_stance, 220)}
 {_knowledge_instruction(knowledge_mode, knowledge_strict, bool(evidence_packets or retrieved_chunks or []))}{(format_evidence_block(evidence_packets or []) + format_evidence_usage_instructions()) if evidence_packets else _format_context_block(retrieved_chunks or [])}
