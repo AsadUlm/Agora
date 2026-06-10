@@ -73,8 +73,11 @@ export default function CycleNavigator() {
         for (const n of graph.nodes) {
             if (n.cycle && n.cycle >= 1) set.add(n.cycle);
         }
+        for (const followUp of session?.latest_turn?.follow_ups ?? []) {
+            set.add(followUp.cycle_number);
+        }
         return Array.from(set).sort((a, b) => a - b);
-    }, [graph.nodes]);
+    }, [graph.nodes, session?.latest_turn?.follow_ups]);
 
     // Map each cycle to a short user-facing label.
     const followUps = session?.latest_turn?.follow_ups ?? [];
@@ -83,13 +86,13 @@ export default function CycleNavigator() {
 
     return (
         <div className="flex flex-col min-h-0">
-            <div className="px-4 py-3 border-b border-agora-border shrink-0">
+            <div className="px-1 py-2.5 border-b border-white/5 shrink-0">
                 <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold truncate">
                     Debate Cycles
                 </h2>
             </div>
 
-            <div className="overflow-y-auto space-y-1.5 max-h-[35vh] px-3 py-3 pr-0.5">
+            <div className="overflow-y-auto space-y-2 max-h-[35vh] py-2.5">
             {cycles.map((cycle, idx) => {
                 const isSelected = cycle === selectedCycle;
                 const isOriginal = cycle === 1;
@@ -113,13 +116,13 @@ export default function CycleNavigator() {
                         transition={{ delay: idx * 0.04 }}
                         onClick={() => handleCycleClick(cycle)}
                         className={cn(
-                            "w-full text-left px-3 py-2 rounded-lg transition-all duration-200 border",
+                            "w-full text-left p-3 rounded-xl transition-all duration-200 border",
                             isSelected
                                 ? "bg-violet-500/15 border-violet-400/40 shadow-md shadow-violet-900/20"
                                 : "bg-agora-surface-light/30 border-transparent hover:bg-agora-surface-light/60 hover:border-agora-border",
                         )}
                     >
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
                             <div
                                 className={cn(
                                     "w-1.5 h-1.5 rounded-full flex-shrink-0",
@@ -128,7 +131,7 @@ export default function CycleNavigator() {
                             />
                             <div
                                 className={cn(
-                                    "text-[11px] font-semibold tracking-wide",
+                                    "min-w-0 text-[11px] font-semibold tracking-wide truncate",
                                     isSelected ? "text-violet-100" : "text-agora-text",
                                 )}
                             >
@@ -137,7 +140,7 @@ export default function CycleNavigator() {
                             {semantic && (
                                 <div
                                     className={cn(
-                                        "ml-auto text-[10px] font-medium px-1.5 py-0.5 rounded-md border truncate max-w-[55%]",
+                                        "ml-auto shrink-0 text-[10px] font-medium px-2 py-0.5 rounded-md border truncate max-w-[50%]",
                                         isSelected
                                             ? "bg-violet-500/20 text-violet-100 border-violet-400/40"
                                             : "bg-agora-surface-light/60 text-agora-text-muted border-agora-border",
@@ -150,7 +153,7 @@ export default function CycleNavigator() {
                         </div>
                         {subtitle && (
                             <div
-                                className="mt-0.5 text-[10px] text-agora-text-muted truncate leading-snug"
+                                className="mt-1 pl-3.5 text-[10px] text-agora-text-muted line-clamp-2 leading-snug"
                                 title={subtitle}
                             >
                                 {subtitle}

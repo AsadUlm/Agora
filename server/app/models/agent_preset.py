@@ -1,4 +1,4 @@
-"""Agent preset — reusable agent configuration owned by a user."""
+"""Agent preset — reusable user-owned or built-in agent configuration."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    JSON,
     String,
     Text,
     Uuid,
@@ -23,9 +24,8 @@ from app.db.base import Base
 class AgentPreset(Base):
     """Reusable agent configuration template (a.k.a. preset).
 
-    System presets are not stored in this table — they are exposed as
-    constants from ``app.services.agent_presets.system_presets`` and merged
-    into the API response. Only user-created presets persist here.
+    System presets are persisted with a stable ``system_key`` and no owner.
+    User-created presets remain owner-scoped and never receive a system key.
     """
 
     __tablename__ = "agent_presets"
@@ -33,17 +33,21 @@ class AgentPreset(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
+    )
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    system_key: Mapped[str | None] = mapped_column(
+        String(80), nullable=True, unique=True, index=True
     )
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Visibility: "private" | "shared" — system presets bypass this table.
+    # Visibility: "private" | "shared" | "system".
     visibility: Mapped[str] = mapped_column(
         String(20), nullable=False, default="private"
     )
@@ -62,7 +66,10 @@ class AgentPreset(Base):
         String(40), nullable=False, default="shared_session_docs"
     )
     document_ids: Mapped[list[str]] = mapped_column(
-        ARRAY(String), nullable=False, default=list, server_default="{}"
+        JSON().with_variant(ARRAY(String), "postgresql"),
+        nullable=False,
+        default=list,
+        server_default="{}",
     )
     strict_grounding: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 

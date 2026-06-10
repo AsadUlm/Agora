@@ -65,6 +65,8 @@ class AgentPresetOut(BaseModel):
 
     id: str
     user_id: Optional[str] = None
+    is_system: bool = False
+    system_key: Optional[str] = None
 
     name: str
     description: Optional[str] = None

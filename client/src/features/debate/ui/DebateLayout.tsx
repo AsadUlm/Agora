@@ -1,17 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import TopTopicBar from "./TopTopicBar";
-import DebateTimeline from "./DebateTimeline";
 import DebateGraphCanvas from "./DebateGraphCanvas";
 import RightSidebar from "./RightSidebar";
 import PlaybackBar from "./PlaybackBar";
-import NodeDetailDrawer from "./NodeDetailDrawer";
 import FollowUpInput from "./FollowUpInput";
-import { useIsMobile } from "@/hooks/useMediaQuery";
+import { useIsMobile, useIsTablet } from "@/hooks/useMediaQuery";
 import { cn } from "@/shared/lib/cn";
 import { useDebateStore } from "@/features/debate/model/debate.store";
 import { useDebateViewState } from "@/features/debate/model/useDebateViewState";
 import type { DebateBannerState } from "@/features/debate/model/debate-view-state";
+import { useDebateFocusStore } from "@/features/debate/model/debate-focus.store";
+import { useSelectedCycleState } from "@/features/debate/model/useSelectedCycleState";
 
 function LifecycleBanner({ banner, onReload }: { banner: DebateBannerState; onReload?: () => void }) {
     const [dismissed, setDismissed] = useState(false);
@@ -61,44 +61,77 @@ function LifecycleBanner({ banner, onReload }: { banner: DebateBannerState; onRe
     );
 }
 
+export type WorkspaceTab = "overview" | "debate_process" | "followup" | "debug";
+
 export default function DebateLayout() {
     const isMobile = useIsMobile();
+    const isTablet = useIsTablet();
     const view = useDebateViewState();
+    const { cycle, state: cycleState } = useSelectedCycleState();
     const loadDebate = useDebateStore((s) => s.loadDebate);
     const debateId = useDebateStore((s) => s.debateId);
+
+    const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("overview");
+
+    // Auto-switch to Debate Process tab when the user clicks a graph element
+    const focusTarget = useDebateFocusStore((s) => s.focusTarget);
+    useEffect(() => {
+        if (focusTarget === null) return;
+        const timer = window.setTimeout(() => setWorkspaceTab("debate_process"), 0);
+        return () => window.clearTimeout(timer);
+    }, [focusTarget]);
 
     const handleReload = debateId
         ? () => void loadDebate(debateId)
         : undefined;
 
-    if (isMobile) {
-        return <MobileDebateLayout banner={view.banner} onReload={handleReload} />;
+    const handleTabChange = (tab: WorkspaceTab) => {
+        setWorkspaceTab(tab);
+    };
+    const selectedBanner: DebateBannerState = cycleState.status === "partially_completed"
+        ? {
+            type: "warning",
+            title: `${cycle.title} partially completed`,
+            message: cycleState.hasUpdatedSynthesis
+                ? "Updated synthesis is available, but some follow-up exchange stages are incomplete."
+                : "Updated synthesis was not generated. Available cycle results remain visible.",
+        }
+        : cycleState.status === "failed"
+            ? {
+                type: "error",
+                title: `${cycle.title} failed`,
+                message: view.error?.userMessage ?? "This cycle ended without usable results.",
+            }
+            : view.derivedStatus === "interrupted" && cycleState.status === "running"
+                ? view.banner
+                : { type: "none", title: "", message: "" };
+
+    if (isMobile || isTablet) {
+        return <CompactDebateLayout banner={selectedBanner} onReload={handleReload} />;
     }
 
     return (
         <div className="h-screen w-full flex flex-col bg-agora-bg overflow-hidden">
             {/* Generation failure banner — shown INSIDE the page, not as a full-page error */}
-            <LifecycleBanner banner={view.banner} onReload={handleReload} />
+            <LifecycleBanner banner={selectedBanner} onReload={handleReload} />
             {/* Top Bar */}
             <TopTopicBar />
 
-            {/* Main Area: 3-column */}
+            {/* Main Area: 2-column */}
             <div className="flex-1 flex min-h-0">
-                {/* Left: Timeline */}
-                <DebateTimeline />
-
-                {/* Center: Canvas + follow-up input, drawer anchored here */}
+                {/* Center: graph is a visual map; details live in the right panel. */}
                 <div className="flex-1 relative flex flex-col min-w-0 min-h-0 overflow-hidden">
                     <div className="flex-1 relative min-h-0">
                         <DebateGraphCanvas />
                     </div>
                     <FollowUpInput />
-                    {/* Drawer is absolute within this column so it covers canvas + follow-up */}
-                    <NodeDetailDrawer />
                 </div>
 
-                {/* Right: Unified panel (Moderator / Evolution / Raw) */}
-                <RightSidebar />
+                {/* Right: Unified panel (Overview, Debate Process, Follow-up, Debug) */}
+                <RightSidebar
+                    activeTab={workspaceTab}
+                    onTabChange={handleTabChange}
+                />
             </div>
             {/* PlaybackBar spans full width below all three columns */}
             <PlaybackBar />
@@ -106,16 +139,25 @@ export default function DebateLayout() {
     );
 }
 
-type MobilePanel = "rounds" | "panels" | null;
-
-function MobileDebateLayout({
+function CompactDebateLayout({
     banner,
     onReload,
 }: {
     banner: DebateBannerState;
     onReload?: () => void;
 }) {
-    const [panel, setPanel] = useState<MobilePanel>(null);
+    const [insightsOpen, setInsightsOpen] = useState(false);
+    const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("overview");
+    const focusTarget = useDebateFocusStore((s) => s.focusTarget);
+
+    useEffect(() => {
+        if (!focusTarget) return;
+        const timer = window.setTimeout(() => {
+            setWorkspaceTab("debate_process");
+            setInsightsOpen(true);
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, [focusTarget]);
 
     return (
         <div className="h-dvh w-full flex flex-col bg-agora-bg overflow-hidden">
@@ -127,20 +169,10 @@ function MobileDebateLayout({
                 <div className="flex-1 relative min-h-0">
                     <DebateGraphCanvas />
 
-                    {/* Floating panel toggles */}
-                    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-between px-3">
+                    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-end px-3">
                         <button
-                            onClick={() => setPanel("rounds")}
-                            className="pointer-events-auto flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium bg-agora-surface/90 border border-agora-border text-agora-text shadow-lg backdrop-blur-sm"
-                        >
-                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                                <path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                            </svg>
-                            Stages
-                        </button>
-                        <button
-                            onClick={() => setPanel("panels")}
-                            className="pointer-events-auto flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-medium bg-agora-surface/90 border border-agora-border text-agora-text shadow-lg backdrop-blur-sm"
+                            onClick={() => setInsightsOpen(true)}
+                            className="pointer-events-auto min-h-11 flex items-center gap-2 px-4 rounded-full text-xs font-semibold bg-violet-600 border border-violet-400/40 text-white shadow-lg shadow-violet-950/40 backdrop-blur-sm"
                         >
                             Insights
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -151,14 +183,13 @@ function MobileDebateLayout({
                     </div>
                 </div>
                 <FollowUpInput />
-                <NodeDetailDrawer />
             </div>
 
             <PlaybackBar />
 
             {/* Bottom-sheet drawers for Timeline / Right panels */}
             <AnimatePresence>
-                {panel && (
+                {insightsOpen && (
                     <>
                         <motion.div
                             initial={{ opacity: 0 }}
@@ -166,25 +197,23 @@ function MobileDebateLayout({
                             exit={{ opacity: 0 }}
                             transition={{ duration: 0.2 }}
                             className="fixed inset-0 z-40 bg-black/60"
-                            onClick={() => setPanel(null)}
+                            onClick={() => setInsightsOpen(false)}
                         />
                         <motion.div
                             initial={{ y: "100%" }}
                             animate={{ y: 0 }}
                             exit={{ y: "100%" }}
                             transition={{ type: "tween", duration: 0.26 }}
-                            className={cn(
-                                "fixed inset-x-0 bottom-0 z-50 flex flex-col border-t border-agora-border bg-agora-surface overflow-hidden",
-                                panel === "panels" ? "h-dvh" : "h-[75dvh] rounded-t-2xl",
-                            )}
+                            className="fixed inset-x-0 bottom-0 z-50 flex h-[min(80dvh,760px)] flex-col overflow-hidden rounded-t-2xl border-t border-agora-border bg-agora-surface shadow-2xl"
                         >
+                            <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-white/20" />
                             <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-agora-border">
                                 <span className="text-xs font-semibold uppercase tracking-widest text-agora-text-muted">
-                                    {panel === "rounds" ? "Stages" : "Insights"}
+                                    Insights
                                 </span>
                                 <button
-                                    onClick={() => setPanel(null)}
-                                    className="w-8 h-8 flex items-center justify-center rounded-lg text-agora-text-muted hover:text-white"
+                                    onClick={() => setInsightsOpen(false)}
+                                    className="w-11 h-11 flex items-center justify-center rounded-lg text-agora-text-muted hover:text-white"
                                     aria-label="Close"
                                 >
                                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -193,11 +222,7 @@ function MobileDebateLayout({
                                 </button>
                             </div>
                             <div className="flex-1 min-h-0 overflow-hidden">
-                                {panel === "rounds" ? (
-                                    <DebateTimeline mobile />
-                                ) : (
-                                    <RightSidebar mobile />
-                                )}
+                                <RightSidebar mobile activeTab={workspaceTab} onTabChange={setWorkspaceTab} />
                             </div>
                         </motion.div>
                     </>

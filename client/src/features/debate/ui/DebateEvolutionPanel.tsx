@@ -24,6 +24,7 @@ import SynthesisVerdictCard, {
     isSynthesisVerdictPayload,
     type SynthesisVerdictPayload,
 } from "./SynthesisVerdictCard";
+import { usePlaybackStore } from "../model/playback.store";
 
 type SynthesisPayload = Record<string, unknown>;
 
@@ -85,6 +86,7 @@ function ChangeBadge({ value }: { value: "yes" | "no" | "initial" | null }) {
 
 export default function DebateEvolutionPanel() {
     const session = useDebateStore((s) => s.session);
+    const selectedCycle = usePlaybackStore((s) => s.selectedCycle);
     const turn = session?.latest_turn ?? null;
 
     const items = useMemo<CycleEvolutionItem[]>(() => {
@@ -144,6 +146,7 @@ export default function DebateEvolutionPanel() {
         }
         return result;
     }, [turn, session]);
+    const selectedItems = items.filter((item) => item.cycleNumber === selectedCycle);
 
     if (!turn) {
         return (
@@ -161,6 +164,14 @@ export default function DebateEvolutionPanel() {
         );
     }
 
+    if (selectedItems.length === 0) {
+        return (
+            <div className="w-full h-full bg-agora-surface/40 p-4 text-xs text-agora-text-muted">
+                The selected follow-up cycle is still generating or has not been fully loaded.
+            </div>
+        );
+    }
+
     return (
         <div className="w-full h-full bg-agora-surface/40 flex flex-col">
             <div className="px-4 py-3 border-b border-agora-border">
@@ -174,7 +185,7 @@ export default function DebateEvolutionPanel() {
 
             <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
                 <SessionRagSummary />
-                {items.map((item, idx) => {
+                {selectedItems.map((item) => {
                     const conclusion =
                         pickString(item.payload, [
                             "updated_conclusion",
@@ -203,9 +214,9 @@ export default function DebateEvolutionPanel() {
                     const confidence = pickString(item.payload, ["confidence_level", "confidence"]);
 
                     const changeBadgeValue: "yes" | "no" | "initial" | null =
-                        idx === 0 ? "initial" : pickConclusionChanged(item.payload);
+                        item.cycleNumber === 1 ? "initial" : pickConclusionChanged(item.payload);
 
-                    const isLast = idx === items.length - 1;
+                    const isLast = true;
 
                     return (
                         <div key={item.cycleNumber} className="relative">
@@ -216,18 +227,14 @@ export default function DebateEvolutionPanel() {
                             <div
                                 className={cn(
                                     "relative rounded-lg border bg-agora-surface-light/40 p-3 space-y-2.5",
-                                    idx === items.length - 1
-                                        ? "border-violet-500/40"
-                                        : "border-agora-border",
+                                    "border-violet-500/40",
                                 )}
                             >
                                 {/* dot */}
                                 <div
                                     className={cn(
                                         "absolute -left-[7px] top-3 h-3 w-3 rounded-full border-2",
-                                        idx === items.length - 1
-                                            ? "bg-violet-500 border-violet-300"
-                                            : "bg-agora-surface border-violet-500/50",
+                                        "bg-violet-500 border-violet-300",
                                     )}
                                     aria-hidden
                                 />
@@ -264,7 +271,7 @@ export default function DebateEvolutionPanel() {
                                     <p className="text-[12px] text-white leading-relaxed text-justify">{conclusion}</p>
                                 </div>
 
-                                {(previousPos || newPos) && idx > 0 && (
+                                {(previousPos || newPos) && item.cycleNumber > 1 && (
                                     <div className="space-y-1">
                                         {previousPos && (
                                             <div className="text-[11px] text-agora-text-muted">
@@ -281,7 +288,7 @@ export default function DebateEvolutionPanel() {
                                     </div>
                                 )}
 
-                                {positionShift && idx > 0 && (
+                                {positionShift && item.cycleNumber > 1 && (
                                     <div>
                                         <div className="text-[9px] uppercase tracking-widest text-agora-text-muted font-semibold mb-0.5">
                                             Reason for shift

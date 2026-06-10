@@ -16,9 +16,17 @@ import { useDebateStore } from "../model/debate.store";
 import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import { useDebateViewState } from "../model/useDebateViewState";
 import { extractFullResponse, formatFinalSummary } from "../model/formatters";
-import type { CritiqueTraceItem, CritiqueResponseTraceItem, DebateTrace, RevisedPositionTraceItem, TurnDTO } from "../api/debate.types";
-import DebateStepTimeline from "./DebateStepTimeline";
+import type { AgentDTO, CritiqueTraceItem, CritiqueResponseTraceItem, DebateTrace, RevisedPositionTraceItem, TurnDTO } from "../api/debate.types";
 import DebateStoryBlock from "./DebateStoryBlock";
+import DebateTimeline from "./DebateTimeline";
+import InlineActionButton from "./primitives/InlineActionButton";
+import SectionCard from "./primitives/SectionCard";
+import AgentBadge from "./primitives/AgentBadge";
+import { usePlaybackStore } from "../model/playback.store";
+import { getSelectedCycle } from "../model/debate-cycle.selectors";
+import { buildDebateProcessModel } from "../model/debate-process.selectors";
+import Round3SynthesisVerdict from "./Round3SynthesisVerdict";
+import { useSelectedCycleState } from "../model/useSelectedCycleState";
 
 interface DebateOverviewPanelProps {
     onNavigate?: (tab: "debate_process" | "followup" | "debug") => void;
@@ -29,14 +37,17 @@ export default function DebateOverviewPanel({ onNavigate }: DebateOverviewPanelP
     const execution = useDebateExecutionState();
     const view = useDebateViewState();
     const turn = session?.latest_turn ?? null;
+    const selectedCycle = usePlaybackStore((s) => s.selectedCycle);
+    const { cycle, state: cycleState } = useSelectedCycleState();
+    const process = buildDebateProcessModel(session, selectedCycle);
 
-    const isRunning = execution.debateStatus === "running";
-    const isCompleted = execution.debateStatus === "completed";
-    const isFailed = execution.debateStatus === "failed";
-    const isPartial = execution.debateStatus === "partially_completed";
-    const isQueued = execution.debateStatus === "queued";
+    const isRunning = cycleState.status === "running";
+    const isCompleted = cycleState.status === "completed";
+    const isFailed = cycleState.status === "failed";
+    const isPartial = cycleState.status === "partially_completed";
+    const isQueued = cycleState.status === "queued";
 
-    if (isQueued || (!turn && !isRunning)) {
+    if ((isQueued && cycle.cycleType === "original") || (!turn && !isRunning)) {
         return (
             <div className="flex items-center justify-center h-32 text-white/30 text-sm">
                 No debate in progress.
@@ -46,23 +57,99 @@ export default function DebateOverviewPanel({ onNavigate }: DebateOverviewPanelP
 
     return (
         <div className="space-y-4">
+            {/* ── Debate Timeline (Progress) ── */}
+            <SectionCard>
+                <DebateTimeline />
+            </SectionCard>
+
             {/* ── Running state ── */}
             {isRunning && (
-                <RunningOverview execution={execution} />
+                cycle.cycleType === "original"
+                    ? <RunningOverview execution={execution} />
+                    : (
+                        <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3 py-3">
+                            <p className="text-[12px] font-semibold text-indigo-200">
+                                {cycle.title} is running
+                            </p>
+                            <p className="mt-1 text-[11px] text-indigo-300/75">
+                                Active: {cycleState.activeStageLabel ?? "preparing follow-up cycle"}
+                            </p>
+                        </div>
+                    )
             )}
 
             {/* ── Failure state ── */}
             {(isFailed || isPartial) && (
                 <div className={cn("rounded-lg border px-3 py-3", isPartial ? "border-amber-500/40 bg-amber-500/10" : "border-red-500/40 bg-red-500/10")}>
-                    <p className={cn("text-[12px] font-semibold mb-1", isPartial ? "text-amber-300" : "text-red-300")}>{view.banner.title}</p>
-                    <p className={cn("text-[11px]", isPartial ? "text-amber-200/70" : "text-red-200/70")}>{view.banner.message}</p>
+                    <p className={cn("text-[12px] font-semibold mb-1", isPartial ? "text-amber-300" : "text-red-300")}>
+                        {isPartial ? `${cycle.title} partially completed` : `${cycle.title} failed`}
+                    </p>
+                    <p className={cn("text-[11px]", isPartial ? "text-amber-200/70" : "text-red-200/70")}>
+                        {isPartial && !cycleState.hasUpdatedSynthesis
+                            ? "Updated synthesis was not generated. Available follow-up results remain visible."
+                            : view.banner.message || "This cycle ended without usable results."}
+                    </p>
                 </div>
             )}
 
             {/* ── Completed state ── */}
-            {(isCompleted || isPartial) && turn && (
+            {cycle.cycleType === "followup" && (
+                <FollowUpCycleOverview cycle={cycle} cycleState={cycleState} process={process} />
+            )}
+
+            {(isCompleted || isPartial) && turn && cycle.cycleType === "original" && (
                 <CompletedOverview turn={turn} onNavigate={onNavigate} />
             )}
+        </div>
+    );
+}
+
+function FollowUpCycleOverview({
+    cycle,
+    cycleState,
+    process,
+}: {
+    cycle: ReturnType<typeof getSelectedCycle>;
+    cycleState: ReturnType<typeof useSelectedCycleState>["state"];
+    process: ReturnType<typeof buildDebateProcessModel>;
+}) {
+    const agents = useDebateStore((s) => s.session?.agents ?? []);
+    const hasData = cycle.rounds.length > 0;
+
+    return (
+        <div className="space-y-4">
+            <SectionCard>
+                <p className="text-[10px] uppercase tracking-widest text-violet-300 font-semibold">Follow-up Question</p>
+                <p className="mt-2 text-sm text-white/85 leading-relaxed">
+                    {cycle.question || "Follow-up question is not available in the loaded snapshot."}
+                </p>
+            </SectionCard>
+
+            {!hasData && (
+                <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-3 text-xs text-amber-100">
+                    This follow-up cycle is still generating or has not been fully loaded.
+                </div>
+            )}
+
+            {hasData && !process.round3.moderatorVerdict && (
+                <div className={cn(
+                    "rounded-xl border p-3 text-xs",
+                    cycleState.status === "running"
+                        ? "border-indigo-500/25 bg-indigo-500/5 text-indigo-100"
+                        : "border-amber-500/25 bg-amber-500/5 text-amber-100",
+                )}>
+                    {cycleState.status === "running"
+                        ? "Follow-up responses are available. Updated synthesis is still being generated."
+                        : "Updated synthesis was not generated. Available follow-up responses are shown above."}
+                </div>
+            )}
+
+            <div>
+                <p className="text-[10px] uppercase tracking-widest text-white/40 font-semibold mb-2">Updated Verdict</p>
+                <Round3SynthesisVerdict process={process} />
+            </div>
+
+            <CompactAgentsSummary agents={agents} />
         </div>
     );
 }
@@ -70,7 +157,7 @@ export default function DebateOverviewPanel({ onNavigate }: DebateOverviewPanelP
 // ── Running overview ──────────────────────────────────────────────────────────
 
 function RunningOverview({ execution }: { execution: ReturnType<typeof useDebateExecutionState> }) {
-    const { stages, is5Stage, currentAgentRole } = execution;
+    const { stages, currentAgentRole } = execution;
 
     const activeStageObj = stages?.find((s) => s.status === "running") ?? null;
     const liveMessages = activeStageObj?.activityMessages ?? [];
@@ -112,17 +199,11 @@ function RunningOverview({ execution }: { execution: ReturnType<typeof useDebate
                 )}
             </div>
 
-            {/* 5-stage pipeline (live) */}
-            {is5Stage && (
-                <div className="rounded-xl border border-white/10 bg-white/3 px-3 py-3">
-                    <DebateStepTimeline />
-                </div>
-            )}
         </div>
     );
 }
 
-function CompactAgentsSummary({ agents }: { agents: any[] }) {
+function CompactAgentsSummary({ agents }: { agents: AgentDTO[] }) {
     if (!agents || agents.length === 0) return null;
     return (
         <div className="rounded-xl border border-white/10 bg-white/3 px-3 py-3 space-y-2">
@@ -140,7 +221,7 @@ function CompactAgentsSummary({ agents }: { agents: any[] }) {
                     const model = slash >= 0 ? agent.model.slice(slash + 1) : agent.model || "Not specified";
                     return (
                         <div key={agent.id} className="flex items-center justify-between px-2 py-1 rounded bg-white/5 border border-white/5">
-                            <span className="text-[11px] font-medium text-white/70">{role}</span>
+                            <AgentBadge>{role}</AgentBadge>
                             <span className="text-[10px] text-white/40 font-mono">{model}</span>
                         </div>
                     );
@@ -159,17 +240,13 @@ function CompletedOverview({
     turn: TurnDTO;
     onNavigate?: DebateOverviewPanelProps["onNavigate"];
 }) {
-    const trace = turn.debate_trace;
-    const execution = useDebateExecutionState();
     const agents = useDebateStore((s) => s.session?.agents ?? []);
     const [summaryExpanded, setSummaryExpanded] = useState(false);
     const finalSummaryText = stringifyFinalSummary(turn.final_summary);
+    const trace = turn.debate_trace;
 
     return (
         <div className="space-y-4">
-            {/* ── Debate Process Summary (3-phase) ── */}
-            <DebateProcessSummary trace={trace ?? null} />
-
             {/* ── Debating Agents Summary (compact) ── */}
             <CompactAgentsSummary agents={agents} />
 
@@ -178,13 +255,6 @@ function CompletedOverview({
 
             {/* ── Debate Story (narrative) ── */}
             {trace && <DebateStoryBlock turn={turn} />}
-
-            {/* ── Stage Pipeline (compact) ── */}
-            {execution.is5Stage && (
-                <div className="rounded-xl border border-white/10 bg-white/3 px-3 py-3">
-                    <DebateStepTimeline compact />
-                </div>
-            )}
 
             {/* ── Final Answer ── */}
             {finalSummaryText && (
@@ -208,83 +278,6 @@ function stringifyFinalSummary(summary: TurnDTO["final_summary"]): string {
     return fullResponse || formatFinalSummary(raw);
 }
 
-// ── Debate Process Summary (3-phase model) ────────────────────────────────────
-
-function DebateProcessSummary({ trace }: { trace: DebateTrace | null }) {
-    const hasCritiques = (trace?.critiques?.length ?? 0) > 0;
-    const hasResponses = (trace?.critique_responses?.length ?? 0) > 0;
-    const hasRevisions = (trace?.revised_positions?.length ?? 0) > 0;
-    const changedCount = trace?.revised_positions?.filter((r) => r.changed).length ?? 0;
-    const heldCount = trace?.revised_positions?.filter((r) => !r.changed).length ?? 0;
-    const critiqueCount = trace?.critiques?.length ?? 0;
-
-    const phases = [
-        {
-            number: 1,
-            label: "Opening Positions",
-            icon: "💬",
-            color: "indigo",
-            description: "Agents first answered independently.",
-            done: true,
-        },
-        {
-            number: 2,
-            label: "Debate Exchange",
-            icon: "⚔️",
-            color: "rose",
-            description: hasCritiques
-                ? `${critiqueCount} critique${critiqueCount !== 1 ? "s" : ""} exchanged${changedCount > 0 ? `, ${changedCount} position${changedCount !== 1 ? "s" : ""} revised` : heldCount > 0 ? `, ${heldCount} held` : ""}.`
-                : "Agents challenged each other, responded, and revised positions.",
-            done: hasCritiques || hasResponses || hasRevisions,
-        },
-        {
-            number: 3,
-            label: "Final Decision",
-            icon: "✨",
-            color: "violet",
-            description: "The moderator synthesized the strongest revised arguments into the final answer.",
-            done: true,
-        },
-    ];
-
-    return (
-        <div className="rounded-xl border border-white/10 bg-white/3 px-3 py-3 space-y-3">
-            <div className="flex items-center gap-2">
-                <span className="text-sm">📋</span>
-                <h3 className="text-[12px] font-semibold text-white/80">Debate Process</h3>
-                <span className="text-[9px] text-white/30 ml-auto uppercase tracking-wide">3 phases · 5 internal stages</span>
-            </div>
-            <div className="space-y-2">
-                {phases.map((phase, i) => {
-                    const colorClasses: Record<string, { border: string; icon: string; label: string }> = {
-                        indigo: { border: "border-indigo-500/30", icon: "bg-indigo-500/20", label: "text-indigo-200" },
-                        rose:   { border: "border-rose-500/30",   icon: "bg-rose-500/20",   label: "text-rose-200" },
-                        violet: { border: "border-violet-500/30", icon: "bg-violet-500/20", label: "text-violet-200" },
-                    };
-                    const c = colorClasses[phase.color];
-                    return (
-                        <div key={i} className={cn("flex items-start gap-2.5 px-2.5 py-2 rounded-lg border", c.border, "bg-white/3")}>
-                            <div className={cn("w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-sm", c.icon)}>
-                                {phase.icon}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <p className={cn("text-[11px] font-semibold", c.label)}>
-                                    Phase {phase.number}: {phase.label}
-                                </p>
-                                <p className="text-[11px] text-white/55 mt-0.5 leading-snug">
-                                    {phase.description}
-                                </p>
-                            </div>
-                            {phase.done && (
-                                <span className="text-emerald-400 text-xs shrink-0 mt-0.5">✓</span>
-                            )}
-                        </div>
-                    );
-                })}
-            </div>
-        </div>
-    );
-}
 
 // ── Debate Exchange Highlights ────────────────────────────────────────────────
 
@@ -392,13 +385,12 @@ function ExchangeHighlights({
                     ))}
 
                     {onNavigate && (
-                        <button
-                            type="button"
+                        <InlineActionButton
                             onClick={() => onNavigate("debate_process")}
-                            className="w-full text-center text-[10px] text-rose-300/70 hover:text-rose-200 transition-colors pt-1"
+                            className="text-rose-300 hover:text-rose-100"
                         >
                             See full argument chains in Debate Process →
-                        </button>
+                        </InlineActionButton>
                     )}
                 </div>
             )}
@@ -429,13 +421,12 @@ function FinalAnswerCard({
             </div>
             <p className="text-[12px] text-white/75 leading-relaxed whitespace-pre-wrap">{displayText}</p>
             {isLong && (
-                <button
-                    type="button"
+                <InlineActionButton
                     onClick={onToggle}
-                    className="mt-1.5 text-[10px] text-violet-300 hover:text-violet-100 transition-colors"
+                    className="mt-1"
                 >
                     {expanded ? "▲ Show less" : "▼ Read full answer"}
-                </button>
+                </InlineActionButton>
             )}
         </div>
     );

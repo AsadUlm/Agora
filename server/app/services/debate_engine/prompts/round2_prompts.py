@@ -5,6 +5,8 @@ from __future__ import annotations
 from app.services.debate_engine.prompts.personas import persona_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
+    ANTI_STRAWMAN_BLOCK,
+    STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK,
     evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
@@ -62,7 +64,7 @@ def build_critique_prompt(
     evidence_packets: list[EvidencePacket] | None = None,
 ) -> str:
     """
-    Build the Round 2 prompt for an agent critiquing all other agents.
+    Build the Round 2 prompt for an agent critiquing its deterministic target.
 
     Args:
         role:         This agent's role label.
@@ -101,14 +103,20 @@ Your opening stance: {_compact_text(own_stance, 220)}
 {_knowledge_instruction(knowledge_mode, knowledge_strict, bool(evidence_packets or retrieved_chunks or []))}{(format_evidence_block(evidence_packets or []) + format_evidence_usage_instructions()) if evidence_packets else _format_context_block(retrieved_chunks or [])}
 {evidence_mode_block(bool(evidence_packets or retrieved_chunks or []))}
 {opponents_block}
+You are {role}. Your critique target is {other_agents[0]['role'] if other_agents else 'General Position'}.
+Critique that target agent's actual claim. Do not critique yourself. Do not choose
+another target. Do not critique "General Position" unless target content is missing.
 Deliver a sharp, structured critique built from four explicit parts: (1) OPPONENT CLAIM — name the agent and quote or closely paraphrase the specific claim you are attacking; (2) HIDDEN ASSUMPTION — identify the assumption that claim silently depends on; (3) FAILURE SCENARIO — describe a realistic case where that assumption is false and the claim breaks; (4) CONSEQUENCE — explain why this matters and what it does to the opponent's overall position. Then state WHY YOUR FRAMEWORK DISAGREES — begin it explicitly from your role ("As a {role}, I reject this because…") so your identity stays stable and you do not drift toward the opponent. Critique the weakest real argument, whoever made it — do not soften it into agreement. {depth_instruction} {style_instruction}. Back every critique with a concrete mechanism. Do not fabricate statistics — use qualitative phrasing.
 If target content is unavailable, write: "The target response was unavailable, so this critique focuses on the general position."
 
+{ANTI_STRAWMAN_BLOCK}
+{STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK}
 Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions in your answer. Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 {{
     "one_sentence_takeaway": "<core flaw in 15-25 words>",
     "short_summary": "<2 sentences adding a supporting reason the takeaway omits>",
     "target_agent": "<role being challenged>",
+    "target_claim": "<specific claim made by the target agent>",
     "challenge": "<specific claim being challenged, quoting or paraphrasing the target>",
     "assumption_attacked": "<the hidden assumption that claim depends on>",
     "failure_scenario": "<a realistic case where that assumption is false>",

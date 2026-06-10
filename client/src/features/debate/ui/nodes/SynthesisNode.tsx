@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import type { DebateGraphNode } from "../../model/graph.types";
 import { useGraphStore } from "../../model/graph.store";
 import { truncateNodeText, formatFinalSummary } from "../../model/formatters";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 
 type SynthesisNodeData = DebateGraphNode & {
     label: string;
@@ -19,6 +20,7 @@ export default function SynthesisNode({
     id,
     selected,
 }: NodeProps & { data: SynthesisNodeData }) {
+    const isMobile = useIsMobile();
     const nodeStatus = data.status ?? "hidden";
     const focusedNodeId = useGraphStore((s) => s.focusedNodeId);
     const dimmedByFocus = focusedNodeId != null && focusedNodeId !== id;
@@ -49,11 +51,11 @@ export default function SynthesisNode({
                     ease: "easeOut",
                 }}
                 className={`
-          relative px-7 py-6 rounded-2xl
+          relative rounded-2xl
           bg-gradient-to-br from-violet-600/95 via-violet-700/95 to-purple-900/95
           border-2 border-violet-300/55
           shadow-[0_18px_45px_-18px_rgba(139,92,246,0.55)]
-          min-w-[300px] max-w-[420px]
+          ${isMobile ? "min-w-[220px] max-w-[300px] px-4 py-4" : "min-w-[300px] max-w-[420px] px-7 py-6"}
           text-center cursor-pointer
           transition-all duration-150
           ${selected ? "glow-synthesis border-violet-200 scale-[1.04]" : "hover:border-violet-300/75 hover:shadow-[0_22px_55px_-18px_rgba(139,92,246,0.7)]"}
@@ -84,7 +86,7 @@ export default function SynthesisNode({
                 <div className="text-[10px] uppercase tracking-[0.18em] text-violet-200/85 mb-2 font-bold">
                     ✦ Final Synthesis
                 </div>
-                <div className="text-[15px] font-semibold text-white leading-snug">
+                <div className={`${isMobile ? "text-xs line-clamp-1" : "text-[15px]"} font-semibold text-white leading-snug`}>
                     {displayText}
                 </div>
 

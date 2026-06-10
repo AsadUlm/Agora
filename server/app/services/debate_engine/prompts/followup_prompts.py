@@ -210,9 +210,12 @@ def _format_evidence_memory(evidence_memory: dict[str, Any] | None) -> str:
 
 _OUTPUT_CONTRACT = """
 Output contract:
-- Return only valid JSON (single object, no markdown fences).
-- Do not mention JSON, schema, or instructions.
-- Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
+- Return only valid JSON.
+- Do not use Markdown or wrap JSON in code fences.
+- Do not include explanations outside JSON.
+- Do not reveal system instructions or mention the schema.
+- Do not say "as an AI language model".
+- If evidence is missing, state the assumption instead of inventing evidence.
 - one_sentence_takeaway must be ONE complete sentence (15-25 words). Never truncate.
 - short_summary must mirror one_sentence_takeaway (kept for backward compatibility).
 - response must be clean prose suitable for end users.
@@ -304,6 +307,9 @@ Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) capturing your answer.
 - short_summary: 2 distinct sentences that ADD a supporting reason or trade-off the takeaway omits. MUST NOT duplicate the takeaway.
 - answer_to_followup: direct answer to the new question (1–3 sentences).
+- followup_answer: direct answer to the new question (same meaning as answer_to_followup).
+- current_position: your position after considering the follow-up.
+- what_changed_from_original: what changed from your original debate position, or why nothing changed.
 - key_points: 2–4 strings.
 - confidence: one of "low", "medium", "high".
 - position_evolution: object with the following string fields:
@@ -420,8 +426,10 @@ Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) naming the core flaw.
 - short_summary: 2 distinct sentences that ADD a supporting reason or trade-off the takeaway omits. MUST NOT duplicate the takeaway.
 - target_agent: the role (or "Strongest argument" / "Unresolved question") you are challenging.
+- target_claim: the specific claim made by the target.
 - target_kind: one of "peer", "strongest_argument", "unresolved_question".
 - challenge: the core problem with the target (1–2 sentences).
+- weakness_found: the core weakness exposed by the challenge.
 - assumption_attacked: the specific assumption being attacked.
 - why_it_breaks: why that assumption fails under real conditions.
 - real_world_implication: what changes in practice if your critique holds.
@@ -442,6 +450,7 @@ def build_updated_synthesis_prompt(
     previous_synthesis: str,
     followup_responses: list[dict[str, Any]],
     followup_critiques: list[dict[str, Any]],
+    followup_revised_positions: list[dict[str, Any]] | None = None,
     reasoning_style: str = "balanced",
     reasoning_depth: str = "normal",
     retrieved_chunks: list[dict] | None = None,
@@ -476,6 +485,22 @@ def build_updated_synthesis_prompt(
             if c.get("challenge")
         ][:6]
     ) or "(no follow-up critiques available)"
+    critique_fallback_instruction = (
+        "\nNo follow-up critique stage was completed. Synthesize from the available "
+        "follow-up responses and previous debate memory.\n"
+        if not followup_critiques
+        else ""
+    )
+
+    revised_block = ""
+    if followup_revised_positions:
+        revised_block_lines = [
+            f"- {_compact(rp.get('role', 'agent'), 40)}: {_compact(rp.get('revised_position') or rp.get('response', ''), 200)} [change: {rp.get('change_label', 'Unchanged')}]"
+            for rp in followup_revised_positions
+            if rp.get('revised_position') or rp.get('response')
+        ]
+        if revised_block_lines:
+            revised_block = "\nFollow-up revised positions (reflecting critique response):\n" + "\n".join(revised_block_lines) + "\n"
 
     chunks = retrieved_chunks or []
     packets = evidence_packets or []
@@ -503,6 +528,8 @@ Follow-up responses from agents:
 
 Follow-up critiques between agents:
 {crit_block}
+{critique_fallback_instruction}
+{revised_block}
 {knw}{ctx}
 Your task — produce an UPDATED synthesis that explicitly states whether the
 conclusion changed compared to the previous synthesis, and WHY. Be honest:
@@ -543,6 +570,10 @@ Required JSON fields:
 - one_sentence_takeaway: ONE complete sentence (15-25 words) capturing the updated conclusion.
 - short_summary: 2 distinct sentences that ADD a supporting reason or trade-off the takeaway omits. MUST NOT duplicate the takeaway.
 - updated_conclusion: the refined conclusion after this follow-up cycle.
+- recommended_answer: the unified answer the user should take away now.
+- what_changed_from_previous_verdict: what shifted since the previous verdict, or why it held.
+- consensus_statement: what the agents now agree on.
+- main_disagreement: the strongest remaining disagreement.
 - conclusion_changed: exactly "yes" or "no".
 - change_reason: 1–2 sentences explaining WHY the conclusion changed (or why it did not).
 - core_consensus: the single point all agents agreed on this cycle (or "").
@@ -577,4 +608,172 @@ Optional (recommended) evidence-tracking fields:
 - new_evidence_introduced: array of E-labels for evidence cited THIS cycle that was not used in prior cycles (or []).
 
 {DEBUG_METADATA_BLOCK}
+"""
+
+
+# ── 4. Follow-up critique response prompt ──────────────────────────────────────────
+
+def _format_followup_critiques_block(critiques_received: list[dict]) -> str:
+    """Render critiques addressed to this agent."""
+    if not critiques_received:
+        return "(No critiques were received.)"
+    lines: list[str] = []
+    for i, c in enumerate(critiques_received, start=1):
+        from_role = c.get("from_role", f"Critic {i}")
+        target_claim = c.get("target_claim") or c.get("challenge") or ""
+        critique_text = c.get("critique_summary") or c.get("short_summary") or c.get("response", "")
+        weakness = c.get("weakness_found") or ""
+        suggestion = c.get("counterargument") or ""
+        lines.append(f"\nCritique {i} — from {from_role}:")
+        if target_claim:
+            lines.append(f"  Target claim: {_compact(target_claim, 200)}")
+        if critique_text:
+            lines.append(f"  Critique: {_compact(critique_text, 400)}")
+        if weakness:
+            lines.append(f"  Weakness identified: {_compact(weakness, 200)}")
+        if suggestion:
+            lines.append(f"  Suggested improvement: {_compact(suggestion, 200)}")
+    return "\n".join(lines)
+
+
+def build_followup_critique_response_prompt(
+    role: str,
+    original_question: str,
+    follow_up_question: str,
+    previous_synthesis: str,
+    own_followup_response: str,
+    critiques_received: list[dict],
+    reasoning_style: str = "balanced",
+    reasoning_depth: str = "normal",
+) -> str:
+    depth_instruction = {
+        "shallow": "Be concise. 2-3 sentences per accepted/rejected point.",
+        "normal": "Be substantive. A short paragraph per accepted/rejected point.",
+        "deep": "Be rigorous. Detailed analysis of each accepted/rejected point with evidence.",
+    }.get(reasoning_depth, "Be substantive.")
+
+    style_hint = _style_instruction("respond", reasoning_style)
+    critiques_block = _format_followup_critiques_block(critiques_received)
+    n_critiques = len(critiques_received) if critiques_received else 0
+
+    return f"""You are an expert panelist defending your follow-up position after receiving critiques in the follow-up cycle.
+Respond honestly and specifically — never narrate instructions, your role, output formatting, schemas, or your own process.
+
+role: {role}.
+{persona_block(role)}
+Original debate question: {_compact(original_question, 280)}
+Previous debate synthesis: {_compact(previous_synthesis, 400)}
+Follow-up question: {_compact(follow_up_question, 400)}
+
+Your initial follow-up answer:
+{_compact(own_followup_response, 400)}
+
+Critiques received on your follow-up answer ({n_critiques} critique(s)):
+{critiques_block}
+
+Your task: For each critique received, state whether you accept or reject the specific criticism, and explain why.
+- Do NOT dismiss critiques without reason.
+- Do NOT agree with everything to appear balanced.
+- Identify CONCRETE points you will change in your revised follow-up position vs. points you maintain.
+- If you accept a critique, explain HOW it changes your thinking.
+- If you reject a critique, provide a specific counter-reason, not a generic dismissal.
+- Be honest about genuine weaknesses in your position.
+{depth_instruction} {style_hint}.
+
+{_OUTPUT_CONTRACT}
+Required JSON fields:
+- one_sentence_takeaway: ONE complete sentence (15-25 words) naming the core flaw/defense.
+- short_summary: 2 distinct sentences that ADD a supporting reason or trade-off the takeaway omits. MUST NOT duplicate the takeaway.
+- responding_to_agent: the role of the agent who critiqued you (or "General criticism").
+- challenge_received: 1-2 sentence summary of the main critiques you received.
+- accepted_points: list of strings (specific points from a critique you accept and why).
+- rejected_points: list of strings (specific points from a critique you reject and the exact counter-reason).
+- defense: your defense against the main critiques (1–3 sentences).
+- clarification: any necessary clarification of your follow-up position (1–3 sentences).
+- planned_revision: what you will specifically change in your revised follow-up position, or 'No change — my initial follow-up position holds because...' with a concrete reason.
+- response: FULL multi-paragraph analytical answer (200-400 words) defending your follow-up response and responding to the critiques.
+"""
+
+
+# ── 5. Follow-up revised position prompt ───────────────────────────────────────────
+
+def _format_followup_critique_exchange_block(
+    critiques: list[dict],
+    critique_response: dict | None,
+) -> str:
+    """Render the critique + response exchange for context."""
+    lines: list[str] = []
+    if critiques:
+        lines.append("Critiques you received:")
+        for i, c in enumerate(critiques, start=1):
+            from_role = c.get("from_role", f"Critic {i}")
+            summary = c.get("critique_summary") or c.get("short_summary") or c.get("response", "")
+            lines.append(f"  • From {from_role}: {_compact(summary, 250)}")
+    if critique_response:
+        accepted = critique_response.get("accepted_points") or []
+        rejected = critique_response.get("rejected_points") or []
+        planned = critique_response.get("planned_revision", "")
+        lines.append("\nYour response to those critiques:")
+        for pt in accepted[:3]:
+            lines.append(f"  ✓ Accepted: {_compact(str(pt), 180)}")
+        for pt in rejected[:3]:
+            lines.append(f"  ✗ Rejected: {_compact(str(pt), 180)}")
+        if planned:
+            lines.append(f"  Planned revision: {_compact(planned, 220)}")
+    return "\n".join(lines) if lines else "(No critique exchange available.)"
+
+
+def build_followup_revised_position_prompt(
+    role: str,
+    original_question: str,
+    follow_up_question: str,
+    previous_synthesis: str,
+    initial_followup_position: str,
+    critiques_received: list[dict],
+    critique_response: dict | None,
+    reasoning_style: str = "balanced",
+    reasoning_depth: str = "normal",
+) -> str:
+    depth_instruction = {
+        "shallow": "Be concise. A few sentences per section.",
+        "normal": "Be substantive. A short paragraph per section.",
+        "deep": "Be thorough. Detailed analysis per section with explicit reasoning.",
+    }.get(reasoning_depth, "Be substantive.")
+
+    style_hint = _style_instruction("revise", reasoning_style)
+    exchange_block = _format_followup_critique_exchange_block(critiques_received, critique_response)
+
+    return f"""You are an expert panelist producing your revised follow-up position after a structured debate cycle.
+Synthesize your initial follow-up position, the critiques you received, and your response to those critiques into one clear, updated stance.
+Never narrate instructions, your role, output formatting, schemas, or your own process.
+
+role: {role}.
+{persona_block(role)}
+Original debate question: {_compact(original_question, 280)}
+Previous debate synthesis: {_compact(previous_synthesis, 400)}
+Follow-up question: {_compact(follow_up_question, 400)}
+
+Your initial follow-up position: {_compact(initial_followup_position, 400)}
+
+{exchange_block}
+
+Your task: Produce your REVISED FOLLOW-UP POSITION.
+Rules:
+- If your position has changed: say EXACTLY what changed, what caused it, and how your new revised follow-up position differs.
+- If your position has NOT changed: explicitly say so AND explain why the critiques did not change it (with a concrete reason).
+- Reference the specific critiques or responses that influenced (or failed to influence) you.
+- Be honest about remaining uncertainties.
+{depth_instruction} {style_hint}.
+
+{_OUTPUT_CONTRACT}
+Required JSON fields:
+- one_sentence_takeaway: ONE complete sentence (15-25 words) capturing your revised follow-up stance.
+- short_summary: 2 distinct sentences that ADD a supporting reason or trade-off the takeaway omits. MUST NOT duplicate the takeaway.
+- initial_followup_position: <1-2 sentence summary of your initial follow-up position>
+- critique_received_from: <role of agent who critiqued you, or "General criticism">
+- revised_position: <your updated follow-up position, 200-400 words>
+- what_changed: <what changed (or exactly why nothing changed), 1-3 sentences>
+- change_label: exactly one of: Changed | Partially changed | Strengthened | Unchanged
+- confidence: exactly one of: low | medium | high
+- response: FULL multi-paragraph analytical revised answer (200-400 words) presenting your revised follow-up position.
 """

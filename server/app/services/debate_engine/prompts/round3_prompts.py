@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.services.debate_engine.prompts.personas import persona_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
+    STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK,
     evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
@@ -92,6 +93,7 @@ Debate digest (Round 1 positions and Round 2 critiques):
 {evidence_mode_block(bool(evidence_packets or retrieved_chunks or []))}
 Do not simply repeat your opening position. First evaluate the debate: which critique survived, which assumption failed, which argument got stronger, and whether your own position should change. Then state a position update — exactly one of: Strengthened, Refined, Partially Revised, or Reversed. Your update MUST be earned: explicitly reference the specific critique you received, the assumption that was challenged, or the evidence you accepted. No generic updates — if nothing was challenged, your position is Strengthened and you must say why. Synthesize across the agents' strongest arguments. Take a strong final stance — not a compromise or average. Identify the winning argument and the losing argument. Explain what changed after the critique round. Write like a final conclusion for a human reader. Do NOT describe your process. {depth_instruction} {style_instruction}. Back every claim with a concrete mechanism. Do not fabricate statistics — use qualitative phrasing.
 
+{STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK}
 Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions in your answer. Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 {{
     "one_sentence_takeaway": "<final position in 15-25 words>",

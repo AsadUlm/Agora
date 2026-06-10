@@ -1,4 +1,4 @@
-import { getBezierPath } from "@xyflow/react";
+import { getBezierPath, EdgeLabelRenderer } from "@xyflow/react";
 import type { EdgeProps } from "@xyflow/react";
 import { motion } from "motion/react";
 
@@ -16,7 +16,7 @@ export default function CritiqueEdge(props: EdgeProps) {
         data,
     } = props;
 
-    const [edgePath] = getBezierPath({
+    const [edgePath, labelX, labelY] = getBezierPath({
         sourceX,
         sourceY,
         sourcePosition,
@@ -30,12 +30,15 @@ export default function CritiqueEdge(props: EdgeProps) {
     const isDrawing = edgeStatus === "drawing" || Boolean(edgeData.draw);
     const shouldPulse = Boolean(edgeData.pulse);
     const isDimmed = Boolean(edgeData.dimmed);
+    const isSelected = Boolean(edgeData.selected);
 
     const baseStyle = {
         stroke: "#f472b6",
-        strokeWidth: 2,
+        strokeWidth: isSelected ? 3 : 2,
         strokeDasharray: "6 3",
-        filter: "drop-shadow(0 0 4px rgba(244, 114, 182, 0.4))",
+        filter: isSelected
+            ? "drop-shadow(0 0 8px rgba(244, 114, 182, 0.7))"
+            : "drop-shadow(0 0 4px rgba(244, 114, 182, 0.4))",
         ...style,
     };
 
@@ -66,17 +69,32 @@ export default function CritiqueEdge(props: EdgeProps) {
                     transition={{ duration: 0.9, ease: "easeOut" }}
                 />
             )}
-            {props.label && (
-                <text>
-                    <textPath
-                        href={`#${id}`}
-                        startOffset="50%"
-                        textAnchor="middle"
-                        className="fill-pink-300 text-[10px]"
+            {/* Floating HTML badge label — readable, not rotated */}
+            {!isDimmed && (
+                <EdgeLabelRenderer>
+                    <div
+                        className="nodrag nopan absolute pointer-events-none"
+                        style={{
+                            transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+                        }}
                     >
-                        {props.label as string}
-                    </textPath>
-                </text>
+                        <span
+                            className={`
+                                inline-flex items-center gap-1
+                                px-1.5 py-0.5 rounded-full
+                                text-[8px] font-bold uppercase tracking-widest
+                                border
+                                ${isSelected
+                                    ? "bg-pink-500/40 border-pink-300/70 text-pink-100 shadow-sm shadow-pink-500/30"
+                                    : "bg-pink-500/20 border-pink-400/40 text-pink-200"
+                                }
+                            `}
+                        >
+                            <span>⚔</span>
+                            challenges
+                        </span>
+                    </div>
+                </EdgeLabelRenderer>
             )}
         </>
     );

@@ -19,6 +19,7 @@ from app.services.debate_engine.prompts.quality_constraints import (
     ASSUMPTION_LABELING_BLOCK,
     FACTUALITY_BLOCK,
     FIELD_DIFFERENTIATION_BLOCK,
+    STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK,
     evidence_mode_block,
 )
 
@@ -213,6 +214,11 @@ Anti-convergence rule (mandatory):
 
 {ASSUMPTION_LABELING_BLOCK}
 
+Create one unified final answer. Do not simply list agent opinions. Resolve the
+debate into a clear recommendation. Mention consensus, remaining disagreement,
+trade-offs, and confidence.
+
+{STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK}
 Output contract — return ONLY this JSON, no markdown fences, no commentary:
 {{
   "one_sentence_takeaway": "One concise sentence, max 24 words.",
@@ -238,6 +244,10 @@ Output contract — return ONLY this JSON, no markdown fences, no commentary:
   "unresolved_questions": [
     "Remaining question 1",
     "Remaining question 2"
+  ],
+  "tradeoffs": [
+    "Trade-off 1",
+    "Trade-off 2"
   ],
   "response": "A polished user-facing synthesis in 3-5 paragraphs."
 }}

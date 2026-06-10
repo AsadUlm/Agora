@@ -51,17 +51,18 @@ class RequiredStageFailed(RuntimeError):
         stage: int,
         phase: str,
         request_id: str,
+        error_code: str = ROUND_ALL_AGENTS_FAILED,
     ) -> None:
         super().__init__(message)
         self.safe_error = make_safe_error(
-            ROUND_ALL_AGENTS_FAILED,
+            error_code,
             message=message,
             round_number=stage,
             round_type=phase,
             severity="fatal",
             phase=phase,
-            failed_agents=[r.role for r in results],
-            successful_agents=[],
+            failed_agents=[r.role for r in results if r.generation_status != "success"],
+            successful_agents=[r.role for r in results if r.generation_status == "success"],
             partial_results_available=False,
             request_id=request_id,
             last_successful_stage=max(0, stage - 1),

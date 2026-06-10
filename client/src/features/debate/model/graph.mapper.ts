@@ -632,7 +632,7 @@ function applyFollowUpRoundToGraph(
                 });
             }
         }
-    } else if (rtype === "followup_critique") {
+    } else if (rtype === "followup_cross_critique" || rtype === "followup_critique") {
         for (const msg of round.messages) {
             if (!msg.agent_id) continue;
             if (isErrorPayload(msg.payload ?? {}) || isErrorText(msg.text)) continue;
@@ -709,6 +709,45 @@ function applyFollowUpRoundToGraph(
                         });
                     }
                 }
+            }
+        }
+    } else if (rtype === "followup_response_to_critique") {
+        for (const msg of round.messages) {
+            if (!msg.agent_id) continue;
+            if (isErrorPayload(msg.payload ?? {}) || isErrorText(msg.text)) continue;
+
+            const nid = followUpAgentId(msg.agent_id, cycle);
+            const agentNode = nodes.find((n) => n.id === nid);
+            if (agentNode) {
+                const payload = safePayload(msg);
+                const stanceUpdate = String(payload["stance_update"] ?? "unchanged");
+                agentNode.metadata = {
+                    ...(agentNode.metadata ?? {}),
+                    critiqueResponseStance: stanceUpdate,
+                    critiqueResponse: extractContent(msg),
+                };
+            }
+        }
+    } else if (rtype === "followup_revised_position") {
+        for (const msg of round.messages) {
+            if (!msg.agent_id) continue;
+            if (isErrorPayload(msg.payload ?? {}) || isErrorText(msg.text)) continue;
+
+            const nid = followUpAgentId(msg.agent_id, cycle);
+            const agentNode = nodes.find((n) => n.id === nid);
+            if (agentNode) {
+                const payload = safePayload(msg);
+                const changed = Boolean(payload["changed"] || payload["change_label"] !== "Unchanged");
+                const changeType = String(payload["change_type"] ?? payload["change_label"] ?? "");
+                const changeSummary = String(payload["change_summary"] ?? payload["what_changed"] ?? "");
+                agentNode.metadata = {
+                    ...(agentNode.metadata ?? {}),
+                    positionChanged: changed,
+                    changeType,
+                    changeSummary,
+                    revisedPosition: extractContent(msg),
+                };
+                agentNode.summary = changeSummary || (changed ? "Position revised" : "Position held");
             }
         }
     } else if (rtype === "updated_synthesis") {

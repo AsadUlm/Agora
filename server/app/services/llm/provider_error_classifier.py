@@ -31,6 +31,8 @@ ROUND_ALL_AGENTS_FAILED = "ROUND_ALL_AGENTS_FAILED"
 FINAL_SYNTHESIS_FAILED = "FINAL_SYNTHESIS_FAILED"
 STREAM_INTERRUPTED = "STREAM_INTERRUPTED"
 DEBATE_CONTEXT_MISSING = "DEBATE_CONTEXT_MISSING"
+FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES = "FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES"
+FOLLOWUP_PARTIAL_COMPLETION = "FOLLOWUP_PARTIAL_COMPLETION"
 UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
 # Human-readable user messages per code (safe, no internal details)
@@ -79,6 +81,13 @@ _USER_MESSAGES: dict[str, str] = {
     DEBATE_CONTEXT_MISSING: (
         "Required debate context was missing. Please retry."
     ),
+    FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES: (
+        "Insufficient agent responses were generated to continue the follow-up cycle. "
+        "Please retry the follow-up question."
+    ),
+    FOLLOWUP_PARTIAL_COMPLETION: (
+        "Updated synthesis is available, but some follow-up exchange stages were incomplete."
+    ),
     UNKNOWN_ERROR: (
         "An unexpected error occurred during debate generation. Please retry."
     ),
@@ -98,12 +107,11 @@ _RETRYABLE: dict[str, bool] = {
     ROUND_ALL_AGENTS_FAILED: True,
     FINAL_SYNTHESIS_FAILED: True,
     STREAM_INTERRUPTED: True,
-    DEBATE_CONTEXT_MISSING: False,
+    DEBATE_CONTEXT_MISSING: True,
+    FOLLOWUP_INSUFFICIENT_AGENT_RESPONSES: True,
+    FOLLOWUP_PARTIAL_COMPLETION: True,
     UNKNOWN_ERROR: True,
 }
-
-
-# ── Safe error data object ────────────────────────────────────────────────────
 
 @dataclass
 class DebateSafeError:

@@ -17,7 +17,10 @@ class RoundType(str, enum.Enum):
     final = "final"
     # Cycle 2+ (follow-up debate continuation)
     followup_response = "followup_response"
-    followup_critique = "followup_critique"
+    followup_critique = "followup_critique"  # Kept for backward compatibility
+    followup_cross_critique = "followup_cross_critique"
+    followup_response_to_critique = "followup_response_to_critique"
+    followup_revised_position = "followup_revised_position"
     updated_synthesis = "updated_synthesis"
 
 
@@ -30,7 +33,7 @@ class RoundStatus(str, enum.Enum):
 
 
 class Round(Base):
-    """Stages of debate (1, 2, 3) within a Turn."""
+    """A persisted stage within an original or follow-up debate cycle."""
     __tablename__ = "rounds"
 
     id: Mapped[uuid.UUID] = mapped_column(

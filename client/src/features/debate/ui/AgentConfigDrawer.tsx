@@ -314,7 +314,7 @@ export default function AgentConfigDrawer({
                                                                             {p.name}
                                                                         </span>
                                                                         <span className="text-[9px] px-1 py-px rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/20">
-                                                                            System
+                                                                            SYSTEM
                                                                         </span>
                                                                     </div>
                                                                     {p.role_description && (
@@ -339,7 +339,7 @@ export default function AgentConfigDrawer({
                                                                             {p.label}
                                                                         </span>
                                                                         <span className="text-[9px] px-1 py-px rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/20">
-                                                                            System
+                                                                            SYSTEM
                                                                         </span>
                                                                     </div>
                                                                     <p className="text-[10px] text-agora-text-muted mt-0.5 truncate">
@@ -379,7 +379,7 @@ export default function AgentConfigDrawer({
                                                                             {p.name}
                                                                         </span>
                                                                         <span className="text-[9px] px-1 py-px rounded bg-violet-500/15 text-violet-300 border border-violet-500/20">
-                                                                            Custom
+                                                                            USER
                                                                         </span>
                                                                     </div>
                                                                     {(p.description || p.role_description) && (

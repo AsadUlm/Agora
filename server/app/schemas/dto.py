@@ -183,16 +183,33 @@ def serialize_turn(
         if final_summary is not None:
             break
 
+    advanced_round_types = {
+        "critique_response",
+        "revised_position",
+        "followup_cross_critique",
+        "followup_response_to_critique",
+        "followup_revised_position",
+    }
+    is_5stage_pipeline = (
+        (turn.current_round_no or 0) > 3
+        or any(r.round_type.value in advanced_round_types for r in turn.rounds)
+    )
+
     return TurnDTO(
         id=turn.id,
         turn_index=turn.turn_index,
         status=turn.status.value,
+        current_stage=turn.current_round_no,
+        synthesis_status=turn.synthesis_status,
+        request_id=turn.request_id,
+        error=turn.error_metadata,
         execution_mode=getattr(turn, "execution_mode", "auto") or "auto",
         started_at=turn.started_at,
         ended_at=turn.ended_at,
         user_message=user_message,
         rounds=rounds,
         final_summary=final_summary,
+        is_5stage_pipeline=is_5stage_pipeline,
         follow_ups=[
             FollowUpDTO(
                 id=fu.id,

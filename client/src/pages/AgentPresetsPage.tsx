@@ -331,28 +331,28 @@ function PresetCard({
                 >
                     Use in Debate
                 </button>
-                <button
-                    onClick={onEdit}
-                    disabled={isSystem}
-                    className="px-2.5 py-1.5 rounded-md text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title={isSystem ? "System presets cannot be edited" : "Edit"}
-                >
-                    Edit
-                </button>
+                {!isSystem && (
+                    <button
+                        onClick={onEdit}
+                        className="px-2.5 py-1.5 rounded-md text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/30 transition-colors"
+                    >
+                        Edit
+                    </button>
+                )}
                 <button
                     onClick={onDuplicate}
                     className="px-2.5 py-1.5 rounded-md text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-white hover:border-indigo-500/30 transition-colors"
                 >
                     Duplicate
                 </button>
-                <button
-                    onClick={onDelete}
-                    disabled={isSystem}
-                    className="ml-auto px-2.5 py-1.5 rounded-md text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-red-300 hover:border-red-500/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title={isSystem ? "System presets cannot be deleted" : "Delete"}
-                >
-                    Delete
-                </button>
+                {!isSystem && (
+                    <button
+                        onClick={onDelete}
+                        className="ml-auto px-2.5 py-1.5 rounded-md text-[10px] font-medium border border-agora-border text-agora-text-muted hover:text-red-300 hover:border-red-500/30 transition-colors"
+                    >
+                        Delete
+                    </button>
+                )}
             </div>
         </motion.div>
     );

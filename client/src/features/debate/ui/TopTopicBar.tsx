@@ -7,6 +7,7 @@ import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import { useDebateViewState } from "../model/useDebateViewState";
 import { useGraphStore } from "../model/graph.store";
 import { deriveActiveNarration } from "../model/execution-ux";
+import { useSelectedCycleState } from "../model/useSelectedCycleState";
 
 export default function TopTopicBar() {
     const navigate = useNavigate();
@@ -18,6 +19,7 @@ export default function TopTopicBar() {
     const execution = useDebateExecutionState();
     const view = useDebateViewState();
     const [questionExpanded, setQuestionExpanded] = useState(false);
+    const { cycle, state: cycleState } = useSelectedCycleState();
 
     const narration = useMemo(
         () => deriveActiveNarration({
@@ -38,60 +40,63 @@ export default function TopTopicBar() {
         interrupted: "bg-indigo-500/20 text-indigo-300 border-indigo-500/30",
     };
 
-    const statusLabel = view.statusLabel;
-    const stageLabel = view.visibleStageLabel;
+    const selectedStatus = cycleState.status;
+    const statusLabel = selectedStatus.replace("_", " ").toUpperCase();
+    const stageLabel = cycle.cycleType === "followup"
+        ? `${cycle.title} · ${cycleState.activeStageLabel ?? selectedStatus.replace("_", " ")}`
+        : cycleState.activeStageLabel ?? view.visibleStageLabel;
 
-    const fullQuestion = session?.question ?? "No debate loaded";
+    const fullQuestion = cycle.question || (cycle.cycleType === "followup" ? `${cycle.title} question not loaded` : "No debate loaded");
 
     return (
         <>
-            <div className="h-14 px-4 flex items-center gap-3 border-b border-agora-border bg-agora-surface/80 backdrop-blur-sm">
+            <div className="min-h-14 px-3 md:px-4 py-2 md:py-0 flex flex-wrap md:flex-nowrap items-center gap-2 md:gap-3 border-b border-agora-border bg-agora-surface/80 backdrop-blur-sm">
 
                 {/* Left — back + logo (fixed, never shrinks) */}
                 <div className="flex items-center gap-3 shrink-0">
                     <button
                         onClick={() => navigate("/debates")}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all whitespace-nowrap"
+                        className="h-9 flex items-center gap-1.5 px-2 md:px-2.5 rounded-lg text-xs text-agora-text-muted hover:text-white hover:bg-agora-surface-light/50 transition-all whitespace-nowrap"
                         title="Back to all debates"
                     >
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                             <path d="M9 3L5 7l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
-                        All Debates
+                        <span className="hidden sm:inline">All Debates</span>
                     </button>
 
-                    <div className="h-5 w-px bg-agora-border" />
+                    <div className="hidden md:block h-5 w-px bg-agora-border" />
 
                     <div className="flex items-center gap-2">
-                        <AgoraLogoIcon size={32} />
+                        <span className="hidden sm:inline-flex"><AgoraLogoIcon size={32} /></span>
                         <span className="text-sm font-semibold text-white">AGORA</span>
                     </div>
                 </div>
 
-                <div className="h-5 w-px bg-agora-border shrink-0" />
+                <div className="hidden md:block h-5 w-px bg-agora-border shrink-0" />
 
                 {/* Center — question text (takes all available space) */}
                 <button
                     type="button"
                     title={fullQuestion}
                     onClick={() => setQuestionExpanded(true)}
-                    className="flex-1 min-w-0 text-left text-sm text-agora-text-muted hover:text-white transition-colors"
+                    className="order-last md:order-none basis-full md:basis-auto flex-1 min-w-0 text-left text-xs md:text-sm text-agora-text-muted hover:text-white transition-colors"
                 >
                     <span className="truncate block">{fullQuestion}</span>
                 </button>
 
-                <div className="h-5 w-px bg-agora-border shrink-0" />
+                <div className="hidden md:block h-5 w-px bg-agora-border shrink-0" />
 
                 {/* Right — status + meta (fixed, never shrinks) */}
-                <div className="flex items-center gap-3 shrink-0">
-                    {view.derivedStatus && (
+                <div className="ml-auto flex items-center gap-3 shrink-0">
+                    {selectedStatus && (
                         <span
                             className={cn(
                                 "px-2.5 py-0.5 rounded-full text-[11px] font-medium border uppercase tracking-wider whitespace-nowrap",
-                                statusColor[view.derivedStatus] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30",
+                                statusColor[selectedStatus] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30",
                             )}
                         >
-                            {(view.derivedStatus === "running" || view.derivedStatus === "interrupted") && (
+                            {(selectedStatus === "running" || selectedStatus === "queued") && (
                                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 mr-1.5 animate-pulse" />
                             )}
                             {statusLabel}
@@ -102,7 +107,7 @@ export default function TopTopicBar() {
                         {stageLabel}
                     </span>
 
-                    {view.derivedStatus === "running" && narration.relation && (
+                    {selectedStatus === "running" && cycle.cycleType === "original" && narration.relation && (
                         <span className="hidden xl:inline text-[11px] text-indigo-300/90 truncate max-w-[180px]">
                             {narration.relation}
                         </span>

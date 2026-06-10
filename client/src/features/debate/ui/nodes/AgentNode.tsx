@@ -6,6 +6,7 @@ import { useGraphStore } from "../../model/graph.store";
 import { truncateNodeText } from "../../model/formatters";
 import { AGENT_COLOR_PALETTE } from "../../model/agent-config.types";
 import { parseEvidenceRetrieval } from "../../model/evidence.types";
+import { useIsMobile } from "@/hooks/useMediaQuery";
 
 type AgentNodeData = DebateGraphNode & {
     label: string;
@@ -32,7 +33,7 @@ const COLOR_GRADIENTS: Record<string, string> = {
     default: "from-slate-600/80 to-slate-800/80",
 };
 
-// Legacy role-name fallback (for old nodes that don’t have agentColor yet).
+// Legacy role-name fallback (for old nodes that don't have agentColor yet).
 const roleColors: Record<string, string> = {
     analyst: "from-blue-600/80 to-blue-800/80",
     critic: "from-rose-600/80 to-rose-800/80",
@@ -83,11 +84,54 @@ function modelShortName(model: string): string {
     return parts[parts.length - 1].slice(0, 10);
 }
 
+/**
+ * Displayed inside Round 2 (intermediate) nodes.
+ * Shows the circular debate relationships so the user understands at a glance
+ * who this agent challenges and who it is responding to.
+ */
+function R2RelationshipBlock({ metadata }: { metadata?: Record<string, unknown> }) {
+    const challengesRole = typeof metadata?.["challengesAgentRole"] === "string"
+        ? metadata["challengesAgentRole"]
+        : null;
+    const respondsToRole = typeof metadata?.["respondsToAgentRole"] === "string"
+        ? metadata["respondsToAgentRole"]
+        : null;
+
+    if (!challengesRole && !respondsToRole) return null;
+
+    return (
+        <div className="mt-0.5 space-y-1">
+            {challengesRole && (
+                <div className="flex items-center gap-1.5">
+                    <span className="text-[8px] font-bold uppercase tracking-widest text-pink-300/80">
+                        Challenges
+                    </span>
+                    <span className="text-[10px] text-pink-100 font-semibold truncate">
+                        {challengesRole}
+                    </span>
+                    <span className="text-pink-400/60 text-[10px]">→</span>
+                </div>
+            )}
+            {respondsToRole && (
+                <div className="flex items-center gap-1.5">
+                    <span className="text-[8px] font-bold uppercase tracking-widest text-sky-300/80">
+                        Responds to
+                    </span>
+                    <span className="text-[10px] text-sky-100 font-semibold truncate">
+                        {respondsToRole}
+                    </span>
+                </div>
+            )}
+        </div>
+    );
+}
+
 export default function AgentNode({
     data,
     id,
     selected,
 }: NodeProps & { data: AgentNodeData }) {
+    const isMobile = useIsMobile();
     const nodeStatus = data.status ?? "visible";
     const gradient = data.agentColor
         ? (COLOR_GRADIENTS[data.agentColor] ?? COLOR_GRADIENTS.default)
@@ -129,10 +173,10 @@ export default function AgentNode({
                     ease: "easeOut",
                 }}
                 className={`
-          relative px-5 py-4 rounded-xl
+          relative rounded-xl
           bg-gradient-to-br ${gradient}
           border-2 
-          min-w-[180px] max-w-[240px]
+          ${isMobile ? "min-w-[150px] max-w-[180px] px-3 py-3" : "min-w-[180px] max-w-[240px] px-5 py-4"}
           cursor-pointer transition-all duration-150
           ${statusStyles[nodeStatus] ?? ""}
           ${selected ? "ring-2 ring-white/30 scale-105" : "hover:scale-[1.03]"}
@@ -155,9 +199,9 @@ export default function AgentNode({
                             {modelShortName(data.agentModel)}
                         </span>
                     )}
-                    {data.kind === "intermediate" && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 font-medium">
-                            R2
+                    {(data.kind === "intermediate" || (isMobile && data.kind === "agent")) && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-pink-500/20 text-pink-200 border border-pink-400/30 font-semibold">
+                            {data.kind === "intermediate" ? "R2" : "R1"}
                         </span>
                     )}
                     {data.knowledge && data.knowledge.docCount > 0 && data.knowledge.mode !== "no_docs" && (
@@ -178,9 +222,14 @@ export default function AgentNode({
                     )}
                 </div>
 
-                <div className="text-xs font-medium text-white/90 leading-snug line-clamp-2">
-                    {displayText}
-                </div>
+                {/* R2 nodes: show debate relationships prominently instead of a raw text snippet */}
+                {data.kind === "intermediate" && !isLoading ? (
+                    <R2RelationshipBlock metadata={data.metadata} />
+                ) : (
+                    <div className={`text-xs font-medium text-white/90 leading-snug ${isMobile ? "line-clamp-1" : "line-clamp-2"}`}>
+                        {displayText}
+                    </div>
+                )}
 
                 {evidenceChunks > 0 && (
                     <div
@@ -248,9 +297,21 @@ export default function AgentNode({
                     className="!bg-white/30 !w-2 !h-2 !border !border-gray-700"
                 />
                 <Handle
+                    type="target"
+                    position={Position.Left}
+                    id="target-left"
+                    className="!bg-white/30 !w-2 !h-2 !border !border-gray-700"
+                />
+                <Handle
                     type="source"
                     position={Position.Right}
                     id="right"
+                    className="!bg-white/30 !w-2 !h-2 !border !border-gray-700"
+                />
+                <Handle
+                    type="target"
+                    position={Position.Right}
+                    id="target-right"
                     className="!bg-white/30 !w-2 !h-2 !border !border-gray-700"
                 />
             </motion.div>

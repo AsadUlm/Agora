@@ -480,13 +480,9 @@ export const useDebateStore = create<DebateStore>((set, get) => ({
                 if (state.debateId) {
                     getDebateDetail(state.debateId).then((session) => {
                         const turn = session.latest_turn;
-                        // Never regress from "completed" to "running" via a stale API response.
-                        // The turn_completed WS event is the authoritative completion signal;
-                        // the REST snapshot may lag behind by a few milliseconds.
-                        const safeTurnStatus =
-                            turn?.status === "running" || turn?.status === "queued"
-                                ? "completed"
-                                : (turn?.status ?? "completed");
+                        // The backend commits terminal follow-up reconciliation
+                        // before emitting this event, so the REST snapshot wins.
+                        const safeTurnStatus = turn?.status ?? "completed";
                         set({
                             session,
                             agents: session.agents ?? [],

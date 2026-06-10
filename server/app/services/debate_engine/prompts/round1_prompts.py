@@ -6,6 +6,7 @@ from app.services.debate_engine.prompts.personas import persona_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
 from app.services.debate_engine.prompts.quality_constraints import (
     ANTI_STRAWMAN_BLOCK,  # noqa: F401  (re-exported via prompts package)
+    STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK,
     evidence_mode_block,
 )
 from app.services.retrieval.evidence import (
@@ -95,12 +96,14 @@ Question: {question}
 Round 1 is NOT for consensus — it is for presenting YOUR worldview. Begin from your own default stance and priority framework; do not move toward the other agents. Your opening MUST: (1) state a clear initial position consistent with your framework, (2) state the core assumptions it depends on, (3) explain your priority framework and the reasoning mechanism that makes it work (name a specific actor, threshold, or deployment context), (4) identify the concrete benefits you expect, (5) acknowledge at least one genuine weakness of your own position, and (6) state explicitly what evidence would change your mind. {depth_hint} {style_hint}. Back every claim with a concrete mechanism — avoid vague abstractions. Do not fabricate statistics; use qualitative phrasing instead.
 Forbidden in Round 1: restating or rephrasing the question, neutral summaries, generic introductions, and convergence phrases such as "both sides have merit", "I generally agree with", "ultimately we all want", or "perhaps a balanced approach". Take the side your framework actually leads to and maximize viewpoint diversity.
 
+Give your independent initial position. Do not reference critiques yet. Make your stance explicit.
+{STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK}
 Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions in your answer. Do not include meta phrases like "I need to", "I will", "Generating", "Here is", or "As an AI".
 Forbidden: "I need to create a JSON object..."
 {{
     "one_sentence_takeaway": "<your core claim in 15-25 words>",
     "short_summary": "<2 sentences adding a supporting reason the takeaway omits>",
-    "stance": "Supports | Opposes | Skeptical | Mixed | Conditional",
+    "stance": "Supports | Opposes | Conditional | Mixed | Unclear",
     "priority_framework": "<the outcome you optimize and why it ranks first>",
     "main_argument": "<thesis and its core mechanism, one paragraph>",
     "assumptions": ["<assumption your position depends on>"],

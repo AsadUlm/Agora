@@ -416,6 +416,8 @@ async def create_follow_up(
     # 5. Re-queue turn so the UI/back-end agree it's live again
     turn.status = ChatTurnStatus.queued
     turn.ended_at = None
+    turn.synthesis_status = "pending"
+    turn.error_metadata = None
     await db.commit()
 
     # 6. Background execution

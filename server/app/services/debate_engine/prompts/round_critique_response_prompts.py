@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
+from app.services.debate_engine.prompts.quality_constraints import STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK
 
 
 def _compact_text(value: str, max_chars: int) -> str:
@@ -90,12 +91,19 @@ Your task: For each critique received, state whether you accept or reject the sp
 - Be honest about genuine weaknesses in your position.
 {depth_instruction} {style_hint}.
 
+Respond to the critique you received. Accept valid criticism where appropriate.
+Reject or clarify inaccurate criticism. Prepare how your position should change.
+{STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK}
 Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions.
 {{
+    "responding_to_agent": "<role of the agent who critiqued you, or General criticism>",
+    "challenge_received": "<the main challenge you received>",
     "received_critique_summary": "<1-2 sentence summary of the main critiques you received>",
-    "response": "<full prose response to all critiques, 200-400 words>",
     "accepted_points": ["<specific point from a critique you accept and why>", "..."],
     "rejected_points": ["<specific point from a critique you reject and the exact counter-reason>", "..."],
+    "defense": "<your defense against inaccurate or incomplete criticism>",
+    "clarification": "<what needed clarification>",
     "planned_revision": "<what you will specifically change in your revised position, or 'No change — my initial position holds because...' with a concrete reason>",
-    "stance_update": "unchanged | slightly_revised | significantly_revised | reversed"
+    "stance_update": "unchanged | slightly_revised | significantly_revised | reversed",
+    "response": "<full prose response to all critiques, 200-400 words>"
 }}"""

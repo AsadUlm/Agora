@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from app.services.debate_engine.prompts.personas import persona_block
 from app.services.debate_engine.prompts.reasoning_styles import style_instruction as _style_instruction
+from app.services.debate_engine.prompts.quality_constraints import STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK
 
 
 def _compact_text(value: str, max_chars: int) -> str:
@@ -116,19 +117,27 @@ Rules:
 - Do NOT produce a vague compromise. Take a clear stance.
 - Reference the specific critiques or arguments that influenced (or failed to influence) you.
 - Be honest about remaining uncertainties.
+- Do not ignore the critique.
 {depth_instruction} {style_hint}.
 
 Valid change_type values: no_change | narrowed_position | expanded_position | changed_stance | added_condition | resolved_uncertainty | other
 
+{STRUCTURED_OUTPUT_CONSTRAINTS_BLOCK}
 Return only valid JSON. No markdown fences. Do not mention JSON, schema, fields, or instructions.
 {{
+    "initial_position": "<1-2 sentence summary of your Round 1 position>",
     "initial_position_summary": "<1-2 sentence summary of your Round 1 position>",
+    "critique_received_from": "<role of the agent who critiqued you, or General criticism>",
     "received_critiques_summary": ["<1-sentence summary of each critique received>"],
     "revised_position": "<your updated position, 200-400 words>",
+    "what_changed": "<what changed, or why the position was strengthened>",
+    "change_label": "Changed | Partially changed | Strengthened | Unchanged",
     "change_summary": "<what changed (or exactly why nothing changed), 1-3 sentences>",
     "changed": true,
     "change_type": "no_change | narrowed_position | expanded_position | changed_stance | added_condition | resolved_uncertainty | other",
     "reason_for_change": "<specific argument or critique that caused the change, or why nothing changed>",
+    "confidence": "high | medium | low",
     "key_claims": ["<core claim 1>", "<core claim 2>", "<core claim 3>"],
-    "remaining_uncertainties": "<any remaining unresolved concerns>"
+    "remaining_uncertainties": "<any remaining unresolved concerns>",
+    "response": "<full revised position in readable prose>"
 }}"""

@@ -5,6 +5,8 @@ import { usePlaybackStore } from "../model/playback.store";
 import { useDebateExecutionState } from "../model/useDebateExecutionState";
 import CycleNavigator from "./CycleNavigator";
 import type { RoundExecutionState } from "../model/execution-state";
+import StatusBadge from "./primitives/StatusBadge";
+import { useSelectedCycleState } from "../model/useSelectedCycleState";
 
 // ── Phase definitions ─────────────────────────────────────────────────────────
 
@@ -113,7 +115,7 @@ function StageRow({
     const clickable = round.status === "running" || round.status === "completed" || round.status === "failed";
 
     return (
-        <div className="flex gap-2 pl-3">
+        <div className="flex gap-2 px-3">
             {/* Connector */}
             <div className="flex flex-col items-center shrink-0" style={{ width: 16 }}>
                 <div className="w-px flex-1 bg-white/10" />
@@ -126,7 +128,7 @@ function StageRow({
                 onClick={onClick}
                 disabled={!clickable}
                 className={cn(
-                    "flex-1 text-left px-2 py-1.5 mb-1 rounded-lg border transition-all duration-150 text-xs",
+                    "flex-1 min-h-12 text-left px-3 py-2 mb-1 rounded-lg border transition-all duration-150 text-xs",
                     isSelected
                         ? "bg-indigo-500/15 border-indigo-400/50 ring-1 ring-indigo-400/25"
                         : isRunning || isActive
@@ -200,41 +202,35 @@ function PhaseCard({
     const activeStage = phaseRounds.find((r) => r.status === "running" || r.roundNumber === activeRound);
     const [expanded, setExpanded] = useState(true);
 
-    // Auto-expand the running phase
-    useEffect(() => {
-        if (status === "running" || status === "partially_completed") {
-            setExpanded(true);
-        }
-    }, [status]);
-
     const isLocked = status === "locked";
     const isCompleted = status === "completed";
+    const isExpanded = expanded || status === "running" || status === "partially_completed";
 
     return (
         <motion.div
             initial={{ opacity: 0, x: -16 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: index * 0.08 }}
-            className={cn("rounded-xl border overflow-hidden", styles.border, styles.bg)}
+            className={cn("rounded-xl border overflow-hidden shadow-sm shadow-black/10", styles.border, styles.bg)}
         >
             {/* Phase header */}
             <button
                 className={cn(
-                    "w-full text-left px-3 py-2.5 flex items-start gap-2.5 transition-colors",
+                    "w-full min-h-16 text-left p-3.5 flex items-center gap-2.5 transition-colors",
                     isLocked ? "opacity-50 cursor-default" : "hover:bg-white/5",
                 )}
                 onClick={() => !isLocked && setExpanded((v) => !v)}
                 disabled={isLocked}
             >
                 {/* Icon + dot */}
-                <div className="relative shrink-0 mt-0.5">
+                <div className="relative shrink-0">
                     <span className={cn("text-base", isLocked ? "grayscale opacity-40" : "")}>{phase.icon}</span>
                     <div className={cn("absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-agora-surface", styles.dot)} />
                 </div>
 
                 {/* Labels */}
                 <div className="flex-1 min-w-0">
-                    <p className={cn("text-[11px] font-semibold truncate", styles.label)}>
+                    <p className={cn("text-xs font-semibold truncate", styles.label)}>
                         {phase.label}
                     </p>
                     {status === "running" && activeStage ? (
@@ -242,17 +238,17 @@ function PhaseCard({
                             Now: {activeStage.shortLabel}
                         </p>
                     ) : (
-                        <p className="text-[10px] text-white/30 truncate mt-0.5">
+                        <p className="text-[10px] text-white/55 truncate mt-0.5">
                             {phase.description}
                         </p>
                     )}
                 </div>
 
                 {/* Right side */}
-                <div className="flex flex-col items-end gap-1 shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                     {(isCompleted || completedCount > 0) && (
                         <span className={cn(
-                            "text-[9px] font-medium px-1.5 py-0.5 rounded-full border",
+                            "h-5 min-w-9 inline-flex items-center justify-center text-[9px] font-semibold px-1.5 rounded-full border",
                             isCompleted
                                 ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
                                 : "bg-white/10 text-white/40 border-white/15",
@@ -261,14 +257,14 @@ function PhaseCard({
                         </span>
                     )}
                     {!isLocked && (
-                        <span className="text-[9px] text-white/25">{expanded ? "▲" : "▼"}</span>
+                        <span className="w-4 text-center text-[10px] text-white/45">{isExpanded ? "▲" : "▼"}</span>
                     )}
                 </div>
             </button>
 
             {/* Stage rows */}
-            {expanded && !isLocked && phaseRounds.length > 0 && (
-                <div className="pb-1">
+            {isExpanded && !isLocked && phaseRounds.length > 0 && (
+                <div className="pb-2">
                     {phaseRounds.map((round, i) => (
                         <StageRow
                             key={round.roundNumber}
@@ -288,6 +284,7 @@ function PhaseCard({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function DebateTimeline({ mobile = false }: { mobile?: boolean }) {
+    const { cycle, state: cycleState } = useSelectedCycleState();
     const execution = useDebateExecutionState();
     const selectedRound = usePlaybackStore((s) => s.selectedRound);
     const setSelectedRound = usePlaybackStore((s) => s.setSelectedRound);
@@ -317,24 +314,69 @@ export default function DebateTimeline({ mobile = false }: { mobile?: boolean })
         }
     };
 
+    if (cycle.cycleType === "followup") {
+        const steps = [
+            { label: "Follow-up Responses", messages: cycle.stages.initialAnswers, roundTypes: ["followup_response"] },
+            { label: "Follow-up Cross-Critiques", messages: cycle.stages.crossCritiques, roundTypes: ["followup_cross_critique", "followup_critique"] },
+            { label: "Responses to Follow-up Critiques", messages: cycle.stages.responsesToCritiques, roundTypes: ["followup_response_to_critique"] },
+            { label: "Revised Follow-up Positions", messages: cycle.stages.revisedPositions, roundTypes: ["followup_revised_position"] },
+            { label: "Updated Synthesis", messages: cycle.stages.finalSynthesis, roundTypes: ["updated_synthesis"] },
+        ];
+        return (
+            <div className={cn("flex flex-col shrink-0", mobile ? "w-full" : "")}>
+                <CycleNavigator />
+                <div className="px-1 py-2.5 border-b border-white/5 mb-2">
+                    <h2 className="text-[10px] uppercase tracking-widest text-white/50 font-semibold">Follow-up Progress</h2>
+                    <p className="text-[10px] text-white/55 mt-0.5">5 follow-up stages</p>
+                </div>
+                <div className="space-y-2">
+                    {steps.map((step, index) => {
+                        const round = cycle.rounds.find((item) => step.roundTypes.some(type => item.round_type === type));
+                        let statusText = "pending";
+                        let tone: "success" | "danger" | "accent" | "neutral" = "neutral";
+
+                        if (round) {
+                            statusText = round.status?.replace("_", " ") ?? "pending";
+                            tone = round.status === "completed" ? "success" : round.status === "failed" ? "danger" : round.status === "running" ? "accent" : "neutral";
+                        } else {
+                            const isCycleTerminal = ["completed", "partially_completed", "failed"].includes(cycleState.status);
+                            if (isCycleTerminal) {
+                                statusText = "not generated";
+                                tone = "neutral";
+                            } else {
+                                statusText = "pending";
+                                tone = "neutral";
+                            }
+                        }
+
+                        return (
+                            <div key={step.label} className="min-h-14 rounded-xl border border-white/10 bg-white/[0.035] p-3 flex items-center gap-3">
+                                <span className="w-6 h-6 rounded-full bg-violet-500/15 text-violet-200 inline-flex items-center justify-center text-[10px] font-bold">{index + 1}</span>
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-semibold text-white/80">{step.label}</p>
+                                    <p className="text-[10px] text-white/55 mt-0.5">{step.messages.length} message{step.messages.length === 1 ? "" : "s"} available</p>
+                                </div>
+                                <StatusBadge tone={tone}>{statusText}</StatusBadge>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        );
+    }
+
     return (
-        <div
-            className={cn(
-                "h-full bg-agora-surface/60 backdrop-blur-sm flex flex-col shrink-0",
-                mobile ? "w-full" : "border-r border-agora-border",
-            )}
-            style={mobile ? undefined : { width: "clamp(170px, 17vw, 272px)" }}
-        >
+        <div className={cn("flex flex-col shrink-0", mobile ? "w-full" : "")}>
             <CycleNavigator />
 
-            <div className="px-3 py-2.5 border-b border-agora-border">
-                <h2 className="text-[10px] uppercase tracking-widest text-agora-text-muted font-semibold">
+            <div className="px-1 py-2.5 border-b border-white/5 mb-2">
+                <h2 className="text-[10px] uppercase tracking-widest text-white/50 font-semibold">
                     Debate Progress
                 </h2>
-                <p className="text-[9px] text-white/25 mt-0.5">3 phases · 5 internal stages</p>
+                <p className="text-[10px] text-white/55 mt-0.5">3 phases · 5 internal stages</p>
             </div>
 
-            <div className="flex-1 p-2 space-y-2 overflow-y-auto">
+            <div className="space-y-2">
                 {PHASES.map((phase, idx) => (
                     <PhaseCard
                         key={phase.id}

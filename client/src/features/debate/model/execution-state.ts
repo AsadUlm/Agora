@@ -82,7 +82,9 @@ export function deriveDebateExecutionState(
 ): DebateExecutionState {
     const turn = session?.latest_turn ?? null;
     const agents = session?.agents ?? [];
-    const debateStatus = normalizeStatus(turnStatusOverride ?? turn?.status ?? session?.status);
+    // A loaded REST snapshot is the durable source of truth. WebSocket/store
+    // state is only a fallback while no snapshot is available.
+    const debateStatus = normalizeStatus(turn?.status ?? session?.status ?? turnStatusOverride);
     const stages = DEBATE_STAGE_DEFS.map((definition) =>
         deriveStage(definition, turn, agents, debateStatus),
     );

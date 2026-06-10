@@ -12,6 +12,7 @@ import { applyWsEventToGraph, mapSessionToGraph } from "./graph.mapper";
 interface GraphStore {
     graph: DebateGraph;
     selectedNodeId: string | null;
+    selectedEdgeId: string | null;
     focusedNodeId: string | null;
 
     hydrateFromSession: (session: SessionDetailDTO) => void;
@@ -21,6 +22,7 @@ interface GraphStore {
     mergeFromSession: (session: SessionDetailDTO) => void;
     applyEvent: (event: WsEvent, agents: AgentDTO[]) => void;
     selectNode: (nodeId: string | null) => void;
+    selectEdge: (edgeId: string | null) => void;
     getNode: (nodeId: string) => DebateGraphNode | undefined;
 
     /* Focus system */
@@ -79,6 +81,7 @@ function preferEdgeStatus(previous: string, next: string): string {
 export const useGraphStore = create<GraphStore>((set, get) => ({
     graph: emptyGraph,
     selectedNodeId: null,
+    selectedEdgeId: null,
     focusedNodeId: null,
 
     hydrateFromSession: (session) => {
@@ -172,7 +175,9 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
         set({ graph: updated });
     },
 
-    selectNode: (nodeId) => set({ selectedNodeId: nodeId }),
+    selectNode: (nodeId) => set({ selectedNodeId: nodeId, selectedEdgeId: null }),
+
+    selectEdge: (edgeId) => set({ selectedEdgeId: edgeId, selectedNodeId: null }),
 
     getNode: (nodeId) => get().graph.nodes.find((n) => n.id === nodeId),
 
@@ -288,5 +293,5 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     },
 
     reset: () =>
-        set({ graph: emptyGraph, selectedNodeId: null, focusedNodeId: null }),
+        set({ graph: emptyGraph, selectedNodeId: null, selectedEdgeId: null, focusedNodeId: null }),
 }));

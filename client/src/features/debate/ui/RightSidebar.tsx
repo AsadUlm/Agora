@@ -1,60 +1,72 @@
 /**
- * RightSidebar — Simplified 4-tab information architecture.
+ * RightSidebar — Simplified 3-tab information architecture (Overview, Follow-up, Debug).
  *
- * Tabs:
- *   Overview       — Final answer, 3-phase summary, live status (default)
- *   Debate Process — Argument Exchange + Position Evolution (merged)
- *   Follow-up      — Only when follow-up cycles exist
- *   Debug          — Raw JSON + lifecycle debug (developer-oriented)
- *
- * Removed tabs: Debate Flow, Changes, Guide, Cycles, Agents, Raw
- * (content was merged or moved to remaining tabs)
+ * Promoted "Debate Process" to the central workspace panel.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 import { cn } from "@/shared/lib/cn";
 import DebateOverviewPanel from "./DebateOverviewPanel";
 import DebateProcessPanel from "./DebateProcessPanel";
 import DebateEvolutionPanel from "./DebateEvolutionPanel";
 import RawOutputPanel from "./RawOutputPanel";
 import { useDebateStore } from "../model/debate.store";
+import PanelTabs from "./primitives/PanelTabs";
 
-type Tab = "overview" | "debate_process" | "followup" | "debug";
+import { type WorkspaceTab } from "./DebateLayout";
 
-/** Per-tab widths as vw-based clamps so the sidebar scales with the viewport. */
-const TAB_WIDTHS: Record<Tab, string> = {
-    overview:       "clamp(240px, 30vw, 520px)",
-    debate_process: "clamp(240px, 32vw, 560px)",
-    followup:       "clamp(200px, 28vw, 460px)",
-    debug:          "clamp(155px, 23vw, 380px)",
+type SidebarTab = WorkspaceTab;
+
+const TAB_WIDTHS: Record<SidebarTab, string> = {
+    overview:       "clamp(430px, 38vw, 640px)",
+    debate_process: "clamp(430px, 38vw, 640px)",
+    followup:       "clamp(430px, 38vw, 640px)",
+    debug:          "clamp(430px, 38vw, 640px)",
 };
 
-export default function RightSidebar({ mobile = false }: { mobile?: boolean }) {
-    const [active, setActive] = useState<Tab>("overview");
+interface RightSidebarProps {
+    mobile?: boolean;
+    activeTab?: SidebarTab;
+    onTabChange?: (tab: SidebarTab) => void;
+}
+
+export default function RightSidebar({
+    mobile = false,
+    activeTab = "overview",
+    onTabChange,
+}: RightSidebarProps) {
     const followUps = useDebateStore((s) => s.session?.latest_turn?.follow_ups ?? []);
     const hasFollowUps = followUps.length > 0;
 
+    const active = activeTab;
+
     // Auto-switch to Follow-up tab the first time a follow-up cycle appears.
-    const [autoSwitched, setAutoSwitched] = useState(false);
+    const autoSwitched = useRef(false);
     useEffect(() => {
-        if (!autoSwitched && hasFollowUps) {
-            setAutoSwitched(true);
-            setActive("followup");
+        if (!autoSwitched.current && hasFollowUps && onTabChange) {
+            autoSwitched.current = true;
+            onTabChange("followup");
         }
-    }, [hasFollowUps, autoSwitched]);
+    }, [hasFollowUps, onTabChange]);
 
     // If follow-up tab disappears (e.g. data cleared) and user is on it, go back to overview.
     useEffect(() => {
-        if (active === "followup" && !hasFollowUps) {
-            setActive("overview");
+        if (activeTab === "followup" && !hasFollowUps && onTabChange) {
+            onTabChange("overview");
         }
-    }, [active, hasFollowUps]);
+    }, [activeTab, hasFollowUps, onTabChange]);
 
-    const TABS: { id: Tab; label: string; icon: string; highlight?: boolean; badge?: string }[] = [
-        { id: "overview",       label: "Overview",        icon: "🧭", highlight: true },
-        { id: "debate_process", label: "Debate Process",  icon: "⚔️" },
-        ...(hasFollowUps ? [{ id: "followup" as Tab, label: "Follow-up", icon: "↗", badge: String(followUps.length) }] : []),
+    const TABS: { id: SidebarTab; label: string; icon: string; badge?: string }[] = [
+        { id: "overview",       label: "Overview",        icon: "◉" },
+        { id: "debate_process", label: mobile ? "Process" : "Debate Process", icon: "↔" },
+        ...(hasFollowUps ? [{ id: "followup" as SidebarTab, label: "Follow-up", icon: "↗", badge: String(followUps.length) }] : []),
         { id: "debug",          label: "Debug",           icon: "{ }" },
     ];
+
+    const handleTabClick = (tabId: SidebarTab) => {
+        if (onTabChange) {
+            onTabChange(tabId);
+        }
+    };
 
     return (
         <div
@@ -64,55 +76,26 @@ export default function RightSidebar({ mobile = false }: { mobile?: boolean }) {
             )}
             style={mobile ? undefined : { width: TAB_WIDTHS[active] }}
         >
-            {/* Tab bar */}
-            <div className="flex items-center px-1 pt-1 gap-0.5 border-b border-agora-border bg-agora-bg/40 flex-wrap">
-                {TABS.map((t) => (
-                    <button
-                        key={t.id}
-                        type="button"
-                        onClick={() => setActive(t.id)}
-                        className={cn(
-                            "px-1.5 py-1.5 text-[10px] font-medium rounded-t-md transition-colors flex items-center justify-center gap-1 whitespace-nowrap",
-                            active === t.id
-                                ? "bg-agora-surface/80 text-white border-t border-l border-r border-agora-border"
-                                : t.highlight
-                                    ? "text-violet-300 hover:text-white hover:bg-agora-surface/40"
-                                    : "text-agora-text-muted hover:text-white hover:bg-agora-surface/40",
-                        )}
-                        title={t.label}
-                    >
-                        <span className="opacity-80">{t.icon}</span>
-                        {t.label}
-                        {/* Violet dot for Overview when not active */}
-                        {t.highlight && active !== t.id && (
-                            <span className="w-1 h-1 rounded-full bg-violet-400 inline-block" />
-                        )}
-                        {/* Badge for Follow-up count */}
-                        {t.badge && (
-                            <span className="px-1 rounded-full bg-violet-500/30 text-violet-200 text-[9px] font-semibold">
-                                {t.badge}
-                            </span>
-                        )}
-                    </button>
-                ))}
-            </div>
+            <PanelTabs tabs={TABS} activeTab={active} onChange={handleTabClick} />
 
             {/* Tab content */}
-            <div className="flex-1 min-h-0 overflow-y-auto">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
                 {active === "overview" && (
-                    <div className="p-3">
+                    <div className="p-3 pb-24">
                         <DebateOverviewPanel onNavigate={(tab) => {
-                            setActive(tab);
+                            if (onTabChange) {
+                                onTabChange(tab);
+                            }
                         }} />
                     </div>
                 )}
                 {active === "debate_process" && (
-                    <div className="p-3">
+                    <div className="p-3 pb-24">
                         <DebateProcessPanel />
                     </div>
                 )}
-                {active === "followup" && <DebateEvolutionPanel />}
-                {active === "debug" && <RawOutputPanel />}
+                {active === "followup" && <div className="pb-24"><DebateEvolutionPanel /></div>}
+                {active === "debug" && <div className="pb-24"><RawOutputPanel /></div>}
             </div>
         </div>
     );
