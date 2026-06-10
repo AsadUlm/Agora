@@ -240,6 +240,14 @@ export interface DocumentDTO {
     storage_provider?: string;
     /** Step 30: file size in bytes, when known. */
     bytes?: number | null;
+    /** Populated when status is "failed" — human-readable reason for the failure. */
+    error_message?: string | null;
+    /** Number of searchable chunks persisted. > 0 confirms the document is retrievable. */
+    chunk_count?: number;
+    /** Embedding lifecycle, independent of `status`: pending | ready | failed | disabled. */
+    embedding_status?: string;
+    processing_started_at?: string | null;
+    processed_at?: string | null;
 }
 
 export interface DocumentAllItemDTO extends DocumentDTO {

@@ -24,6 +24,7 @@ Graceful degradation:
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 from sqlalchemy import bindparam, select
@@ -47,6 +48,28 @@ logger = logging.getLogger(__name__)
 # Minimum similarity threshold — chunks below this score are excluded.
 # Lowered to 0.20 to support cross-lingual queries (e.g. English question vs Korean doc).
 _MIN_SIMILARITY = 0.20
+
+# Keyword-fallback tuning.
+_KEYWORD_CANDIDATE_CAP = 600   # max chunks scanned in the keyword pass (bounded memory)
+_KEYWORD_MIN_TOKEN_LEN = 2     # ignore 1-char tokens
+# Very common words carry no retrieval signal — drop them from the query.
+_KEYWORD_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "if", "then", "else", "for", "of",
+    "to", "in", "on", "at", "by", "is", "are", "was", "were", "be", "been",
+    "it", "its", "this", "that", "these", "those", "as", "with", "from",
+    "which", "who", "whom", "what", "when", "where", "why", "how", "do",
+    "does", "did", "can", "could", "should", "would", "will", "shall", "may",
+    "i", "you", "he", "she", "we", "they", "their", "your", "our", "my",
+    "better", "best", "vs", "versus", "between", "about", "into", "than",
+})
+_TOKEN_RE = re.compile(r"[^\W\d_]+|\d+", re.UNICODE)
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lower-cased word/number tokens. Unicode-aware (keeps CJK/Cyrillic)."""
+    if not text:
+        return []
+    return [t.lower() for t in _TOKEN_RE.findall(text)]
 
 
 class RetrievalService:
@@ -161,17 +184,7 @@ class RetrievalService:
             Empty list whenever no context is available (safe fallback).
         """
         # ── 1. Check there are ready documents for this session ───────────────
-        ready_check_stmt = (
-            select(Document.id)
-            .where(Document.chat_session_id == session_id)
-            .where(Document.status == DocumentStatus.ready)
-        )
-        if document_ids is not None:
-            ready_check_stmt = ready_check_stmt.where(Document.id.in_(document_ids))
-        ready_check_stmt = ready_check_stmt.limit(1)
-
-        ready_check = await db.execute(ready_check_stmt)
-        if ready_check.scalar_one_or_none() is None:
+        if not await self._has_ready_documents(db, session_id, document_ids):
             logger.debug(
                 "RetrievalService: no ready documents for session %s (scope=%s) — skipping retrieval",
                 session_id,
@@ -179,23 +192,107 @@ class RetrievalService:
             )
             return []
 
-        # ── 2. Embed the query ────────────────────────────────────────────────
-        embedding_svc = get_embedding_service()
-        provider_name = type(embedding_svc).__name__
+        # Step 31: when a strategy is provided, widen the candidate pool by
+        # ``candidate_multiplier`` so the diversity / role-bias re-ranker has
+        # something to choose from. We still cap and trim to ``top_k`` after.
+        sql_limit = top_k
+        if strategy is not None and strategy.candidate_multiplier > 1:
+            sql_limit = max(top_k, top_k * strategy.candidate_multiplier)
+
+        # ── 2. Primary path: semantic vector search ───────────────────────────
+        chunks, vector_available = await self._vector_search(
+            query, session_id, db, sql_limit, document_ids
+        )
+        mode = "vector"
+
+        # ── 3. Fallback path: keyword search ──────────────────────────────────
+        # Triggered when embeddings are unavailable (provider down / mock /
+        # not yet computed) OR when vector search found nothing. This is what
+        # keeps RAG working when the embedding provider is misconfigured — the
+        # chunk text is always stored, so lexical matching still returns sources.
+        if not chunks:
+            keyword_chunks = await self._keyword_search(
+                query, session_id, db, sql_limit, document_ids
+            )
+            if keyword_chunks:
+                chunks = keyword_chunks
+                mode = "keyword"
+            elif not vector_available:
+                mode = "keyword"
+
+        raw_count = len(chunks)
+
+        # ── 4. Step 31: apply role-aware re-ranking (when a strategy is set).
+        if strategy is not None and chunks:
+            chunks = apply_strategy(chunks, strategy, top_k=top_k)
+        elif len(chunks) > top_k:
+            chunks = chunks[:top_k]
+
+        top_sims = [round(c.similarity_score, 4) for c in chunks[:3]]
+        source_files = sorted({str(c.document_id) for c in chunks})
+        logger.info(
+            "[RAG Retrieve] session=%s mode=%s query=%r raw=%d final=%d "
+            "strategy=%s top_scores=%s docs=%d",
+            session_id,
+            mode,
+            query[:120],
+            raw_count,
+            len(chunks),
+            strategy.name if strategy else "none",
+            top_sims,
+            len(source_files),
+        )
+        return chunks
+
+    async def _has_ready_documents(
+        self,
+        db: AsyncSession,
+        session_id: uuid.UUID,
+        document_ids: list[uuid.UUID] | None,
+    ) -> bool:
+        """True when the session (optionally scoped to ``document_ids``) has at
+        least one ``ready`` document."""
+        stmt = (
+            select(Document.id)
+            .where(Document.chat_session_id == session_id)
+            .where(Document.status == DocumentStatus.ready)
+        )
+        if document_ids is not None:
+            stmt = stmt.where(Document.id.in_(document_ids))
+        stmt = stmt.limit(1)
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    async def _vector_search(
+        self,
+        query: str,
+        session_id: uuid.UUID,
+        db: AsyncSession,
+        sql_limit: int,
+        document_ids: list[uuid.UUID] | None,
+    ) -> tuple[list[RetrievedChunk], bool]:
+        """Semantic search over stored embeddings.
+
+        Returns ``(chunks, available)`` where ``available`` is False when the
+        embedding provider/query vector/pgvector query was unusable — the
+        caller then switches to keyword fallback. Never raises.
+        """
+        # Constructing the provider can itself raise (e.g. missing API key for
+        # the configured provider). Treat that exactly like an embedding failure
+        # — fall back to keyword search rather than crashing retrieval.
         try:
+            embedding_svc = get_embedding_service()
+            provider_name = type(embedding_svc).__name__
             query_vector = await embedding_svc.embed(query)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "RetrievalService: embedding failed for query (%r) via %s: %s — returning empty",
-                query[:120],
-                provider_name,
+                "[RAG Retrieve] embedding unavailable: %s — using keyword fallback",
                 exc,
             )
-            return []
+            return [], False
 
-        # ── 2b. Validate the query vector strictly. A bad vector (wrong dim,
-        # NaN/Inf, all-zeros from MockEmbeddingService, …) will silently break
-        # cosine similarity at the SQL layer, so we catch it here.
+        # Validate strictly — a bad vector (wrong dim, NaN/Inf) silently breaks
+        # cosine similarity at the SQL layer.
         try:
             query_vector = _validate_embedding_vector(
                 query_vector,
@@ -204,40 +301,23 @@ class RetrievalService:
             )
         except EmbeddingProviderError as exc:
             logger.warning(
-                "RetrievalService: invalid query vector from %s: %s — returning empty",
-                provider_name,
-                exc,
+                "[RAG Retrieve] invalid query vector from %s: %s — using keyword fallback",
+                provider_name, exc,
             )
-            return []
+            return [], False
 
-        # All-zero vector is technically valid floats but cosine distance is
-        # undefined (NaN). MockEmbeddingService produces this — return empty
-        # rather than running a meaningless query.
+        # All-zero vector ⇒ MockEmbeddingService / unconfigured provider. Cosine
+        # distance is undefined, so vectors are unusable — fall back to keyword.
         if not any(v != 0.0 for v in query_vector):
-            logger.warning(
-                "RetrievalService: query vector from %s is all-zeros — "
-                "retrieval cannot work. Set EMBEDDING_PROVIDER to a real "
-                "provider (e.g. openrouter).",
+            logger.info(
+                "[RAG Retrieve] query vector from %s is all-zeros — using keyword fallback",
                 provider_name,
             )
-            return []
-
-        # ── 3. pgvector cosine distance query ─────────────────────────────────
-        # Cosine distance = 1 - cosine_similarity.  Lower is more similar.
-        # We filter by distance < (1 - _MIN_SIMILARITY) so only genuinely
-        # relevant chunks are returned.
-        # Step 31: when a strategy is provided, widen the candidate pool by
-        # ``candidate_multiplier`` so the diversity / role-bias re-ranker has
-        # something to choose from. We still cap and trim to ``top_k`` after.
-        sql_limit = top_k
-        if strategy is not None and strategy.candidate_multiplier > 1:
-            sql_limit = max(top_k, top_k * strategy.candidate_multiplier)
+            return [], False
 
         try:
-            # Bind the vector as a typed parameter — pgvector adapts it to
-            # the ``vector`` SQL type. This is dramatically safer than
-            # f-string interpolation (no SQL-injection surface, no parser
-            # surprises on big floats).
+            # Bind the vector as a typed parameter — pgvector adapts it to the
+            # ``vector`` SQL type (no SQL-injection surface).
             qv_param = bindparam("qv", value=query_vector, type_=Vector(settings.EMBEDDING_DIM))
             distance_expr = DocumentChunk.embedding.cosine_distance(qv_param)
             stmt = (
@@ -257,15 +337,18 @@ class RetrievalService:
             if document_ids is not None:
                 stmt = stmt.where(Document.id.in_(document_ids))
             stmt = stmt.order_by(distance_expr).limit(sql_limit)
-            rows = await db.execute(stmt)
-            results = rows.all()
-        except Exception as exc:
+            
+            # Wrap the actual DB execution in a savepoint so that if it fails
+            # (e.g. pgvector not installed), the parent transaction is not aborted.
+            async with db.begin_nested():
+                rows = await db.execute(stmt)
+                results = rows.all()
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "RetrievalService: pgvector query failed for session %s: %s — returning empty",
-                session_id,
-                exc,
+                "[RAG Retrieve] pgvector query failed for session %s: %s — using keyword fallback",
+                session_id, exc,
             )
-            return []
+            return [], False
 
         chunks = [
             RetrievedChunk(
@@ -277,26 +360,84 @@ class RetrievalService:
             )
             for row in results
         ]
+        return chunks, True
 
-        raw_count = len(chunks)
+    async def _keyword_search(
+        self,
+        query: str,
+        session_id: uuid.UUID,
+        db: AsyncSession,
+        limit: int,
+        document_ids: list[uuid.UUID] | None,
+    ) -> list[RetrievedChunk]:
+        """Lexical fallback over stored chunk text. Never raises.
 
-        # ── 4. Step 31: apply role-aware re-ranking (when a strategy is set).
-        if strategy is not None and chunks:
-            chunks = apply_strategy(chunks, strategy, top_k=top_k)
+        Tokenises the query, scores each candidate chunk by query-token
+        coverage plus a light term-frequency bonus, and returns the best
+        ``limit`` chunks (only those with non-zero overlap). Works on any DB
+        (no pgvector needed) and on documents whose embeddings failed/disabled.
+        """
+        q_tokens = [
+            t for t in _tokenize(query)
+            if len(t) >= _KEYWORD_MIN_TOKEN_LEN and t not in _KEYWORD_STOPWORDS
+        ]
+        if not q_tokens:
+            return []
+        q_set = set(q_tokens)
 
-        top_sims = [round(c.similarity_score, 4) for c in chunks[:3]]
-        logger.info(
-            "RetrievalService: session=%s provider=%s model=%s dim=%d "
-            "query=%r raw=%d final=%d strategy=%s top_sims=%s",
-            session_id,
-            provider_name,
-            settings.EMBEDDING_MODEL,
-            settings.EMBEDDING_DIM,
-            query[:120],
-            raw_count,
-            len(chunks),
-            strategy.name if strategy else "none",
-            top_sims,
-        )
-        return chunks
+        try:
+            stmt = (
+                select(
+                    DocumentChunk.id,
+                    DocumentChunk.document_id,
+                    DocumentChunk.chunk_index,
+                    DocumentChunk.content,
+                )
+                .join(Document, Document.id == DocumentChunk.document_id)
+                .where(Document.chat_session_id == session_id)
+                .where(Document.status == DocumentStatus.ready)
+            )
+            if document_ids is not None:
+                stmt = stmt.where(Document.id.in_(document_ids))
+            stmt = stmt.limit(_KEYWORD_CANDIDATE_CAP)
+            async with db.begin_nested():
+                rows = (await db.execute(stmt)).all()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[RAG Retrieve] keyword query failed for session %s: %s — returning empty",
+                session_id, exc,
+            )
+            return []
+
+        scored: list[tuple[float, object]] = []
+        for row in rows:
+            tokens = _tokenize(row.content or "")
+            if not tokens:
+                continue
+            token_set = set(tokens)
+            overlap = q_set & token_set
+            if not overlap:
+                continue
+            coverage = len(overlap) / len(q_set)
+            matched_terms = sum(1 for t in tokens if t in q_set)
+            density = matched_terms / len(tokens)
+            # Coverage dominates; density gives a small boost to chunks that
+            # mention the query terms repeatedly. Bounded to [0, 1].
+            score = min(1.0, 0.7 * coverage + 0.3 * min(1.0, density * 5.0))
+            scored.append((score, row))
+
+        if not scored:
+            return []
+
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [
+            RetrievedChunk(
+                chunk_id=row.id,
+                document_id=row.document_id,
+                chunk_index=row.chunk_index,
+                content=row.content,
+                similarity_score=round(float(score), 4),
+            )
+            for score, row in scored[:limit]
+        ]
 

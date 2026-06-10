@@ -39,6 +39,37 @@ def test_normalizer_parses_clean_json() -> None:
     assert out.payload["is_fallback"] is False
 
 
+def test_normalizer_parses_json_with_literal_newlines_in_strings() -> None:
+    """Regression: Stage 4 revised positions emit multi-paragraph prose with
+    raw (unescaped) newlines inside string values. Strict json.loads rejects
+    those control characters, which previously forced the lossy text fallback
+    (json_parse_failed_used_text_fallback / revised_position_parse_fallback).
+    The parser must now accept them structurally."""
+    raw = (
+        '{\n'
+        '  "initial_position_summary": "Originally non-committal between the two universities.",\n'
+        '  "revised_position": "Ajou University is the superior choice for R&D-heavy roles.\n\n'
+        'Inha University is stronger for logistics and port-related IT.",\n'
+        '  "change_label": "Partially changed",\n'
+        '  "change_summary": "Shifted from complete non-commitment to a conditional framework.",\n'
+        '  "changed": true,\n'
+        '  "change_type": "narrowed_position",\n'
+        '  "reason_for_change": "Accepted the Policy Analyst critique on informational risk.",\n'
+        '  "key_claims": ["Regional industry pipelines drive the choice."]\n'
+        '}'
+    )
+    out = normalize_round_output(
+        round_number=4, raw_text=raw, round_type="revised_position"
+    )
+
+    assert out.is_fallback is False
+    warnings = out.payload.get("parse_warnings") or []
+    assert "json_parse_failed_used_text_fallback" not in warnings
+    assert "revised_position_parse_fallback" not in warnings
+    assert out.payload["change_type"] == "narrowed_position"
+    assert "Inha University" in out.payload["revised_position"]
+
+
 def test_normalizer_parses_fenced_json() -> None:
     raw = "```json\n" + json.dumps(_round1_payload()) + "\n```"
     out = normalize_round_output(round_number=1, raw_text=raw)
@@ -259,3 +290,36 @@ def test_normalizer_extracts_new_contract_aliases() -> None:
     assert critique.payload["target_claim"] == "Targeted licensing is enforceable."
     assert revised.payload["revised_position"].startswith("Use staged")
     assert revised.payload["what_changed"].startswith("The scope narrowed")
+
+
+def test_normalizer_preserves_system_agent_targets_and_winner() -> None:
+    critique = normalize_round_output(
+        round_number=2,
+        raw_text="",
+        parsed_payload={
+            "target_agent": "Policy Analyst",
+            "target_claim": "Targeted licensing is enforceable.",
+            "challenge": "The proposal assumes enforcement capacity.",
+            "weakness_found": "Capacity gap",
+            "counterargument": "Use staged compliance.",
+            "response": "The proposal needs a staged implementation plan.",
+        },
+    )
+    verdict = normalize_round_output(
+        round_number=5,
+        round_type="synthesis_verdict",
+        raw_text="",
+        parsed_payload={
+            "one_sentence_takeaway": "Targeted rules are justified.",
+            "consensus_statement": "All agents support targeted safeguards.",
+            "main_disagreement": "The compliance burden remains disputed.",
+            "recommended_answer": "Adopt staged risk-based safeguards.",
+            "winning_side": "Policy Analyst",
+            "confidence": "high",
+            "reasoning_basis": ["The implementation mechanism survived critique."],
+            "response": "Adopt staged risk-based safeguards with periodic review.",
+        },
+    )
+
+    assert critique.payload["target_roles"] == ["policy analyst"]
+    assert verdict.payload["winning_side"] == "Policy Analyst"

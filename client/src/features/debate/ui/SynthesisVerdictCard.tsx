@@ -83,9 +83,10 @@ export default function SynthesisVerdictCard({
     const reasoning = asStringList(payload.reasoning_basis);
     const unresolved = asStringList(payload.unresolved_questions);
 
-    const winningSide = asString(payload.winning_side).toLowerCase();
+    const winningSide = asString(payload.winning_side);
+    const winningSideKey = winningSide.toLowerCase();
     const confidence = asString(payload.confidence).toLowerCase();
-    const winningStyle = WINNING_SIDE_STYLES[winningSide] ?? WINNING_SIDE_STYLES.mixed;
+    const winningStyle = WINNING_SIDE_STYLES[winningSideKey] ?? WINNING_SIDE_STYLES.mixed;
     const confidenceStyle = CONFIDENCE_STYLES[confidence] ?? CONFIDENCE_STYLES.medium;
 
     const parseStatus = asString(payload.parse_status).toLowerCase();

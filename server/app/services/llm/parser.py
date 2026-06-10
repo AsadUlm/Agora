@@ -54,11 +54,20 @@ def _safe_repairs(candidate: str) -> str:
 
 
 def _try_parse(text: str) -> dict | None:
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    return result if isinstance(result, dict) else None
+    # Try strict parsing first, then a lenient pass that tolerates literal
+    # control characters (raw newlines, tabs) inside string values. LLMs very
+    # commonly emit multi-paragraph prose fields with unescaped newlines, which
+    # strict json.loads rejects ("Invalid control character"). strict=False only
+    # relaxes that single rule — it does not accept otherwise-invalid JSON — so
+    # it is a safe, high-recovery fallback that keeps well-formed JSON out of the
+    # lossy text-fallback path.
+    for strict in (True, False):
+        try:
+            result = json.loads(text, strict=strict)
+        except json.JSONDecodeError:
+            continue
+        return result if isinstance(result, dict) else None
+    return None
 
 
 def parse_json_from_llm(text: str) -> dict:

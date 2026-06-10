@@ -11,6 +11,8 @@
     "test:round3-verdict": "node scripts/test-round3-verdict.mjs",
     "test:graph-model": "node scripts/test-debate-graph-model.mjs",
     "test:cycle-sync": "node scripts/test-debate-cycle-sync.mjs",
+    "test:default-agents": "node scripts/test-default-system-agents.mjs",
+    "test:rag-counts": "node scripts/test-rag-document-counts.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

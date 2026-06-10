@@ -82,10 +82,16 @@ def test_moderator_prompt_has_recommended_answer_and_tradeoffs() -> None:
         original_question="Should AI be regulated?",
         cycle_number=1,
         round_type="final",
-        agent_syntheses=[],
+        agent_syntheses=[
+            {"role": "Critical Challenger", "structured": {}},
+            {"role": "Innovation Strategist", "structured": {}},
+            {"role": "Policy Analyst", "structured": {}},
+        ],
     )
     assert '"recommended_answer"' in prompt
     assert '"tradeoffs"' in prompt
+    assert "Critical Challenger | Innovation Strategist | Policy Analyst | draw | mixed" in prompt
+    assert "analyst | critic | creative | draw | mixed" not in prompt
 
 
 def test_followup_prompts_match_extended_backend_pipeline() -> None:

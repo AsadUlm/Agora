@@ -310,6 +310,26 @@ _SECRET_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Phrases that indicate an exhausted credit / spend limit rather than a bad key.
+# OpenRouter returns HTTP 403 with messages like
+# "Key limit exceeded (total limit)" when an API key has run out of its
+# credit/spending allowance — that is a QUOTA problem, not an AUTH problem.
+# A key that is missing or invalid is the only thing that should map to AUTH.
+_QUOTA_HINT_KEYWORDS = (
+    "quota",
+    "credit",
+    "insufficient",
+    "payment",
+    "limit exceeded",
+    "limit reached",
+    "key limit",
+    "total limit",
+    "spending limit",
+    "credit limit",
+    "out of credits",
+    "exceeded your",
+)
+
 
 def _safe_message(raw: str) -> str:
     """Strip potential secret values from an error message string."""
@@ -344,8 +364,11 @@ def _classify_code(status_code: int | None, msg: str, exc: BaseException) -> str
     if status_code == 402:
         return PROVIDER_QUOTA_EXCEEDED
     if status_code == 403:
-        # Could be auth or forbidden — check message for quota hints
-        if any(kw in lower for kw in ("quota", "credit", "insufficient", "payment")):
+        # 403 means either an invalid/forbidden key (auth) or a key that has
+        # hit its credit/spend limit (quota). Distinguish on the message:
+        # an exhausted-limit message must surface "add credits", not
+        # "check your API key".
+        if any(kw in lower for kw in _QUOTA_HINT_KEYWORDS):
             return PROVIDER_QUOTA_EXCEEDED
         return PROVIDER_AUTH_ERROR
     if status_code == 408:
@@ -360,7 +383,7 @@ def _classify_code(status_code: int | None, msg: str, exc: BaseException) -> str
         return PROVIDER_TIMEOUT
     if any(kw in lower for kw in ("rate limit", "rate_limit", "ratelimit", "too many requests", "429")):
         return PROVIDER_RATE_LIMITED
-    if any(kw in lower for kw in ("quota", "credit", "insufficient_quota", "insufficient credit", "payment required", "402")):
+    if any(kw in lower for kw in _QUOTA_HINT_KEYWORDS + ("insufficient_quota", "payment required", "402")):
         return PROVIDER_QUOTA_EXCEEDED
     if any(kw in lower for kw in ("unauthorized", "invalid api key", "api key", "authentication", "401", "403", "forbidden")):
         return PROVIDER_AUTH_ERROR
