@@ -27,7 +27,6 @@ AGORA는 하나의 질문에 여러 AI agent가 독립적인 입장을 제시하
 - [17. 오류 처리 및 문제 해결](#17-오류-처리-및-문제-해결)
 - [18. 제한사항 및 향후 개선](#18-제한사항-및-향후-개선)
 - [19. 팀 및 기여](#19-팀-및-기여)
-- [20. 라이선스 및 연락처](#20-라이선스-및-연락처)
 
 ## 1. 프로젝트 개요
 
@@ -991,9 +990,3 @@ Repository에는 세부 담당 업무, 학교명, 교과목명, 공식 연락처
 6. 최소 한 명의 검토 후 `main`에 merge한다.
 
 위 절차는 현재 저장소에서 강제되는 policy가 아니라 제출 이후 협업을 위한 권장안이다.
-
-## 20. 라이선스 및 연락처
-
-현재 repository에는 `LICENSE` file이 없다. License가 선택되기 전까지 source code의 복제·수정·재배포 권한이 자동으로 부여된다고 간주해서는 안 된다.
-
-Private email, phone number 또는 개인 credential은 repository에 공개하지 않는다. 문의는 repository의 공식 GitHub issue/PR channel이 구성된 경우 해당 channel을 사용한다.
